@@ -1,0 +1,6 @@
+{
+  "name": "Khaas Retail POS & Executive Dashboard",
+  "description": "Bilingual English and Urdu Point of Sale billing terminal with real-time cart calculations, printable thermal receipts, and automatic executive sales analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
