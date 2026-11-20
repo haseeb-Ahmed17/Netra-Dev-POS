@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AuthView } from './components/AuthView';
 import { ExecutiveDashboardView } from './components/ExecutiveDashboardView';
 import { InventoryView } from './components/InventoryView';
 import { PosBillingView } from './components/PosBillingView';
@@ -6,13 +7,21 @@ import { ReceiptModal } from './components/ReceiptModal';
 import { TopBar } from './components/TopBar';
 import { TransactionsView } from './components/TransactionsView';
 import { UdhaarView } from './components/UdhaarView';
-import {
-  INITIAL_PRODUCTS,
-  createInitialOrders,
-  createInitialUdhaarCustomers,
-  createInitialUdhaarEntries,
-} from './data/initialData';
 import { TRANSLATIONS } from './i18n';
+import {
+  deleteProductRecord,
+  fetchWorkspaceData,
+  getActiveShopkeeper,
+  insertOrderRecord,
+  insertUdhaarCustomerRecord,
+  insertUdhaarEntryRecord,
+  resetUserDemoWorkspace,
+  signInShopkeeper,
+  signOutShopkeeper,
+  signUpShopkeeper,
+  upsertProductRecord,
+} from './lib/posRepository';
+import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
 import type {
   CartItem,
   Language,
@@ -21,34 +30,17 @@ import type {
   OrderRecord,
   PaymentMethod,
   Product,
+  ShopkeeperUser,
   UdhaarCustomer,
   UdhaarEntry,
   UdhaarEntryType,
 } from './types';
 
-const STORAGE_KEYS = {
-  PRODUCTS: 'khaas_pos_products_v2',
-  ORDERS: 'khaas_pos_orders_v2',
-  UDHAAR_CUSTOMERS: 'khaas_pos_udhaar_customers_v2',
-  UDHAAR_ENTRIES: 'khaas_pos_udhaar_entries_v2',
-  LANG: 'khaas_pos_lang_v1',
-} as const;
-
-function loadStoredArray<T>(key: string, fallback: () => T[]): T[] {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback();
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed as T[];
-  } catch {
-    // ignore corrupted storage
-  }
-  return fallback();
-}
+const LANG_STORAGE_KEY = 'khaas_pos_lang_v1';
 
 function loadStoredLang(): Language {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.LANG);
+    const raw = localStorage.getItem(LANG_STORAGE_KEY);
     if (raw === 'ur' || raw === 'en') return raw;
   } catch {
     // ignore
@@ -58,19 +50,15 @@ function loadStoredLang(): Language {
 
 export default function App() {
   const [lang, setLang] = useState<Language>(loadStoredLang);
+  const [user, setUser] = useState<ShopkeeperUser | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [loadingData, setLoadingData] = useState(false);
+
   const [activeTab, setActiveTab] = useState<NavTab>('pos');
-  const [products, setProducts] = useState<Product[]>(() =>
-    loadStoredArray(STORAGE_KEYS.PRODUCTS, () => INITIAL_PRODUCTS)
-  );
-  const [orders, setOrders] = useState<OrderRecord[]>(() =>
-    loadStoredArray(STORAGE_KEYS.ORDERS, createInitialOrders)
-  );
-  const [udhaarCustomers, setUdhaarCustomers] = useState<UdhaarCustomer[]>(() =>
-    loadStoredArray(STORAGE_KEYS.UDHAAR_CUSTOMERS, createInitialUdhaarCustomers)
-  );
-  const [udhaarEntries, setUdhaarEntries] = useState<UdhaarEntry[]>(() =>
-    loadStoredArray(STORAGE_KEYS.UDHAAR_ENTRIES, createInitialUdhaarEntries)
-  );
+  const [products, setProducts] = useState<Product[]>([]);
+  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [udhaarCustomers, setUdhaarCustomers] = useState<UdhaarCustomer[]>([]);
+  const [udhaarEntries, setUdhaarEntries] = useState<UdhaarEntry[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [activeReceiptOrder, setActiveReceiptOrder] = useState<OrderRecord | null>(null);
   const [latestNewOrderId, setLatestNewOrderId] = useState<string | null>(null);
@@ -81,52 +69,120 @@ export default function App() {
     document.documentElement.lang = lang;
     document.documentElement.dir = lang === 'ur' ? 'rtl' : 'ltr';
     try {
-      localStorage.setItem(STORAGE_KEYS.LANG, lang);
+      localStorage.setItem(LANG_STORAGE_KEY, lang);
     } catch {
       // ignore storage errors
     }
   }, [lang]);
 
+  // Restore active shopkeeper session & subscribe to Supabase auth changes if configured
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products));
-    } catch {
-      // ignore storage errors
-    }
-  }, [products]);
+    let mounted = true;
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-    } catch {
-      // ignore storage errors
+    async function initAuth() {
+      try {
+        const activeUser = await getActiveShopkeeper();
+        if (mounted) {
+          setUser(activeUser);
+        }
+      } finally {
+        if (mounted) {
+          setAuthReady(true);
+        }
+      }
     }
-  }, [orders]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        STORAGE_KEYS.UDHAAR_CUSTOMERS,
-        JSON.stringify(udhaarCustomers)
-      );
-    } catch {
-      // ignore storage errors
-    }
-  }, [udhaarCustomers]);
+    initAuth();
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        STORAGE_KEYS.UDHAAR_ENTRIES,
-        JSON.stringify(udhaarEntries)
-      );
-    } catch {
-      // ignore storage errors
+    if (isSupabaseConfigured && supabase) {
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (!mounted) return;
+        if (session?.user) {
+          setUser({
+            id: session.user.id,
+            email: session.user.email ?? '',
+            shopName:
+              (session.user.user_metadata?.shop_name as string) || 'Khaas Retail',
+          });
+        } else {
+          setUser(null);
+        }
+      });
+      return () => {
+        mounted = false;
+        subscription.unsubscribe();
+      };
     }
-  }, [udhaarEntries]);
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Load private shopkeeper workspace data whenever user changes
+  useEffect(() => {
+    let active = true;
+
+    if (!user) {
+      setProducts([]);
+      setOrders([]);
+      setUdhaarCustomers([]);
+      setUdhaarEntries([]);
+      setCart([]);
+      setActiveReceiptOrder(null);
+      setLatestNewOrderId(null);
+      return;
+    }
+
+    setLoadingData(true);
+    fetchWorkspaceData(user.id)
+      .then((ws) => {
+        if (!active) return;
+        setProducts(ws.products);
+        setOrders(ws.orders);
+        setUdhaarCustomers(ws.udhaarCustomers);
+        setUdhaarEntries(ws.udhaarEntries);
+      })
+      .catch((err) => {
+        console.error('Failed to load workspace data:', err);
+      })
+      .finally(() => {
+        if (active) setLoadingData(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   const handleToggleLanguage = () => {
     setLang((prev) => (prev === 'en' ? 'ur' : 'en'));
+  };
+
+  const handleSignIn = async (email: string, password: string) => {
+    const signedIn = await signInShopkeeper(email, password);
+    setUser(signedIn);
+    setActiveTab('pos');
+  };
+
+  const handleSignUp = async (
+    email: string,
+    password: string,
+    shopName: string
+  ) => {
+    const created = await signUpShopkeeper(email, password, shopName);
+    setUser(created);
+    setActiveTab('pos');
+  };
+
+  const handleLogout = async () => {
+    await signOutShopkeeper();
+    setUser(null);
+    setCart([]);
+    setActiveReceiptOrder(null);
+    setLatestNewOrderId(null);
   };
 
   const handleAddToCart = (productId: string) => {
@@ -183,7 +239,7 @@ export default function App() {
     paymentMethod: PaymentMethod;
     amountTendered: number;
   }): OrderRecord | null => {
-    if (cart.length === 0) return null;
+    if (!user || cart.length === 0) return null;
 
     const lineItems: OrderLineItem[] = [];
     for (const cartItem of cart) {
@@ -239,24 +295,21 @@ export default function App() {
       changeDue,
     };
 
-    // Decrement product stock automatically
-    setProducts((prev) =>
-      prev.map((prod) => {
-        const sold = lineItems.find((li) => li.productId === prod.id);
-        if (!sold) return prod;
-        return {
-          ...prod,
-          stock: Math.max(0, prod.stock - sold.quantity),
-        };
-      })
-    );
+    const updatedProducts = products.map((prod) => {
+      const sold = lineItems.find((li) => li.productId === prod.id);
+      if (!sold) return prod;
+      return {
+        ...prod,
+        stock: Math.max(0, prod.stock - sold.quantity),
+      };
+    });
 
-    // If Udhaar sale, post credit entry automatically to customer's Khata
+    let newUdhaarEntry: UdhaarEntry | undefined;
     if (paymentMethod === 'udhaar' && udhaarCustomerId) {
       const summaryLabel = lineItems
         .map((li) => `${li.quantity}x ${lang === 'ur' ? li.nameUr : li.nameEn}`)
         .join(', ');
-      const newEntry: UdhaarEntry = {
+      newUdhaarEntry = {
         id: `ue-${Date.now()}`,
         customerId: udhaarCustomerId,
         type: 'credit',
@@ -265,45 +318,69 @@ export default function App() {
         receiptNumber: newOrder.receiptNumber,
         createdAt: newOrder.createdAt,
       };
-      setUdhaarEntries((prev) => [...prev, newEntry]);
+      setUdhaarEntries((prev) => [...prev, newUdhaarEntry!]);
     }
 
+    setProducts(updatedProducts);
     setOrders((prev) => [...prev, newOrder]);
     setCart([]);
     setLatestNewOrderId(newOrder.id);
     setActiveReceiptOrder(newOrder);
+
+    insertOrderRecord(user.id, newOrder, updatedProducts, newUdhaarEntry).catch(
+      (err) => console.error('Failed to persist sale:', err)
+    );
 
     return newOrder;
   };
 
   // Stock Management Handlers
   const handleAdjustStock = (productId: string, delta: number) => {
+    if (!user) return;
+    let updatedTarget: Product | null = null;
     setProducts((prev) =>
-      prev.map((prod) =>
-        prod.id === productId
-          ? { ...prod, stock: Math.max(0, prod.stock + delta) }
-          : prod
-      )
+      prev.map((prod) => {
+        if (prod.id !== productId) return prod;
+        updatedTarget = { ...prod, stock: Math.max(0, prod.stock + delta) };
+        return updatedTarget;
+      })
     );
+    if (updatedTarget) {
+      upsertProductRecord(user.id, updatedTarget).catch((err) =>
+        console.error('Failed to adjust stock:', err)
+      );
+    }
   };
 
   const handleAddProduct = (newProd: Omit<Product, 'id'>) => {
+    if (!user) return;
     const created: Product = {
       ...newProd,
-      id: `prod-${Date.now()}`,
+      id: `${user.id.slice(0, 8)}-prod-${Date.now()}`,
     };
     setProducts((prev) => [created, ...prev]);
+    upsertProductRecord(user.id, created).catch((err) =>
+      console.error('Failed to add product:', err)
+    );
   };
 
   const handleUpdateProduct = (updated: Product) => {
+    if (!user) return;
     setProducts((prev) =>
       prev.map((prod) => (prod.id === updated.id ? updated : prod))
+    );
+    upsertProductRecord(user.id, updated).catch((err) =>
+      console.error('Failed to update product:', err)
     );
   };
 
   const handleDeleteProduct = (productId: string) => {
+    if (!user) return;
     setProducts((prev) => prev.filter((prod) => prod.id !== productId));
     setCart((prev) => prev.filter((item) => item.productId !== productId));
+    deleteProductRecord(user.id, productId).catch((err) =>
+      console.error('Failed to delete product:', err)
+    );
   };
 
   // Udhaar / Khata Handlers
@@ -319,8 +396,9 @@ export default function App() {
     openingBalance: number;
   }): UdhaarCustomer => {
     const nowIso = new Date().toISOString();
+    const prefix = user?.id.slice(0, 8) ?? 'shop';
     const customer: UdhaarCustomer = {
-      id: `khata-${Date.now()}`,
+      id: `${prefix}-khata-${Date.now()}`,
       name,
       phone,
       notes,
@@ -328,16 +406,23 @@ export default function App() {
     };
     setUdhaarCustomers((prev) => [customer, ...prev]);
 
+    let openingEntry: UdhaarEntry | undefined;
     if (openingBalance > 0) {
-      const openingEntry: UdhaarEntry = {
-        id: `ue-${Date.now()}-open`,
+      openingEntry = {
+        id: `${prefix}-ue-${Date.now()}-open`,
         customerId: customer.id,
         type: 'credit',
         amount: openingBalance,
         note: lang === 'ur' ? 'ابتدائی کھاتہ بیلنس' : 'Opening Udhaar balance',
         createdAt: nowIso,
       };
-      setUdhaarEntries((prev) => [...prev, openingEntry]);
+      setUdhaarEntries((prev) => [...prev, openingEntry!]);
+    }
+
+    if (user) {
+      insertUdhaarCustomerRecord(user.id, customer, openingEntry).catch((err) =>
+        console.error('Failed to save Udhaar customer:', err)
+      );
     }
 
     return customer;
@@ -354,8 +439,9 @@ export default function App() {
     amount: number;
     note: string;
   }) => {
+    const prefix = user?.id.slice(0, 8) ?? 'shop';
     const entry: UdhaarEntry = {
-      id: `ue-${Date.now()}`,
+      id: `${prefix}-ue-${Date.now()}`,
       customerId,
       type,
       amount,
@@ -363,17 +449,49 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setUdhaarEntries((prev) => [...prev, entry]);
+    if (user) {
+      insertUdhaarEntryRecord(user.id, entry).catch((err) =>
+        console.error('Failed to save Udhaar entry:', err)
+      );
+    }
   };
 
   const handleResetDemo = () => {
-    setProducts(INITIAL_PRODUCTS);
-    setOrders(createInitialOrders());
-    setUdhaarCustomers(createInitialUdhaarCustomers());
-    setUdhaarEntries(createInitialUdhaarEntries());
-    setCart([]);
-    setLatestNewOrderId(null);
-    setActiveReceiptOrder(null);
+    if (!user) return;
+    setLoadingData(true);
+    resetUserDemoWorkspace(user.id)
+      .then((ws) => {
+        setProducts(ws.products);
+        setOrders(ws.orders);
+        setUdhaarCustomers(ws.udhaarCustomers);
+        setUdhaarEntries(ws.udhaarEntries);
+        setCart([]);
+        setLatestNewOrderId(null);
+        setActiveReceiptOrder(null);
+      })
+      .catch((err) => console.error('Failed to reset demo data:', err))
+      .finally(() => setLoadingData(false));
   };
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="text-sm font-medium text-slate-600">{t.loadingWorkspace}</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <AuthView
+        lang={lang}
+        onToggleLanguage={handleToggleLanguage}
+        onSignIn={handleSignIn}
+        onSignUp={handleSignUp}
+        t={t}
+      />
+    );
+  }
 
   const latestCompletedOrder =
     orders.find((o) => o.id === latestNewOrderId) ?? null;
@@ -385,70 +503,80 @@ export default function App() {
         onSelectTab={setActiveTab}
         lang={lang}
         onToggleLanguage={handleToggleLanguage}
+        shopName={user.shopName}
+        onLogout={handleLogout}
         t={t}
       />
 
       <main className="flex-1 no-print">
-        {activeTab === 'pos' && (
-          <PosBillingView
-            products={products}
-            cart={cart}
-            udhaarCustomers={udhaarCustomers}
-            udhaarEntries={udhaarEntries}
-            onAddToCart={handleAddToCart}
-            onUpdateQuantity={handleUpdateQuantity}
-            onRemoveFromCart={handleRemoveFromCart}
-            onClearCart={handleClearCart}
-            onCompleteSale={handleCompleteSale}
-            onGoToDashboard={() => setActiveTab('dashboard')}
-            lastCompletedOrder={latestCompletedOrder}
-            lang={lang}
-            t={t}
-          />
-        )}
+        {loadingData ? (
+          <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-16 text-center text-sm text-slate-500">
+            {t.loadingWorkspace}
+          </div>
+        ) : (
+          <>
+            {activeTab === 'pos' && (
+              <PosBillingView
+                products={products}
+                cart={cart}
+                udhaarCustomers={udhaarCustomers}
+                udhaarEntries={udhaarEntries}
+                onAddToCart={handleAddToCart}
+                onUpdateQuantity={handleUpdateQuantity}
+                onRemoveFromCart={handleRemoveFromCart}
+                onClearCart={handleClearCart}
+                onCompleteSale={handleCompleteSale}
+                onGoToDashboard={() => setActiveTab('dashboard')}
+                lastCompletedOrder={latestCompletedOrder}
+                lang={lang}
+                t={t}
+              />
+            )}
 
-        {activeTab === 'dashboard' && (
-          <ExecutiveDashboardView
-            orders={orders}
-            latestNewOrderId={latestNewOrderId}
-            onPrintReceipt={(order) => setActiveReceiptOrder(order)}
-            onGoToPos={() => setActiveTab('pos')}
-            onResetDemo={handleResetDemo}
-            lang={lang}
-            t={t}
-          />
-        )}
+            {activeTab === 'dashboard' && (
+              <ExecutiveDashboardView
+                orders={orders}
+                latestNewOrderId={latestNewOrderId}
+                onPrintReceipt={(order) => setActiveReceiptOrder(order)}
+                onGoToPos={() => setActiveTab('pos')}
+                onResetDemo={handleResetDemo}
+                lang={lang}
+                t={t}
+              />
+            )}
 
-        {activeTab === 'transactions' && (
-          <TransactionsView
-            orders={orders}
-            onPrintReceipt={(order) => setActiveReceiptOrder(order)}
-            lang={lang}
-            t={t}
-          />
-        )}
+            {activeTab === 'transactions' && (
+              <TransactionsView
+                orders={orders}
+                onPrintReceipt={(order) => setActiveReceiptOrder(order)}
+                lang={lang}
+                t={t}
+              />
+            )}
 
-        {activeTab === 'inventory' && (
-          <InventoryView
-            products={products}
-            onAdjustStock={handleAdjustStock}
-            onAddProduct={handleAddProduct}
-            onUpdateProduct={handleUpdateProduct}
-            onDeleteProduct={handleDeleteProduct}
-            lang={lang}
-            t={t}
-          />
-        )}
+            {activeTab === 'inventory' && (
+              <InventoryView
+                products={products}
+                onAdjustStock={handleAdjustStock}
+                onAddProduct={handleAddProduct}
+                onUpdateProduct={handleUpdateProduct}
+                onDeleteProduct={handleDeleteProduct}
+                lang={lang}
+                t={t}
+              />
+            )}
 
-        {activeTab === 'udhaar' && (
-          <UdhaarView
-            customers={udhaarCustomers}
-            entries={udhaarEntries}
-            onAddCustomer={handleAddUdhaarCustomer}
-            onAddEntry={handleAddUdhaarEntry}
-            lang={lang}
-            t={t}
-          />
+            {activeTab === 'udhaar' && (
+              <UdhaarView
+                customers={udhaarCustomers}
+                entries={udhaarEntries}
+                onAddCustomer={handleAddUdhaarCustomer}
+                onAddEntry={handleAddUdhaarEntry}
+                lang={lang}
+                t={t}
+              />
+            )}
+          </>
         )}
       </main>
 

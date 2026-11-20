@@ -186,6 +186,22 @@ export interface TranslationStrings {
   downloadTxtBtn: string;
   newOrderBtn: string;
   closeBtn: string;
+
+  // Auth & Account
+  logoutBtn: string;
+  authTitle: string;
+  authSubtitle: string;
+  signInTab: string;
+  signUpTab: string;
+  shopNameLabel: string;
+  emailLabel: string;
+  passwordLabel: string;
+  signInBtn: string;
+  createAccountBtn: string;
+  demoSignInBtn: string;
+  signingInLabel: string;
+  loadingWorkspace: string;
+  passwordMinLengthError: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -368,6 +384,21 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     downloadTxtBtn: 'Save TXT',
     newOrderBtn: 'New Order',
     closeBtn: 'Close',
+
+    logoutBtn: 'Logout',
+    authTitle: 'Shopkeeper Sign In',
+    authSubtitle: 'Access your private POS register, stock catalog, sales analytics, and Khata ledger',
+    signInTab: 'Sign In',
+    signUpTab: 'Create Account',
+    shopNameLabel: 'Shop / Store Name',
+    emailLabel: 'Email Address',
+    passwordLabel: 'Password',
+    signInBtn: 'Sign In to Register',
+    createAccountBtn: 'Create Shopkeeper Account',
+    demoSignInBtn: 'Continue with Demo Store',
+    signingInLabel: 'Signing in...',
+    loadingWorkspace: 'Loading your store records...',
+    passwordMinLengthError: 'Password must be at least 6 characters.',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -548,6 +579,21 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     downloadTxtBtn: 'ٹیکسٹ محفوظ کریں',
     newOrderBtn: 'نیا آرڈر',
     closeBtn: 'بند کریں',
+
+    logoutBtn: 'لاگ آؤٹ',
+    authTitle: 'دکاندار لاگ ان',
+    authSubtitle: 'اپنے ذاتی پی او ایس رجسٹر، اسٹاک، سیلز ڈیش بورڈ اور کھاتہ رجسٹر تک رسائی حاصل کریں',
+    signInTab: 'لاگ ان',
+    signUpTab: 'نیا اکاؤنٹ بنائیں',
+    shopNameLabel: 'دکان / اسٹور کا نام',
+    emailLabel: 'ای میل ایڈریس',
+    passwordLabel: 'پاس ورڈ',
+    signInBtn: 'رجسٹر میں لاگ ان کریں',
+    createAccountBtn: 'نیا دکاندار اکاؤنٹ بنائیں',
+    demoSignInBtn: 'ڈیمو اسٹور کے ساتھ جاری رکھیں',
+    signingInLabel: 'لاگ ان ہو رہا ہے...',
+    loadingWorkspace: 'آپ کی دکان کا ڈیٹا لوڈ ہو رہا ہے...',
+    passwordMinLengthError: 'پاس ورڈ کم از کم 6 حروف کا ہونا چاہیے۔',
   },
 };
 

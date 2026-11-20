@@ -6,6 +6,12 @@ export type CategoryId = 'all' | 'beverages' | 'bakery' | 'pantry';
 
 export type PaymentMethod = 'cash' | 'card' | 'mobile' | 'udhaar';
 
+export interface ShopkeeperUser {
+  id: string;
+  email: string;
+  shopName: string;
+}
+
 export interface Product {
   id: string;
   sku: string;
