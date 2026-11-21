@@ -15,6 +15,11 @@ export interface TranslationStrings {
   navStaff: string;
   navSettings: string;
   navSaasAdmin: string;
+  navGroupOperations: string;
+  navGroupInventory: string;
+  navGroupFinance: string;
+  navGroupAdmin: string;
+  openMenuBtn: string;
   langToggleLabel: string;
 
   // POS Billing
@@ -565,6 +570,11 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navStaff: 'Staff & Permissions',
     navSettings: 'Store Settings',
     navSaasAdmin: 'SaaS Admin',
+    navGroupOperations: 'Operations',
+    navGroupInventory: 'Inventory & Supply',
+    navGroupFinance: 'Finance & Khata',
+    navGroupAdmin: 'Administration',
+    openMenuBtn: 'Open navigation menu',
     langToggleLabel: 'اردو',
 
     posTitle: 'Point of Sale Register',
@@ -1102,6 +1112,11 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navStaff: 'اسٹاف و پرمیشنز',
     navSettings: 'اسٹور سیٹنگز',
     navSaasAdmin: 'سپر ایڈمن پینل',
+    navGroupOperations: 'روزمرہ کاروبار',
+    navGroupInventory: 'اسٹاک اور خریداری',
+    navGroupFinance: 'مالیات اور کھاتہ',
+    navGroupAdmin: 'انتظامیہ',
+    openMenuBtn: 'مینو کھولیں',
     langToggleLabel: 'English',
 
     posTitle: 'پوائنٹ آف سیل رجسٹر',

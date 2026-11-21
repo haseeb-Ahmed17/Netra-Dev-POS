@@ -14,6 +14,7 @@ import {
 import { PurchasesView } from './components/PurchasesView';
 import { ReceiptModal } from './components/ReceiptModal';
 import { SaasAdminView } from './components/SaasAdminView';
+import { SidebarNav } from './components/SidebarNav';
 import { StaffPinModal } from './components/StaffPinModal';
 import { StaffView } from './components/StaffView';
 import { StoreSettingsView } from './components/StoreSettingsView';
@@ -164,6 +165,7 @@ export default function App() {
   const [activeEmployeeId, setActiveEmployeeId] = useState<string | null>(null);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [isScreenLocked, setIsScreenLocked] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [activeReceiptOrder, setActiveReceiptOrder] = useState<OrderRecord | null>(null);
@@ -517,6 +519,7 @@ export default function App() {
     setUser(null);
     setIsScreenLocked(false);
     setShowStaffModal(false);
+    setMobileMenuOpen(false);
     setCart([]);
     setActiveReceiptOrder(null);
     setLatestNewOrderId(null);
@@ -1755,13 +1758,11 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
       <TopBar
-        activeTab={activeTab}
         onSelectTab={setActiveTab}
-        activeRole={activeRole}
-        activeEmployeeName={activeEmployee?.name ?? 'Admin'}
+        onToggleMobileMenu={() => setMobileMenuOpen((prev) => !prev)}
+        mobileMenuOpen={mobileMenuOpen}
         isSuperAdmin={isSuperAdmin}
         subscription={subscription}
-        onOpenStaffSwitcher={() => setShowStaffModal(true)}
         onLockScreen={() => setIsScreenLocked(true)}
         isOnline={isEffectiveOnline}
         pendingSyncCount={pendingSyncCount}
@@ -1774,54 +1775,68 @@ export default function App() {
         t={t}
       />
 
-      {cloudSyncError && (
-        <CloudSyncBanner
-          error={cloudSyncError}
-          retrying={retryingSync}
-          onRetry={handleRetrySync}
-          t={t}
-        />
-      )}
+      <SidebarNav
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        activeRole={activeRole}
+        activeEmployeeName={activeEmployee?.name ?? 'Admin'}
+        isSuperAdmin={isSuperAdmin}
+        onOpenStaffSwitcher={() => setShowStaffModal(true)}
+        mobileOpen={mobileMenuOpen}
+        onCloseMobile={() => setMobileMenuOpen(false)}
+        shopName={activeStoreName}
+        t={t}
+      />
 
-      {syncToastMessage && (
-        <div className="no-print bg-emerald-50 border-b border-emerald-200 px-4 sm:px-6 py-2.5">
-          <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-3 text-xs font-semibold text-emerald-900">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
-              <span>{syncToastMessage}</span>
+      <div className="flex-1 lg:ps-64 min-w-0 flex flex-col">
+        {cloudSyncError && (
+          <CloudSyncBanner
+            error={cloudSyncError}
+            retrying={retryingSync}
+            onRetry={handleRetrySync}
+            t={t}
+          />
+        )}
+
+        {syncToastMessage && (
+          <div className="no-print bg-emerald-50 border-b border-emerald-200 px-4 sm:px-6 py-2.5">
+            <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-3 text-xs font-semibold text-emerald-900">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
+                <span>{syncToastMessage}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSyncToastMessage(null)}
+                aria-label={t.closeBtn}
+                className="p-1 text-emerald-700 hover:text-emerald-950 rounded cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setSyncToastMessage(null)}
-              aria-label={t.closeBtn}
-              className="p-1 text-emerald-700 hover:text-emerald-950 rounded cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {offlineSaleNotice && !isEffectiveOnline && (
-        <div className="no-print bg-amber-50 border-b border-amber-200 px-4 sm:px-6 py-2.5">
-          <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-3 text-xs font-medium text-amber-950">
-            <div className="flex items-center gap-2">
-              <WifiOff className="w-4 h-4 text-amber-700 shrink-0" aria-hidden="true" />
-              <span>{t.offlineSaleQueuedNotice}</span>
+        {offlineSaleNotice && !isEffectiveOnline && (
+          <div className="no-print bg-amber-50 border-b border-amber-200 px-4 sm:px-6 py-2.5">
+            <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-3 text-xs font-medium text-amber-950">
+              <div className="flex items-center gap-2">
+                <WifiOff className="w-4 h-4 text-amber-700 shrink-0" aria-hidden="true" />
+                <span>{t.offlineSaleQueuedNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOfflineSaleNotice(false)}
+                aria-label={t.closeBtn}
+                className="p-1 text-amber-800 hover:text-amber-950 rounded cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setOfflineSaleNotice(false)}
-              aria-label={t.closeBtn}
-              className="p-1 text-amber-800 hover:text-amber-950 rounded cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      <main className="flex-1">
+        <main className="flex-1">
         {loadingData ? (
           <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-16 text-center text-sm text-slate-500">
             {t.loadingWorkspace}
@@ -2006,7 +2021,8 @@ export default function App() {
             )}
           </>
         )}
-      </main>
+        </main>
+      </div>
 
       <ReceiptModal
         order={activeReceiptOrder}

@@ -583,7 +583,7 @@ export function PosBillingView({
 
         {/* Right Billing Cart & Checkout Panel */}
         <aside
-          className="lg:col-span-5 xl:col-span-4 bg-white border border-slate-200 rounded-xl p-5 lg:sticky lg:top-22"
+          className="lg:col-span-5 xl:col-span-4 bg-white border border-slate-200 rounded-xl p-5 lg:sticky lg:top-18"
           aria-label="Active Cart and Billing"
         >
           {/* Cart Header */}
