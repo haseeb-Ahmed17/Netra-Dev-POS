@@ -49,6 +49,9 @@ export function ReceiptModal({
         ]
       : [
           `${t.paidViaLabel}: ${getPaymentLabel(order.paymentMethod, t)}`,
+          ...(order.transactionId
+            ? [`${t.tidReceiptLabel}: ${order.transactionId}`]
+            : []),
           `${t.tenderedLabel}: Rs. ${order.amountTendered}`,
           `${t.changeLabel}: Rs. ${order.changeDue}`,
         ];
@@ -268,6 +271,14 @@ export function ReceiptModal({
                   {getPaymentLabel(order.paymentMethod, t)}
                 </span>
               </div>
+              {order.transactionId && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-600">{t.tidReceiptLabel}</span>
+                  <span className="font-mono font-semibold text-slate-900 tabular-nums">
+                    {order.transactionId}
+                  </span>
+                </div>
+              )}
               {isUdhaar ? (
                 <div className="flex justify-between text-amber-800 font-semibold">
                   <span>{t.udhaarAddedLabel}</span>

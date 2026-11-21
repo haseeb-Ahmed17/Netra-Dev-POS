@@ -728,6 +728,10 @@ export function createDefaultStoreSettings(shopName = 'Khaas Retail'): StoreSett
     address: 'Plot 14-B, Gulberg III, Lahore',
     taxNumber: 'STRN: 32-08-9410-221-4',
     receiptFooter: 'Thank you for shopping at Khaas Retail!',
+    jazzcashAccountTitle: '',
+    jazzcashAccountNumber: '',
+    easypaisaAccountTitle: '',
+    easypaisaAccountNumber: '',
   };
 }
 

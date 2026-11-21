@@ -119,6 +119,7 @@ alter table public.orders add column if not exists return_status text not null d
 alter table public.orders add column if not exists refunded_amount numeric not null default 0;
 alter table public.orders add column if not exists returned_at timestamptz;
 alter table public.orders add column if not exists return_note text not null default '';
+alter table public.orders add column if not exists transaction_id text not null default '';
 
 alter table public.orders drop constraint if exists orders_payment_method_check;
 alter table public.orders add constraint orders_payment_method_check
@@ -374,8 +375,17 @@ create table if not exists public.store_settings (
   address text not null default 'Plot 14-B, Gulberg III, Lahore',
   tax_number text not null default 'STRN: 32-08-9410-221-4',
   receipt_footer text not null default 'Thank you for shopping at Khaas Retail!',
+  jazzcash_account_title text not null default '',
+  jazzcash_account_number text not null default '',
+  easypaisa_account_title text not null default '',
+  easypaisa_account_number text not null default '',
   updated_at timestamptz not null default now()
 );
+
+alter table public.store_settings add column if not exists jazzcash_account_title text not null default '';
+alter table public.store_settings add column if not exists jazzcash_account_number text not null default '';
+alter table public.store_settings add column if not exists easypaisa_account_title text not null default '';
+alter table public.store_settings add column if not exists easypaisa_account_number text not null default '';
 
 grant select, insert, update, delete on table public.store_settings to authenticated;
 grant all privileges on table public.store_settings to service_role;

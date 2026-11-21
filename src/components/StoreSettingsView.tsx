@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Save, Store } from 'lucide-react';
+import { CheckCircle2, Save, Smartphone, Store } from 'lucide-react';
 import type { TranslationStrings } from '../i18n';
 import type { StoreSettings } from '../types';
 
@@ -29,6 +29,10 @@ export function StoreSettingsView({
       address: form.address.trim(),
       taxNumber: form.taxNumber.trim(),
       receiptFooter: form.receiptFooter.trim() || t.thankYouMsg,
+      jazzcashAccountTitle: (form.jazzcashAccountTitle ?? '').trim(),
+      jazzcashAccountNumber: (form.jazzcashAccountNumber ?? '').trim(),
+      easypaisaAccountTitle: (form.easypaisaAccountTitle ?? '').trim(),
+      easypaisaAccountNumber: (form.easypaisaAccountNumber ?? '').trim(),
     };
     onSaveSettings(cleaned);
     setSavedToast(true);
@@ -156,6 +160,115 @@ export function StoreSettingsView({
                 }
                 className="w-full p-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
               />
+            </div>
+
+            {/* Mobile Wallet Accounts (JazzCash & EasyPaisa) */}
+            <div className="pt-3 border-t border-slate-200 space-y-4">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Smartphone className="w-4 h-4 text-teal-700 shrink-0" aria-hidden="true" />
+                  <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                    {t.jazzcashSectionTitle}
+                  </h3>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      htmlFor="settings-jazzcash-title"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      {t.walletTitleLabel}
+                    </label>
+                    <input
+                      id="settings-jazzcash-title"
+                      type="text"
+                      value={form.jazzcashAccountTitle ?? ''}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          jazzcashAccountTitle: e.target.value,
+                        }))
+                      }
+                      placeholder={form.storeName || 'Account Holder Name'}
+                      className="w-full h-10 px-3 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="settings-jazzcash-number"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      {t.walletNumberLabel}
+                    </label>
+                    <input
+                      id="settings-jazzcash-number"
+                      type="text"
+                      value={form.jazzcashAccountNumber ?? ''}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          jazzcashAccountNumber: e.target.value,
+                        }))
+                      }
+                      placeholder="03XX-XXXXXXX"
+                      className="w-full h-10 px-3 text-sm font-mono bg-white border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-teal-700"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Smartphone className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
+                  <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                    {t.easypaisaSectionTitle}
+                  </h3>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      htmlFor="settings-easypaisa-title"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      {t.walletTitleLabel}
+                    </label>
+                    <input
+                      id="settings-easypaisa-title"
+                      type="text"
+                      value={form.easypaisaAccountTitle ?? ''}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          easypaisaAccountTitle: e.target.value,
+                        }))
+                      }
+                      placeholder={form.storeName || 'Account Holder Name'}
+                      className="w-full h-10 px-3 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="settings-easypaisa-number"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      {t.walletNumberLabel}
+                    </label>
+                    <input
+                      id="settings-easypaisa-number"
+                      type="text"
+                      value={form.easypaisaAccountNumber ?? ''}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          easypaisaAccountNumber: e.target.value,
+                        }))
+                      }
+                      placeholder="03XX-XXXXXXX"
+                      className="w-full h-10 px-3 text-sm font-mono bg-white border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-teal-700"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="pt-2 flex justify-end">

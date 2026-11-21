@@ -533,6 +533,20 @@ export interface TranslationStrings {
   posReturnToggleBtn: string;
   posReturnBadge: string;
   netRefundDueLabel: string;
+  newKhataCustomerInlineBtn: string;
+  cancelNewKhataBtn: string;
+  saveSelectCustomerBtn: string;
+  quickKhataNamePlaceholder: string;
+  quickKhataPhonePlaceholder: string;
+  jazzcashSectionTitle: string;
+  easypaisaSectionTitle: string;
+  walletTitleLabel: string;
+  walletNumberLabel: string;
+  transferToAccountLabel: string;
+  walletNotConfiguredMsg: string;
+  transactionIdLabel: string;
+  transactionIdPlaceholder: string;
+  tidReceiptLabel: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -1058,6 +1072,20 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     posReturnToggleBtn: 'Return',
     posReturnBadge: 'RETURN',
     netRefundDueLabel: 'Net Refund Due',
+    newKhataCustomerInlineBtn: '+ New Khata Customer',
+    cancelNewKhataBtn: 'Use Existing',
+    saveSelectCustomerBtn: 'Save & Select',
+    quickKhataNamePlaceholder: 'Customer Full Name *',
+    quickKhataPhonePlaceholder: 'WhatsApp Phone (e.g., 0300-1234567)',
+    jazzcashSectionTitle: 'JazzCash Account Details',
+    easypaisaSectionTitle: 'EasyPaisa Account Details',
+    walletTitleLabel: 'Account Title',
+    walletNumberLabel: 'Account Number',
+    transferToAccountLabel: 'Transfer To',
+    walletNotConfiguredMsg: 'No account number saved yet — add it in Store Settings.',
+    transactionIdLabel: 'Transaction ID (TID) (Optional)',
+    transactionIdPlaceholder: 'e.g., 8492019482',
+    tidReceiptLabel: 'TID',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -1581,6 +1609,20 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     posReturnToggleBtn: 'واپسی',
     posReturnBadge: 'واپسی',
     netRefundDueLabel: 'واپس کی جانے والی رقم',
+    newKhataCustomerInlineBtn: '+ نیا کھاتہ گاہک',
+    cancelNewKhataBtn: 'موجودہ منتخب کریں',
+    saveSelectCustomerBtn: 'محفوظ اور منتخب کریں',
+    quickKhataNamePlaceholder: 'گاہک کا مکمل نام *',
+    quickKhataPhonePlaceholder: 'واٹس ایپ نمبر (مثلاً 0300-1234567)',
+    jazzcashSectionTitle: 'جاز کیش اکاؤنٹ کی تفصیلات',
+    easypaisaSectionTitle: 'ایزی پیسہ اکاؤنٹ کی تفصیلات',
+    walletTitleLabel: 'اکاؤنٹ ٹائٹل / نام',
+    walletNumberLabel: 'اکاؤنٹ نمبر',
+    transferToAccountLabel: 'رقم بھیجنے کا اکاؤنٹ',
+    walletNotConfiguredMsg: 'ابھی اکاؤنٹ نمبر محفوظ نہیں ہے — اسٹور سیٹنگز میں شامل کریں۔',
+    transactionIdLabel: 'ٹرانزیکشن آئی ڈی / TID (اختیاری)',
+    transactionIdPlaceholder: 'مثلاً 8492019482',
+    tidReceiptLabel: 'TID',
   },
 };
 

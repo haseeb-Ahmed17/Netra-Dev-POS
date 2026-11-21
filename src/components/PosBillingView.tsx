@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
   Minus,
@@ -7,7 +7,9 @@ import {
   RotateCcw,
   Search,
   ShoppingBag,
+  Smartphone,
   Trash2,
+  UserPlus,
 } from 'lucide-react';
 import { formatCurrency, getCategoryLabel, type TranslationStrings } from '../i18n';
 import type {
@@ -19,10 +21,20 @@ import type {
   OrderRecord,
   PaymentMethod,
   Product,
+  ReminderSchedule,
+  StoreSettings,
   UdhaarCustomer,
   UdhaarEntry,
 } from '../types';
 import { ProductImage } from './ProductImage';
+import { calculateDueDateFromSchedule } from './UdhaarView';
+
+export interface InlineUdhaarCustomerPayload {
+  name: string;
+  phone: string;
+  reminderSchedule: ReminderSchedule;
+  dueDate?: string;
+}
 
 interface PosBillingViewProps {
   products: Product[];
@@ -30,7 +42,13 @@ interface PosBillingViewProps {
   customers: Customer[];
   udhaarCustomers: UdhaarCustomer[];
   udhaarEntries: UdhaarEntry[];
+  storeSettings: StoreSettings;
   canViewDashboard?: boolean;
+  onRefreshUdhaarCustomers?: () => void;
+  onCreateInlineKhataCustomer?: (payload: InlineUdhaarCustomerPayload) => {
+    crmCustomer: Customer;
+    khataCustomer: UdhaarCustomer;
+  };
   onAddToCart: (productId: string) => void;
   onUpdateQuantity: (productId: string, delta: number, isReturn?: boolean) => void;
   onToggleReturn: (productId: string, currentIsReturn: boolean) => void;
@@ -43,6 +61,8 @@ interface PosBillingViewProps {
     discountPercent: number;
     paymentMethod: PaymentMethod;
     amountTendered: number;
+    transactionId?: string;
+    inlineNewUdhaarCustomer?: InlineUdhaarCustomerPayload;
   }) => OrderRecord | null;
   onGoToDashboard: () => void;
   lastCompletedOrder: OrderRecord | null;
@@ -59,7 +79,10 @@ export function PosBillingView({
   customers,
   udhaarCustomers,
   udhaarEntries,
+  storeSettings,
   canViewDashboard = true,
+  onRefreshUdhaarCustomers,
+  onCreateInlineKhataCustomer,
   onAddToCart,
   onUpdateQuantity,
   onToggleReturn,
@@ -75,11 +98,23 @@ export function PosBillingView({
   const [selectedCategory, setSelectedCategory] = useState<CategoryId>('all');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
-  const [selectedUdhaarId, setSelectedUdhaarId] = useState<string>('');
+  const [selectedUdhaarKey, setSelectedUdhaarKey] = useState<string>('');
+  const [showQuickKhataForm, setShowQuickKhataForm] = useState(false);
+  const [quickKhataName, setQuickKhataName] = useState('');
+  const [quickKhataPhone, setQuickKhataPhone] = useState('');
+  const [quickKhataSchedule, setQuickKhataSchedule] =
+    useState<ReminderSchedule>('1_week');
   const [discountPercent, setDiscountPercent] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [cashTenderedInput, setCashTenderedInput] = useState<string>('');
+  const [transactionId, setTransactionId] = useState<string>('');
   const [showSaleBanner, setShowSaleBanner] = useState(false);
+
+  useEffect(() => {
+    if (paymentMethod === 'udhaar') {
+      onRefreshUdhaarCustomers?.();
+    }
+  }, [paymentMethod, onRefreshUdhaarCustomers]);
 
   const productMap = useMemo(() => {
     const map = new Map<string, Product>();
@@ -110,6 +145,56 @@ export function PosBillingView({
     }
     return map;
   }, [udhaarCustomers, udhaarEntries]);
+
+  const unifiedUdhaarOptions = useMemo(() => {
+    const normalizePhone = (phone: string) => phone.replace(/\D/g, '');
+    const matchedCrmIds = new Set<string>();
+    const options: {
+      value: string;
+      name: string;
+      phone: string;
+      balance: number;
+      udhaarCustomerId?: string;
+      crmCustomerId?: string;
+    }[] = [];
+
+    for (const kh of udhaarCustomers) {
+      const khPhone = normalizePhone(kh.phone);
+      const khNameLower = kh.name.trim().toLowerCase();
+      const matchedCrm = customers.find((c) => {
+        if (c.id === kh.id) return true;
+        const cPhone = normalizePhone(c.phone);
+        if (khPhone && cPhone && khPhone === cPhone) return true;
+        return c.name.trim().toLowerCase() === khNameLower;
+      });
+      if (matchedCrm) {
+        matchedCrmIds.add(matchedCrm.id);
+      }
+      const khBal = Math.max(0, customerBalanceMap.get(kh.id) ?? 0);
+      const crmBal = Math.max(0, matchedCrm?.balance ?? 0);
+      options.push({
+        value: `khata:${kh.id}`,
+        name: kh.name,
+        phone: kh.phone || matchedCrm?.phone || '',
+        balance: khBal > 0 ? khBal : crmBal,
+        udhaarCustomerId: kh.id,
+        crmCustomerId: matchedCrm?.id,
+      });
+    }
+
+    for (const c of customers) {
+      if (matchedCrmIds.has(c.id)) continue;
+      options.push({
+        value: `crm:${c.id}`,
+        name: c.name,
+        phone: c.phone,
+        balance: Math.max(0, c.balance),
+        crmCustomerId: c.id,
+      });
+    }
+
+    return options.sort((a, b) => a.name.localeCompare(b.name));
+  }, [udhaarCustomers, customers, customerBalanceMap]);
 
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -198,8 +283,20 @@ export function PosBillingView({
     cashTenderedInput.trim() !== '' &&
     parsedTendered < grandTotal;
 
+  const selectedUdhaarOption = useMemo(
+    () =>
+      unifiedUdhaarOptions.find((opt) => opt.value === selectedUdhaarKey) ?? null,
+    [unifiedUdhaarOptions, selectedUdhaarKey]
+  );
+
+  const hasQuickKhataDraft =
+    showQuickKhataForm && quickKhataName.trim().length > 0;
+
   const isUdhaarInvalid =
-    paymentMethod === 'udhaar' && !selectedUdhaarId && !selectedCustomerId;
+    paymentMethod === 'udhaar' &&
+    !selectedUdhaarOption &&
+    !selectedCustomerId &&
+    !hasQuickKhataDraft;
 
   const changeDue =
     paymentMethod === 'cash' ? Math.max(0, parsedTendered - grandTotal) : 0;
@@ -209,35 +306,89 @@ export function PosBillingView({
     [customers, selectedCustomerId]
   );
 
+  const handleSaveAndSelectQuickKhata = () => {
+    const trimmedName = quickKhataName.trim();
+    if (!trimmedName || !onCreateInlineKhataCustomer) return;
+    const dueDate =
+      quickKhataSchedule === 'none'
+        ? undefined
+        : calculateDueDateFromSchedule(quickKhataSchedule) || undefined;
+    const { crmCustomer, khataCustomer } = onCreateInlineKhataCustomer({
+      name: trimmedName,
+      phone: quickKhataPhone.trim(),
+      reminderSchedule: quickKhataSchedule,
+      dueDate,
+    });
+    setSelectedUdhaarKey(`khata:${khataCustomer.id}`);
+    setSelectedCustomerId(crmCustomer.id);
+    setShowQuickKhataForm(false);
+    setQuickKhataName('');
+    setQuickKhataPhone('');
+    setQuickKhataSchedule('1_week');
+  };
+
   const handleCheckout = () => {
     if (lineItems.length === 0 || isCashInsufficient || isUdhaarInvalid) return;
 
-    const selectedKhata =
-      paymentMethod === 'udhaar'
-        ? udhaarCustomers.find((c) => c.id === selectedUdhaarId)
+    const inlineNewUdhaarCustomer: InlineUdhaarCustomerPayload | undefined =
+      paymentMethod === 'udhaar' && hasQuickKhataDraft
+        ? {
+            name: quickKhataName.trim(),
+            phone: quickKhataPhone.trim(),
+            reminderSchedule: quickKhataSchedule,
+            dueDate:
+              quickKhataSchedule === 'none'
+                ? undefined
+                : calculateDueDateFromSchedule(quickKhataSchedule) || undefined,
+          }
         : undefined;
 
-    const resolvedName = selectedKhata
-      ? selectedKhata.name
+    const resolvedUdhaarCustomerId =
+      paymentMethod === 'udhaar' && !inlineNewUdhaarCustomer
+        ? selectedUdhaarOption?.udhaarCustomerId
+        : undefined;
+
+    const resolvedCrmCustomerId =
+      paymentMethod === 'udhaar' && !inlineNewUdhaarCustomer
+        ? selectedUdhaarOption?.crmCustomerId ?? (selectedCrmCustomer?.id || undefined)
+        : selectedCrmCustomer?.id;
+
+    const resolvedName = inlineNewUdhaarCustomer
+      ? inlineNewUdhaarCustomer.name
+      : paymentMethod === 'udhaar' && selectedUdhaarOption
+      ? selectedUdhaarOption.name
       : selectedCrmCustomer
       ? selectedCrmCustomer.name
       : customerName.trim();
 
+    const resolvedTid =
+      (paymentMethod === 'jazzcash' || paymentMethod === 'easypaisa') &&
+      transactionId.trim()
+        ? transactionId.trim()
+        : undefined;
+
     const created = onCompleteSale({
-      customerId: selectedCrmCustomer?.id,
+      customerId: resolvedCrmCustomerId,
       customerName: resolvedName,
-      udhaarCustomerId: selectedKhata?.id,
+      udhaarCustomerId: resolvedUdhaarCustomerId,
       discountPercent,
       paymentMethod,
       amountTendered: parsedTendered,
+      transactionId: resolvedTid,
+      inlineNewUdhaarCustomer,
     });
 
     if (created) {
       setSelectedCustomerId('');
       setCustomerName('');
-      setSelectedUdhaarId('');
+      setSelectedUdhaarKey('');
+      setShowQuickKhataForm(false);
+      setQuickKhataName('');
+      setQuickKhataPhone('');
+      setQuickKhataSchedule('1_week');
       setDiscountPercent(0);
       setCashTenderedInput('');
+      setTransactionId('');
       setShowSaleBanner(true);
     }
   };
@@ -771,30 +922,202 @@ export function PosBillingView({
               </div>
             )}
 
+            {(paymentMethod === 'jazzcash' || paymentMethod === 'easypaisa') && (
+              <div className="space-y-2.5 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="flex items-start gap-2">
+                  <Smartphone
+                    className="w-4 h-4 text-teal-700 shrink-0 mt-0.5"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-slate-800">
+                      {t.transferToAccountLabel} (
+                      {paymentMethod === 'jazzcash'
+                        ? t.paymentJazzCash
+                        : t.paymentEasyPaisa}
+                      )
+                    </p>
+                    {(() => {
+                      const title =
+                        paymentMethod === 'jazzcash'
+                          ? storeSettings.jazzcashAccountTitle
+                          : storeSettings.easypaisaAccountTitle;
+                      const number =
+                        paymentMethod === 'jazzcash'
+                          ? storeSettings.jazzcashAccountNumber
+                          : storeSettings.easypaisaAccountNumber;
+                      if (!title && !number) {
+                        return (
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {t.walletNotConfiguredMsg}
+                          </p>
+                        );
+                      }
+                      return (
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                          {title && (
+                            <span className="font-semibold text-slate-900">
+                              {title}
+                            </span>
+                          )}
+                          {number && (
+                            <span className="font-mono font-bold text-teal-800 tabular-nums">
+                              {number}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="pos-wallet-tid"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.transactionIdLabel}
+                  </label>
+                  <input
+                    id="pos-wallet-tid"
+                    type="text"
+                    value={transactionId}
+                    onChange={(e) => setTransactionId(e.target.value)}
+                    placeholder={t.transactionIdPlaceholder}
+                    className="w-full h-9 px-2.5 text-xs font-mono bg-white border border-slate-300 rounded-md text-slate-900 placeholder:text-slate-400 tabular-nums focus:outline-none focus:border-teal-700"
+                  />
+                </div>
+              </div>
+            )}
+
             {paymentMethod === 'udhaar' && (
-              <div className="space-y-2 bg-amber-50/70 border border-amber-200 rounded-lg p-3">
-                <label
-                  htmlFor="pos-udhaar-select"
-                  className="block text-xs font-semibold text-amber-900"
-                >
-                  {t.selectUdhaarCustomerLabel}
-                </label>
+              <div className="space-y-2.5 bg-amber-50/70 border border-amber-200 rounded-lg p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="pos-udhaar-select"
+                    className="block text-xs font-semibold text-amber-900"
+                  >
+                    {t.selectUdhaarCustomerLabel}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickKhataForm((prev) => !prev)}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-amber-900 bg-white border border-amber-300 hover:bg-amber-100 rounded-md whitespace-nowrap transition-colors cursor-pointer"
+                  >
+                    <UserPlus className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    <span>
+                      {showQuickKhataForm
+                        ? t.cancelNewKhataBtn
+                        : t.newKhataCustomerInlineBtn}
+                    </span>
+                  </button>
+                </div>
+
                 <select
                   id="pos-udhaar-select"
-                  value={selectedUdhaarId}
-                  onChange={(e) => setSelectedUdhaarId(e.target.value)}
+                  value={selectedUdhaarKey}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedUdhaarKey(val);
+                    const matched = unifiedUdhaarOptions.find(
+                      (opt) => opt.value === val
+                    );
+                    if (matched?.crmCustomerId) {
+                      setSelectedCustomerId(matched.crmCustomerId);
+                    }
+                    if (val) {
+                      setShowQuickKhataForm(false);
+                    }
+                  }}
                   className="w-full h-10 px-3 text-sm bg-white border border-amber-300 rounded-lg text-slate-900 focus:outline-none focus:border-amber-700"
                 >
                   <option value="">{t.chooseCustomerOption}</option>
-                  {udhaarCustomers.map((c) => {
-                    const bal = Math.max(0, customerBalanceMap.get(c.id) ?? 0);
-                    return (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({c.phone}) — {formatCurrency(bal, lang)}
-                      </option>
-                    );
-                  })}
+                  {unifiedUdhaarOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.name}
+                      {opt.phone ? ` (${opt.phone})` : ''} —{' '}
+                      {formatCurrency(opt.balance, lang)}
+                    </option>
+                  ))}
                 </select>
+
+                {showQuickKhataForm && (
+                  <div className="bg-white border border-amber-300 rounded-lg p-3 space-y-2.5">
+                    <div>
+                      <label
+                        htmlFor="quick-khata-name"
+                        className="block text-[11px] font-medium text-slate-700 mb-1"
+                      >
+                        {t.customerNameLabel} *
+                      </label>
+                      <input
+                        id="quick-khata-name"
+                        type="text"
+                        value={quickKhataName}
+                        onChange={(e) => setQuickKhataName(e.target.value)}
+                        placeholder={t.quickKhataNamePlaceholder}
+                        className="w-full h-9 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-900 focus:outline-none focus:border-amber-700 focus:bg-white"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label
+                          htmlFor="quick-khata-phone"
+                          className="block text-[11px] font-medium text-slate-700 mb-1"
+                        >
+                          {t.customerWhatsappLabel}
+                        </label>
+                        <input
+                          id="quick-khata-phone"
+                          type="tel"
+                          value={quickKhataPhone}
+                          onChange={(e) => setQuickKhataPhone(e.target.value)}
+                          placeholder={t.quickKhataPhonePlaceholder}
+                          className="w-full h-9 px-2.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-md text-slate-900 focus:outline-none focus:border-amber-700 focus:bg-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="quick-khata-schedule"
+                          className="block text-[11px] font-medium text-slate-700 mb-1"
+                        >
+                          {t.reminderScheduleLabel}
+                        </label>
+                        <select
+                          id="quick-khata-schedule"
+                          value={quickKhataSchedule}
+                          onChange={(e) =>
+                            setQuickKhataSchedule(e.target.value as ReminderSchedule)
+                          }
+                          className="w-full h-9 px-2 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-900 focus:outline-none focus:border-amber-700 focus:bg-white"
+                        >
+                          <option value="3_days">{t.schedule3Days}</option>
+                          <option value="1_week">{t.schedule1Week}</option>
+                          <option value="2_weeks">{t.schedule2Weeks}</option>
+                          <option value="1_month">{t.schedule1Month}</option>
+                          <option value="none">{t.scheduleNone}</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {onCreateInlineKhataCustomer && (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          disabled={!quickKhataName.trim()}
+                          onClick={handleSaveAndSelectQuickKhata}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-amber-700 hover:bg-amber-800 disabled:bg-slate-300 rounded-md whitespace-nowrap transition-colors cursor-pointer"
+                        >
+                          <UserPlus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                          <span>{t.saveSelectCustomerBtn}</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <p className="text-xs text-amber-800">
                   {isUdhaarInvalid ? t.udhaarCustomerRequired : t.udhaarBalanceNotice}
                 </p>

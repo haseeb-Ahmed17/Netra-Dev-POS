@@ -61,7 +61,8 @@ export function TransactionsView({
         if (!q) return true;
         return (
           order.receiptNumber.toLowerCase().includes(q) ||
-          order.customerName.toLowerCase().includes(q)
+          order.customerName.toLowerCase().includes(q) ||
+          (order.transactionId ?? '').toLowerCase().includes(q)
         );
       });
   }, [orders, searchQuery, paymentFilter]);
@@ -302,7 +303,12 @@ export function TransactionsView({
                         {unitCount}
                       </td>
                       <td className="py-3 px-4 text-slate-700 whitespace-nowrap">
-                        {getPaymentLabel(order.paymentMethod, t)}
+                        <div>{getPaymentLabel(order.paymentMethod, t)}</div>
+                        {order.transactionId && (
+                          <div className="text-[11px] font-mono text-slate-500 tabular-nums">
+                            {t.tidReceiptLabel}: {order.transactionId}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 whitespace-nowrap">
                         <div className="flex flex-col items-start gap-0.5">

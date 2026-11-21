@@ -597,6 +597,7 @@ function mapOrderFromRow(row: Record<string, unknown>): OrderRecord {
     total: Number(row.total),
     amountTendered: Number(row.amount_tendered),
     changeDue: Number(row.change_due),
+    transactionId: row.transaction_id ? String(row.transaction_id) : undefined,
     returnStatus,
     refundedAmount: Number(row.refunded_amount ?? 0),
     returnedAt: row.returned_at ? String(row.returned_at) : undefined,
@@ -623,6 +624,7 @@ function mapOrderToRow(order: OrderRecord, userId: string) {
     total: order.total,
     amount_tendered: order.amountTendered,
     change_due: order.changeDue,
+    transaction_id: order.transactionId ?? '',
     return_status: order.returnStatus ?? 'completed',
     refunded_amount: order.refundedAmount ?? 0,
     returned_at: order.returnedAt ?? null,
@@ -804,6 +806,10 @@ function mapStoreSettingsFromRow(
     receiptFooter: String(
       row.receipt_footer ?? 'Thank you for shopping at Khaas Retail!'
     ),
+    jazzcashAccountTitle: String(row.jazzcash_account_title ?? ''),
+    jazzcashAccountNumber: String(row.jazzcash_account_number ?? ''),
+    easypaisaAccountTitle: String(row.easypaisa_account_title ?? ''),
+    easypaisaAccountNumber: String(row.easypaisa_account_number ?? ''),
   };
 }
 
@@ -815,6 +821,10 @@ function mapStoreSettingsToRow(settings: StoreSettings, userId: string) {
     address: settings.address,
     tax_number: settings.taxNumber,
     receipt_footer: settings.receiptFooter,
+    jazzcash_account_title: settings.jazzcashAccountTitle ?? '',
+    jazzcash_account_number: settings.jazzcashAccountNumber ?? '',
+    easypaisa_account_title: settings.easypaisaAccountTitle ?? '',
+    easypaisa_account_number: settings.easypaisaAccountNumber ?? '',
     updated_at: new Date().toISOString(),
   };
 }
@@ -1150,7 +1160,8 @@ async function pushOrderBundleToSupabase(
   order: OrderRecord,
   updatedProducts: Product[],
   newUdhaarEntry?: UdhaarEntry,
-  updatedCustomer?: Customer
+  updatedCustomer?: Customer,
+  newUdhaarCustomer?: UdhaarCustomer
 ): Promise<{ error: string | null; networkFailure: boolean }> {
   if (!isSupabaseConfigured || !supabase) {
     return { error: null, networkFailure: false };
@@ -1161,10 +1172,45 @@ async function pushOrderBundleToSupabase(
       .from('orders')
       .upsert(mapOrderToRow(order, userId), { onConflict: 'id' });
     if (ordErr) {
-      return {
-        error: ordErr.message,
-        networkFailure: isNetworkLossError(ordErr.message),
-      };
+      if (
+        /transaction_id|return_status|refunded_amount|returned_at|return_note/i.test(
+          ordErr.message
+        )
+      ) {
+        const { error: coreOrdErr } = await supabase.from('orders').upsert(
+          {
+            id: order.id,
+            user_id: userId,
+            receipt_number: order.receiptNumber,
+            created_at: order.createdAt,
+            customer_id: order.customerId ?? null,
+            customer_name: order.customerName,
+            udhaar_customer_id: order.udhaarCustomerId ?? null,
+            payment_method: order.paymentMethod,
+            items: order.items,
+            subtotal: order.subtotal,
+            discount_percent: order.discountPercent,
+            discount_amount: order.discountAmount,
+            tax_rate: order.taxRate,
+            tax_amount: order.taxAmount,
+            total: order.total,
+            amount_tendered: order.amountTendered,
+            change_due: order.changeDue,
+          },
+          { onConflict: 'id' }
+        );
+        if (coreOrdErr) {
+          return {
+            error: coreOrdErr.message,
+            networkFailure: isNetworkLossError(coreOrdErr.message),
+          };
+        }
+      } else {
+        return {
+          error: ordErr.message,
+          networkFailure: isNetworkLossError(ordErr.message),
+        };
+      }
     }
 
     const soldIds = new Set(order.items.map((i) => i.productId));
@@ -1177,6 +1223,20 @@ async function pushOrderBundleToSupabase(
         return {
           error: stockErr.message,
           networkFailure: isNetworkLossError(stockErr.message),
+        };
+      }
+    }
+
+    if (newUdhaarCustomer) {
+      const { error: khataCustErr } = await supabase
+        .from('udhaar_customers')
+        .upsert(mapUdhaarCustomerToRow(newUdhaarCustomer, userId), {
+          onConflict: 'id',
+        });
+      if (khataCustErr) {
+        return {
+          error: khataCustErr.message,
+          networkFailure: isNetworkLossError(khataCustErr.message),
         };
       }
     }
@@ -1227,18 +1287,32 @@ export async function insertOrderRecord(
   order: OrderRecord,
   updatedProducts: Product[],
   newUdhaarEntry?: UdhaarEntry,
-  updatedCustomer?: Customer
+  updatedCustomer?: Customer,
+  newUdhaarCustomer?: UdhaarCustomer
 ): Promise<{ syncError: string | null; queuedOffline: boolean }> {
   const ws = loadLocalWorkspace(userId);
   ws.orders = [...ws.orders, order];
   ws.products = updatedProducts;
+  if (newUdhaarCustomer) {
+    const khataExists = ws.udhaarCustomers.some(
+      (c) => c.id === newUdhaarCustomer.id
+    );
+    ws.udhaarCustomers = khataExists
+      ? ws.udhaarCustomers.map((c) =>
+          c.id === newUdhaarCustomer.id ? newUdhaarCustomer : c
+        )
+      : [newUdhaarCustomer, ...ws.udhaarCustomers];
+  }
   if (newUdhaarEntry) {
     ws.udhaarEntries = [...ws.udhaarEntries, newUdhaarEntry];
   }
   if (updatedCustomer) {
-    ws.customers = ws.customers.map((c) =>
-      c.id === updatedCustomer.id ? updatedCustomer : c
-    );
+    const custExists = ws.customers.some((c) => c.id === updatedCustomer.id);
+    ws.customers = custExists
+      ? ws.customers.map((c) =>
+          c.id === updatedCustomer.id ? updatedCustomer : c
+        )
+      : [updatedCustomer, ...ws.customers];
   }
   saveLocalWorkspace(userId, ws);
 
@@ -1252,6 +1326,7 @@ export async function insertOrderRecord(
       createdAt: order.createdAt,
       order,
       updatedProducts,
+      newUdhaarCustomer,
       newUdhaarEntry,
       updatedCustomer,
     });
@@ -1264,7 +1339,8 @@ export async function insertOrderRecord(
       order,
       updatedProducts,
       newUdhaarEntry,
-      updatedCustomer
+      updatedCustomer,
+      newUdhaarCustomer
     );
     if (res.networkFailure) {
       enqueueOfflineSale({
@@ -1273,6 +1349,7 @@ export async function insertOrderRecord(
         createdAt: order.createdAt,
         order,
         updatedProducts,
+        newUdhaarCustomer,
         newUdhaarEntry,
         updatedCustomer,
       });
@@ -1390,7 +1467,8 @@ export async function syncOfflineQueue(userId: string): Promise<{
       item.order,
       item.updatedProducts,
       item.newUdhaarEntry,
-      item.updatedCustomer
+      item.updatedCustomer,
+      item.newUdhaarCustomer
     );
 
     if (res.networkFailure) {
@@ -1718,9 +1796,69 @@ export async function upsertStoreSettingsRecord(
     const { error } = await supabase
       .from('store_settings')
       .upsert(mapStoreSettingsToRow(settings, userId));
-    if (error) return error.message;
+    if (error) {
+      if (/jazzcash_account|easypaisa_account/i.test(error.message)) {
+        const { error: coreErr } = await supabase.from('store_settings').upsert({
+          user_id: userId,
+          store_name: settings.storeName,
+          phone: settings.phone,
+          address: settings.address,
+          tax_number: settings.taxNumber,
+          receipt_footer: settings.receiptFooter,
+          updated_at: new Date().toISOString(),
+        });
+        if (coreErr) return coreErr.message;
+        return error.message;
+      }
+      return error.message;
+    }
   }
   return null;
+}
+
+export async function fetchLatestCustomersForPos(userId: string): Promise<{
+  customers: Customer[];
+  udhaarCustomers: UdhaarCustomer[];
+} | null> {
+  if (!isSupabaseConfigured || !supabase) return null;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return null;
+
+  try {
+    const [crmRes, khataRes] = await Promise.all([
+      supabase
+        .from('customers')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('udhaar_customers')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+    ]);
+
+    if (crmRes.error || khataRes.error) return null;
+
+    const customers = (crmRes.data ?? []).map((r) =>
+      mapCustomerFromRow(r as Record<string, unknown>)
+    );
+    const udhaarCustomers = (khataRes.data ?? []).map((r) =>
+      mapUdhaarCustomerFromRow(r as Record<string, unknown>)
+    );
+
+    const ws = loadLocalWorkspace(userId);
+    if (customers.length > 0 || ws.customers.length === 0) {
+      ws.customers = customers;
+    }
+    if (udhaarCustomers.length > 0 || ws.udhaarCustomers.length === 0) {
+      ws.udhaarCustomers = udhaarCustomers;
+    }
+    saveLocalWorkspace(userId, ws);
+
+    return { customers: ws.customers, udhaarCustomers: ws.udhaarCustomers };
+  } catch {
+    return null;
+  }
 }
 
 export async function resetUserDemoWorkspace(

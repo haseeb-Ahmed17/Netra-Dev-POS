@@ -7,7 +7,10 @@ import { ExecutiveDashboardView } from './components/ExecutiveDashboardView';
 import { ExpensesView } from './components/ExpensesView';
 import { InventoryReportView } from './components/InventoryReportView';
 import { InventoryView } from './components/InventoryView';
-import { PosBillingView } from './components/PosBillingView';
+import {
+  PosBillingView,
+  type InlineUdhaarCustomerPayload,
+} from './components/PosBillingView';
 import { PurchasesView } from './components/PurchasesView';
 import { ReceiptModal } from './components/ReceiptModal';
 import { SaasAdminView } from './components/SaasAdminView';
@@ -32,6 +35,7 @@ import {
   deleteProductRecord,
   ensureUserSubscription,
   fetchAllSubscriptions,
+  fetchLatestCustomersForPos,
   fetchWorkspaceData,
   getActiveShopkeeper,
   getOfflineQueue,
@@ -650,6 +654,8 @@ export default function App() {
     discountPercent,
     paymentMethod,
     amountTendered,
+    transactionId,
+    inlineNewUdhaarCustomer,
   }: {
     customerId?: string;
     customerName: string;
@@ -657,6 +663,8 @@ export default function App() {
     discountPercent: number;
     paymentMethod: PaymentMethod;
     amountTendered: number;
+    transactionId?: string;
+    inlineNewUdhaarCustomer?: InlineUdhaarCustomerPayload;
   }): OrderRecord | null => {
     if (!user || cart.length === 0) return null;
 
@@ -715,15 +723,151 @@ export default function App() {
         ? Math.max(0, effectiveTendered - total)
         : 0;
 
-    // Resolve matching CRM customer if selected or matched by Khata customer name
-    let resolvedCustomer = customerId
-      ? customers.find((c) => c.id === customerId)
-      : undefined;
-    if (!resolvedCustomer && customerName) {
-      const lowerName = customerName.trim().toLowerCase();
-      resolvedCustomer = customers.find(
-        (c) => c.name.trim().toLowerCase() === lowerName
-      );
+    const nowTs = Date.now();
+    const nowIso = new Date(nowTs).toISOString();
+    const prefix = user.id.slice(0, 8);
+    const normalizePhone = (p: string) => p.replace(/\D/g, '');
+
+    let newUdhaarCustomer: UdhaarCustomer | undefined;
+    let updatedCustomer: Customer | undefined;
+    let effectiveCustomerId = customerId;
+    let effectiveUdhaarCustomerId = udhaarCustomerId;
+    let effectiveCustomerName = customerName;
+
+    if (paymentMethod === 'udhaar') {
+      if (inlineNewUdhaarCustomer && inlineNewUdhaarCustomer.name.trim()) {
+        const inlineName = inlineNewUdhaarCustomer.name.trim();
+        const inlinePhone = inlineNewUdhaarCustomer.phone.trim();
+        const inlineDigits = normalizePhone(inlinePhone);
+
+        const createdKhata: UdhaarCustomer = {
+          id: `${prefix}-khata-${nowTs}`,
+          name: inlineName,
+          phone: inlinePhone,
+          notes: '',
+          reminderSchedule: inlineNewUdhaarCustomer.reminderSchedule,
+          dueDate: inlineNewUdhaarCustomer.dueDate,
+          createdAt: nowIso,
+        };
+        newUdhaarCustomer = createdKhata;
+        effectiveUdhaarCustomerId = createdKhata.id;
+        effectiveCustomerName = createdKhata.name;
+        setUdhaarCustomers((prev) => [createdKhata, ...prev]);
+
+        const existingCrm = customers.find((c) => {
+          const cDigits = normalizePhone(c.phone);
+          if (inlineDigits && cDigits && inlineDigits === cDigits) return true;
+          return c.name.trim().toLowerCase() === inlineName.toLowerCase();
+        });
+
+        if (existingCrm) {
+          updatedCustomer = {
+            ...existingCrm,
+            balance: existingCrm.balance + total,
+          };
+          effectiveCustomerId = updatedCustomer.id;
+          setCustomers((prev) =>
+            prev.map((c) => (c.id === updatedCustomer!.id ? updatedCustomer! : c))
+          );
+        } else {
+          const createdCrm: Customer = {
+            id: `${prefix}-cust-${nowTs}`,
+            name: inlineName,
+            phone: inlinePhone,
+            address: '',
+            balance: Math.max(0, total),
+            createdAt: nowIso,
+          };
+          updatedCustomer = createdCrm;
+          effectiveCustomerId = createdCrm.id;
+          setCustomers((prev) => [createdCrm, ...prev]);
+        }
+      } else {
+        let resolvedKhata = effectiveUdhaarCustomerId
+          ? udhaarCustomers.find((c) => c.id === effectiveUdhaarCustomerId)
+          : undefined;
+
+        let resolvedCrm = effectiveCustomerId
+          ? customers.find((c) => c.id === effectiveCustomerId)
+          : undefined;
+
+        if (!resolvedCrm && resolvedKhata) {
+          const khDigits = normalizePhone(resolvedKhata.phone);
+          const khName = resolvedKhata.name.trim().toLowerCase();
+          resolvedCrm = customers.find((c) => {
+            if (c.id === resolvedKhata!.id) return true;
+            const cDigits = normalizePhone(c.phone);
+            if (khDigits && cDigits && khDigits === cDigits) return true;
+            return c.name.trim().toLowerCase() === khName;
+          });
+        }
+
+        if (!resolvedKhata && resolvedCrm) {
+          const cDigits = normalizePhone(resolvedCrm.phone);
+          const cName = resolvedCrm.name.trim().toLowerCase();
+          resolvedKhata = udhaarCustomers.find((kh) => {
+            if (kh.id === resolvedCrm!.id) return true;
+            const khDigits = normalizePhone(kh.phone);
+            if (cDigits && khDigits && cDigits === khDigits) return true;
+            return kh.name.trim().toLowerCase() === cName;
+          });
+        }
+
+        if (!resolvedKhata) {
+          const fallbackName =
+            resolvedCrm?.name || effectiveCustomerName.trim() || 'Khata Customer';
+          const createdKhata: UdhaarCustomer = {
+            id: `${prefix}-khata-${nowTs}`,
+            name: fallbackName,
+            phone: resolvedCrm?.phone ?? '',
+            notes: '',
+            reminderSchedule: 'none',
+            createdAt: nowIso,
+          };
+          newUdhaarCustomer = createdKhata;
+          resolvedKhata = createdKhata;
+          setUdhaarCustomers((prev) => [createdKhata, ...prev]);
+        }
+
+        effectiveUdhaarCustomerId = resolvedKhata.id;
+        effectiveCustomerName = resolvedKhata.name || effectiveCustomerName;
+
+        if (resolvedCrm) {
+          updatedCustomer = {
+            ...resolvedCrm,
+            balance: resolvedCrm.balance + total,
+          };
+          effectiveCustomerId = updatedCustomer.id;
+          setCustomers((prev) =>
+            prev.map((c) => (c.id === updatedCustomer!.id ? updatedCustomer! : c))
+          );
+        } else {
+          const createdCrm: Customer = {
+            id: `${prefix}-cust-${nowTs}`,
+            name: resolvedKhata.name,
+            phone: resolvedKhata.phone,
+            address: '',
+            balance: Math.max(0, total),
+            createdAt: nowIso,
+          };
+          updatedCustomer = createdCrm;
+          effectiveCustomerId = createdCrm.id;
+          setCustomers((prev) => [createdCrm, ...prev]);
+        }
+      }
+    } else {
+      let resolvedCustomer = effectiveCustomerId
+        ? customers.find((c) => c.id === effectiveCustomerId)
+        : undefined;
+      if (!resolvedCustomer && effectiveCustomerName) {
+        const lowerName = effectiveCustomerName.trim().toLowerCase();
+        resolvedCustomer = customers.find(
+          (c) => c.name.trim().toLowerCase() === lowerName
+        );
+      }
+      if (resolvedCustomer) {
+        effectiveCustomerId = resolvedCustomer.id;
+      }
     }
 
     const hasReturnItems = lineItems.some((li) => Boolean(li.isReturn));
@@ -738,13 +882,14 @@ export default function App() {
 
     const nextSeq = 1001 + orders.length;
     const newOrder: OrderRecord = {
-      id: `ord-${Date.now()}`,
+      id: `ord-${nowTs}`,
       receiptNumber: `KR-2026-${nextSeq}`,
-      createdAt: new Date().toISOString(),
-      customerId: resolvedCustomer?.id ?? customerId,
-      customerName,
-      udhaarCustomerId,
+      createdAt: nowIso,
+      customerId: effectiveCustomerId,
+      customerName: effectiveCustomerName,
+      udhaarCustomerId: effectiveUdhaarCustomerId,
       paymentMethod,
+      transactionId: transactionId?.trim() || undefined,
       items: lineItems,
       subtotal,
       discountPercent,
@@ -778,13 +923,13 @@ export default function App() {
     });
 
     let newUdhaarEntry: UdhaarEntry | undefined;
-    if (paymentMethod === 'udhaar' && udhaarCustomerId) {
+    if (paymentMethod === 'udhaar' && effectiveUdhaarCustomerId) {
       const summaryLabel = lineItems
         .map((li) => `${li.quantity}x ${lang === 'ur' ? li.nameUr : li.nameEn}`)
         .join(', ');
       newUdhaarEntry = {
-        id: `ue-${Date.now()}`,
-        customerId: udhaarCustomerId,
+        id: `ue-${nowTs}`,
+        customerId: effectiveUdhaarCustomerId,
         type: 'credit',
         amount: total,
         note: `POS Bill ${newOrder.receiptNumber} (${summaryLabel})`,
@@ -792,17 +937,6 @@ export default function App() {
         createdAt: newOrder.createdAt,
       };
       setUdhaarEntries((prev) => [...prev, newUdhaarEntry!]);
-    }
-
-    let updatedCustomer: Customer | undefined;
-    if (paymentMethod === 'udhaar' && resolvedCustomer) {
-      updatedCustomer = {
-        ...resolvedCustomer,
-        balance: resolvedCustomer.balance + total,
-      };
-      setCustomers((prev) =>
-        prev.map((c) => (c.id === updatedCustomer!.id ? updatedCustomer! : c))
-      );
     }
 
     setProducts(updatedProducts);
@@ -816,7 +950,8 @@ export default function App() {
       newOrder,
       updatedProducts,
       newUdhaarEntry,
-      updatedCustomer
+      updatedCustomer,
+      newUdhaarCustomer
     ).then(({ syncError, queuedOffline }) => {
       setPendingSyncCount(getOfflineQueue(user.id).length);
       if (queuedOffline) {
@@ -1551,6 +1686,48 @@ export default function App() {
       .finally(() => setLoadingData(false));
   };
 
+  const handleRefreshCustomersForPos = useCallback(() => {
+    if (!user) return;
+    void fetchLatestCustomersForPos(user.id).then((latest) => {
+      if (!latest) return;
+      setCustomers(latest.customers);
+      setUdhaarCustomers(latest.udhaarCustomers);
+    });
+  }, [user]);
+
+  const handleCreateInlineKhataCustomer = (payload: InlineUdhaarCustomerPayload) => {
+    const cleanName = payload.name.trim();
+    const cleanPhone = payload.phone.trim();
+    const normalizePhone = (p: string) => p.replace(/\D/g, '');
+    const digits = normalizePhone(cleanPhone);
+
+    const existingCrm = customers.find((c) => {
+      const cDigits = normalizePhone(c.phone);
+      if (digits && cDigits && digits === cDigits) return true;
+      return c.name.trim().toLowerCase() === cleanName.toLowerCase();
+    });
+
+    const crmCustomer =
+      existingCrm ??
+      handleAddCustomer({
+        name: cleanName,
+        phone: cleanPhone,
+        address: '',
+        balance: 0,
+      });
+
+    const khataCustomer = handleAddUdhaarCustomer({
+      name: cleanName,
+      phone: cleanPhone,
+      notes: '',
+      openingBalance: 0,
+      reminderSchedule: payload.reminderSchedule,
+      dueDate: payload.dueDate,
+    });
+
+    return { crmCustomer, khataCustomer };
+  };
+
   if (!authReady) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
@@ -1658,7 +1835,10 @@ export default function App() {
                 customers={customers}
                 udhaarCustomers={udhaarCustomers}
                 udhaarEntries={udhaarEntries}
+                storeSettings={storeSettings}
                 canViewDashboard={activeRole !== 'cashier'}
+                onRefreshUdhaarCustomers={handleRefreshCustomersForPos}
+                onCreateInlineKhataCustomer={handleCreateInlineKhataCustomer}
                 onAddToCart={handleAddToCart}
                 onUpdateQuantity={handleUpdateQuantity}
                 onToggleReturn={handleToggleCartItemReturn}

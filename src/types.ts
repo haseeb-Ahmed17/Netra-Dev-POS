@@ -91,6 +91,7 @@ export interface OrderRecord {
   total: number;
   amountTendered: number;
   changeDue: number;
+  transactionId?: string;
   returnStatus?: ReturnStatus;
   refundedAmount?: number;
   returnedAt?: string;
@@ -211,6 +212,10 @@ export interface StoreSettings {
   address: string;
   taxNumber: string;
   receiptFooter: string;
+  jazzcashAccountTitle?: string;
+  jazzcashAccountNumber?: string;
+  easypaisaAccountTitle?: string;
+  easypaisaAccountNumber?: string;
 }
 
 // Phase 4: Offline Queue & Sync
@@ -220,6 +225,7 @@ export interface OfflineQueuedSale {
   createdAt: string;
   order: OrderRecord;
   updatedProducts: Product[];
+  newUdhaarCustomer?: UdhaarCustomer;
   newUdhaarEntry?: UdhaarEntry;
   updatedCustomer?: Customer;
 }
