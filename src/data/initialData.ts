@@ -1,6 +1,7 @@
 import type {
   Customer,
   Employee,
+  ExpenseRecord,
   InventoryAdjustment,
   OrderRecord,
   Product,
@@ -422,6 +423,15 @@ export function createInitialOrders(): OrderRecord[] {
   ];
 }
 
+function dateInputOffset(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export function createInitialUdhaarCustomers(): UdhaarCustomer[] {
   return [
     {
@@ -429,6 +439,8 @@ export function createInitialUdhaarCustomers(): UdhaarCustomer[] {
       name: 'Bilal Qureshi',
       phone: '0300-4128890',
       notes: 'Regular office account — Gulberg Block B',
+      reminderSchedule: '1_week',
+      dueDate: dateInputOffset(-1), // Overdue yesterday
       createdAt: daysAgo(12, 10),
     },
     {
@@ -436,6 +448,8 @@ export function createInitialUdhaarCustomers(): UdhaarCustomer[] {
       name: 'Ayesha Siddiqui',
       phone: '0321-8451902',
       notes: 'Monthly household pantry account',
+      reminderSchedule: '3_days',
+      dueDate: dateInputOffset(0), // Due today
       createdAt: daysAgo(9, 12),
     },
     {
@@ -443,6 +457,7 @@ export function createInitialUdhaarCustomers(): UdhaarCustomer[] {
       name: 'Tariq Mehmood',
       phone: '0333-4902211',
       notes: 'Bakery & tea orders',
+      reminderSchedule: 'none',
       createdAt: daysAgo(5, 16),
     },
   ];
@@ -715,3 +730,36 @@ export function createDefaultStoreSettings(shopName = 'Khaas Retail'): StoreSett
     receiptFooter: 'Thank you for shopping at Khaas Retail!',
   };
 }
+
+export function createInitialExpenses(): ExpenseRecord[] {
+  return [
+    {
+      id: 'exp-1',
+      title: 'Shop Counter Tea & Packaging Bags',
+      category: 'Supplies',
+      amount: 650,
+      notes: 'Daily carry bags and counter hospitality',
+      expenseDate: dateInputOffset(0),
+      createdAt: todayAtHour(11, 15),
+    },
+    {
+      id: 'exp-2',
+      title: 'Electricity & Backup Generator Fuel',
+      category: 'Electricity',
+      amount: 1450,
+      notes: 'UPS & generator fuel refill',
+      expenseDate: dateInputOffset(0),
+      createdAt: todayAtHour(13, 40),
+    },
+    {
+      id: 'exp-3',
+      title: 'Monthly Shop Maintenance & Cleaning',
+      category: 'Maintenance',
+      amount: 3200,
+      notes: 'AC servicing & floor sanitation',
+      expenseDate: dateInputOffset(-3),
+      createdAt: daysAgo(3, 15),
+    },
+  ];
+}
+

@@ -1,12 +1,23 @@
-import { Languages, Lock, LogOut, RefreshCw, UserCheck, WifiOff } from 'lucide-react';
+import {
+  Languages,
+  Lock,
+  LogOut,
+  RefreshCw,
+  ShieldCheck,
+  UserCheck,
+  WifiOff,
+} from 'lucide-react';
 import type { TranslationStrings } from '../i18n';
-import type { EmployeeRole, Language, NavTab } from '../types';
+import type { EmployeeRole, Language, NavTab, SubscriptionRecord } from '../types';
+import { getDaysRemaining } from './SaasAdminView';
 
 interface TopBarProps {
   activeTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
   activeRole: EmployeeRole;
   activeEmployeeName: string;
+  isSuperAdmin: boolean;
+  subscription: SubscriptionRecord | null;
   onOpenStaffSwitcher: () => void;
   onLockScreen: () => void;
   isOnline: boolean;
@@ -29,6 +40,7 @@ const ROLE_ALLOWED_TABS: Record<EmployeeRole, NavTab[]> = {
     'inventory_report',
     'purchases',
     'vendors',
+    'expenses',
     'customers',
     'udhaar',
     'staff',
@@ -42,6 +54,7 @@ const ROLE_ALLOWED_TABS: Record<EmployeeRole, NavTab[]> = {
     'inventory_report',
     'purchases',
     'vendors',
+    'expenses',
     'customers',
     'udhaar',
   ],
@@ -53,6 +66,8 @@ export function TopBar({
   onSelectTab,
   activeRole,
   activeEmployeeName,
+  isSuperAdmin,
+  subscription,
   onOpenStaffSwitcher,
   onLockScreen,
   isOnline,
@@ -73,13 +88,18 @@ export function TopBar({
     { id: 'inventory_report', label: t.navInventoryReport },
     { id: 'purchases', label: t.navPurchases },
     { id: 'vendors', label: t.navVendors },
+    { id: 'expenses', label: t.navExpenses },
     { id: 'customers', label: t.navCustomers },
     { id: 'udhaar', label: t.navUdhaar },
     { id: 'staff', label: t.navStaff },
     { id: 'settings', label: t.navSettings },
+    ...(isSuperAdmin ? [{ id: 'saas_admin' as NavTab, label: t.navSaasAdmin }] : []),
   ];
 
   const allowedSet = new Set(ROLE_ALLOWED_TABS[activeRole]);
+  if (isSuperAdmin) {
+    allowedSet.add('saas_admin');
+  }
   const visibleNavItems = allNavItems.filter((item) => allowedSet.has(item.id));
 
   const roleLabel =
@@ -89,19 +109,52 @@ export function TopBar({
       ? t.roleManager
       : t.roleCashier;
 
+  const daysRemaining = subscription
+    ? Math.max(0, getDaysRemaining(subscription.expiresAt))
+    : null;
+
   return (
     <header className="no-print sticky top-0 z-30 bg-white border-b border-slate-200">
       {/* Row 1: Store Wordmark & Utility Actions */}
       <div className="max-w-[1440px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3 border-b border-slate-100">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0">
           <button
             type="button"
             onClick={() => onSelectTab('pos')}
-            className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 max-w-[200px] truncate focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700 cursor-pointer"
+            className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 max-w-[180px] truncate focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700 cursor-pointer"
             title={shopName || t.brandName}
           >
             {shopName || t.brandName}
           </button>
+
+          {/* Subtle Subscription Trial / License Days Badge */}
+          {isSuperAdmin ? (
+            <button
+              type="button"
+              onClick={() => onSelectTab('saas_admin')}
+              className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-teal-300 shrink-0" aria-hidden="true" />
+              <span>{t.superAdminBadge}</span>
+            </button>
+          ) : subscription ? (
+            <span
+              className={`hidden sm:inline-flex items-center px-2.5 py-1 rounded-md text-xs font-mono font-semibold tabular-nums whitespace-nowrap border ${
+                subscription.isBlocked
+                  ? 'bg-red-50 text-red-700 border-red-200'
+                  : (daysRemaining ?? 0) <= 5
+                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : 'bg-slate-100 text-slate-700 border-slate-200'
+              }`}
+              title={subscription.planName}
+            >
+              {subscription.isBlocked
+                ? t.accountBlockedBadge
+                : (daysRemaining ?? 0) <= 0
+                ? t.trialExpiredBadge
+                : `${daysRemaining} ${t.daysLeftSuffix}`}
+            </span>
+          ) : null}
 
           {/* Live Online / Offline Connection Status Badge */}
           <div className="flex items-center gap-1.5 shrink-0">
@@ -121,10 +174,10 @@ export function TopBar({
               ) : (
                 <WifiOff className="w-3.5 h-3.5 text-amber-700 shrink-0" aria-hidden="true" />
               )}
-              <span className="hidden md:inline">
+              <span className="hidden lg:inline">
                 {isOnline ? t.onlineStatusLabel : t.offlineStatusLabel}
               </span>
-              <span className="md:hidden">
+              <span className="lg:hidden">
                 {isOnline ? 'Online' : 'Offline'}
               </span>
             </span>
@@ -162,7 +215,7 @@ export function TopBar({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[38px] cursor-pointer"
           >
             <UserCheck className="w-3.5 h-3.5 text-teal-700 shrink-0" aria-hidden="true" />
-            <span className="max-w-[130px] truncate">{activeEmployeeName}</span>
+            <span className="max-w-[120px] truncate">{activeEmployeeName}</span>
             <span className="text-[11px] font-medium text-teal-700 hidden sm:inline">
               · {roleLabel}
             </span>

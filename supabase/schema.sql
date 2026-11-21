@@ -380,3 +380,105 @@ create policy "Shopkeepers manage own store settings"
   to authenticated
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- 14. Udhaar Customers WhatsApp Phone & Scheduled Reminder Columns
+alter table public.udhaar_customers add column if not exists customer_phone text not null default '';
+alter table public.udhaar_customers add column if not exists reminder_schedule text not null default 'none';
+alter table public.udhaar_customers add column if not exists due_date date;
+
+-- 15. Daily Shop Expenses Table
+create table if not exists public.expenses (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  title text not null,
+  category text not null default 'Other',
+  amount numeric not null check (amount >= 0),
+  notes text not null default '',
+  expense_date date not null default current_date,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_expenses_user_id on public.expenses(user_id);
+create index if not exists idx_expenses_date on public.expenses(expense_date);
+
+grant select, insert, update, delete on table public.expenses to authenticated;
+grant all privileges on table public.expenses to service_role;
+
+alter table public.expenses enable row level security;
+
+drop policy if exists "Shopkeepers manage own expenses" on public.expenses;
+create policy "Shopkeepers manage own expenses"
+  on public.expenses
+  for all
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- 16. SaaS Subscriptions & Trial Lock Table
+create table if not exists public.subscriptions (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  email text not null,
+  shop_name text not null default '',
+  plan_name text not null default '30-Day Free Trial',
+  expires_at timestamptz not null default (now() + interval '30 days'),
+  is_blocked boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.subscriptions add column if not exists shop_name text not null default '';
+alter table public.subscriptions add column if not exists updated_at timestamptz not null default now();
+
+create index if not exists idx_subscriptions_email on public.subscriptions(email);
+
+grant select, insert, update, delete on table public.subscriptions to authenticated;
+grant all privileges on table public.subscriptions to service_role;
+
+alter table public.subscriptions enable row level security;
+
+drop policy if exists "Users read own subscription" on public.subscriptions;
+create policy "Users read own subscription"
+  on public.subscriptions
+  for select
+  to authenticated
+  using (
+    auth.uid() = user_id
+    or lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
+    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
+  );
+
+drop policy if exists "Users create initial trial subscription" on public.subscriptions;
+create policy "Users create initial trial subscription"
+  on public.subscriptions
+  for insert
+  to authenticated
+  with check (
+    (auth.uid() = user_id and is_blocked = false)
+    or lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
+    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
+  );
+
+drop policy if exists "Super admin manages all subscriptions" on public.subscriptions;
+create policy "Super admin manages all subscriptions"
+  on public.subscriptions
+  for update
+  to authenticated
+  using (
+    lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
+    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
+  )
+  with check (
+    lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
+    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
+  );
+
+drop policy if exists "Super admin deletes subscriptions" on public.subscriptions;
+create policy "Super admin deletes subscriptions"
+  on public.subscriptions
+  for delete
+  to authenticated
+  using (
+    lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
+    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
+  );
+

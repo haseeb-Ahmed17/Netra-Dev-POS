@@ -9,10 +9,12 @@ export interface TranslationStrings {
   navInventoryReport: string;
   navPurchases: string;
   navVendors: string;
+  navExpenses: string;
   navCustomers: string;
   navUdhaar: string;
   navStaff: string;
   navSettings: string;
+  navSaasAdmin: string;
   langToggleLabel: string;
 
   // POS Billing
@@ -427,6 +429,79 @@ export interface TranslationStrings {
   syncingNowLabel: string;
   offlineSaleQueuedNotice: string;
   offlineSyncedToast: string;
+
+  // Phase 5: SaaS Subscription Lock, Super Admin, Expenses, WhatsApp Reminders
+  daysLeftSuffix: string;
+  trialExpiredBadge: string;
+  accountBlockedBadge: string;
+  superAdminBadge: string;
+  subLockTitle: string;
+  subLockDesc: string;
+  subLockWhatsappBtn: string;
+  subLockRefreshBtn: string;
+  subLockEmailLabel: string;
+  subLockPlanLabel: string;
+  subLockExpiryLabel: string;
+
+  saasAdminTitle: string;
+  saasAdminSubtitle: string;
+  totalTenantsLabel: string;
+  activeTenantsLabel: string;
+  expiredBlockedLabel: string;
+  searchTenantsPlaceholder: string;
+  extend30DaysBtn: string;
+  extend1YearBtn: string;
+  blockUserBtn: string;
+  unblockUserBtn: string;
+  statusActiveLabel: string;
+  statusExpiredLabel: string;
+  statusBlockedLabel: string;
+  tenantEmailCol: string;
+  tenantShopCol: string;
+  tenantPlanCol: string;
+  tenantExpiryCol: string;
+  noTenantsFound: string;
+  refreshListBtn: string;
+
+  expensesTitle: string;
+  expensesSubtitle: string;
+  addExpenseBtn: string;
+  editExpenseTitle: string;
+  addExpenseTitle: string;
+  expenseTitleLabel: string;
+  expenseCategoryLabel: string;
+  expenseAmountLabel: string;
+  expenseDateLabel: string;
+  expenseNotesLabel: string;
+  saveExpenseBtn: string;
+  todayExpensesLabel: string;
+  monthExpensesLabel: string;
+  yearExpensesLabel: string;
+  totalExpensesLabel: string;
+  noExpensesFound: string;
+  expCatRent: string;
+  expCatElectricity: string;
+  expCatSalary: string;
+  expCatSupplies: string;
+  expCatMaintenance: string;
+  expCatOther: string;
+  netProfitAfterExpensesLabel: string;
+
+  customerWhatsappLabel: string;
+  reminderScheduleLabel: string;
+  scheduleNone: string;
+  schedule3Days: string;
+  schedule1Week: string;
+  schedule2Weeks: string;
+  schedule1Month: string;
+  scheduleCustom: string;
+  dueDateLabel: string;
+  dueRemindersTitle: string;
+  dueTodayLabel: string;
+  overdueLabel: string;
+  sendWhatsappBtn: string;
+  editReminderBtn: string;
+  noDueReminders: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -439,10 +514,12 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navInventoryReport: 'Inventory Report',
     navPurchases: 'Purchases',
     navVendors: 'Vendors',
+    navExpenses: 'Expenses',
     navCustomers: 'Customers',
     navUdhaar: 'Udhaar / Khata',
     navStaff: 'Staff & Permissions',
     navSettings: 'Store Settings',
+    navSaasAdmin: 'SaaS Admin',
     langToggleLabel: 'اردو',
 
     posTitle: 'Point of Sale Register',
@@ -843,6 +920,81 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     syncingNowLabel: 'Syncing...',
     offlineSaleQueuedNotice: 'Offline sale saved locally to queue and ready for auto-sync.',
     offlineSyncedToast: 'offline sale(s) & stock updates synced to Supabase cloud.',
+
+    daysLeftSuffix: 'Days Left',
+    trialExpiredBadge: 'License Expired',
+    accountBlockedBadge: 'Account Blocked',
+    superAdminBadge: 'Super Admin',
+    subLockTitle: 'Subscription Expired / Account Locked',
+    subLockDesc:
+      'Subscription Expired / Account Locked — Contact Haseeb Ahmed (Netra-Dev Solutions) on WhatsApp to renew your license.',
+    subLockWhatsappBtn: 'Contact Haseeb Ahmed on WhatsApp',
+    subLockRefreshBtn: 'Check Renewal Status',
+    subLockEmailLabel: 'Account Email',
+    subLockPlanLabel: 'Current Plan',
+    subLockExpiryLabel: 'Expiry Date',
+
+    saasAdminTitle: 'SaaS Admin — License & Subscription Control',
+    saasAdminSubtitle:
+      'Manage registered shopkeepers, extend trial/annual licenses, or block/unblock store accounts',
+    totalTenantsLabel: 'Registered Shopkeepers',
+    activeTenantsLabel: 'Active Licenses',
+    expiredBlockedLabel: 'Expired / Blocked',
+    searchTenantsPlaceholder: 'Search shopkeeper email, shop name, or plan...',
+    extend30DaysBtn: 'Extend +30 Days',
+    extend1YearBtn: 'Extend +1 Year',
+    blockUserBtn: 'Block',
+    unblockUserBtn: 'Unblock',
+    statusActiveLabel: 'Active',
+    statusExpiredLabel: 'Expired',
+    statusBlockedLabel: 'Blocked',
+    tenantEmailCol: 'Shopkeeper Email',
+    tenantShopCol: 'Store Name',
+    tenantPlanCol: 'Plan',
+    tenantExpiryCol: 'Expires On',
+    noTenantsFound: 'No shopkeeper subscriptions match your filter.',
+    refreshListBtn: 'Refresh List',
+
+    expensesTitle: 'Daily Shop Expenses',
+    expensesSubtitle:
+      'Record rent, electricity, staff salaries, and daily operating costs to calculate true Net Profit',
+    addExpenseBtn: 'Add Expense',
+    editExpenseTitle: 'Edit Expense',
+    addExpenseTitle: 'Add Shop Expense',
+    expenseTitleLabel: 'Expense Title',
+    expenseCategoryLabel: 'Category',
+    expenseAmountLabel: 'Amount (Rs.)',
+    expenseDateLabel: 'Expense Date',
+    expenseNotesLabel: 'Notes (optional)',
+    saveExpenseBtn: 'Save Expense',
+    todayExpensesLabel: "Today's Expenses",
+    monthExpensesLabel: "This Month's Expenses",
+    yearExpensesLabel: "This Year's Expenses",
+    totalExpensesLabel: 'Total Expenses',
+    noExpensesFound: 'No expenses recorded for the current filter.',
+    expCatRent: 'Rent',
+    expCatElectricity: 'Electricity',
+    expCatSalary: 'Staff Salary',
+    expCatSupplies: 'Supplies',
+    expCatMaintenance: 'Maintenance',
+    expCatOther: 'Other',
+    netProfitAfterExpensesLabel: 'Net Profit After Expenses',
+
+    customerWhatsappLabel: 'Customer WhatsApp Phone',
+    reminderScheduleLabel: 'Reminder Schedule',
+    scheduleNone: 'No Reminder',
+    schedule3Days: '3 Days',
+    schedule1Week: '1 Week',
+    schedule2Weeks: '2 Weeks',
+    schedule1Month: '1 Month',
+    scheduleCustom: 'Custom Date',
+    dueDateLabel: 'Due Date',
+    dueRemindersTitle: 'Due Reminders',
+    dueTodayLabel: 'Due Today',
+    overdueLabel: 'Overdue',
+    sendWhatsappBtn: 'Send WhatsApp',
+    editReminderBtn: 'Reminder Schedule',
+    noDueReminders: 'No Udhaar reminders due today or overdue.',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -853,10 +1005,12 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navInventoryReport: 'اسٹاک رپورٹ',
     navPurchases: 'خریداری / اسٹاک ان',
     navVendors: 'سپلائرز',
+    navExpenses: 'اخراجات',
     navCustomers: 'گاہک',
     navUdhaar: 'ادھار / کھاتہ',
     navStaff: 'اسٹاف و پرمیشنز',
     navSettings: 'اسٹور سیٹنگز',
+    navSaasAdmin: 'سپر ایڈمن پینل',
     langToggleLabel: 'English',
 
     posTitle: 'پوائنٹ آف سیل رجسٹر',
@@ -1257,6 +1411,81 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     syncingNowLabel: 'سنک ہو رہا ہے...',
     offlineSaleQueuedNotice: 'آف لائن سیل مقامی قطار میں محفوظ ہو گئی اور انٹرنیٹ آتے ہی سنک ہو گی۔',
     offlineSyncedToast: 'آف لائن سیلز اور اسٹاک اپڈیٹس کامیابی سے کلاؤڈ پر سنک ہو گئیں۔',
+
+    daysLeftSuffix: 'دن باقی',
+    trialExpiredBadge: 'لائسنس ختم',
+    accountBlockedBadge: 'اکاؤنٹ بلاک',
+    superAdminBadge: 'سپر ایڈمن',
+    subLockTitle: 'سبسکرپشن ختم / اکاؤنٹ لاک',
+    subLockDesc:
+      'آپ کی سبسکرپشن ختم ہو چکی ہے یا اکاؤنٹ لاک ہے۔ لائسنس کی تجدید کے لیے حسیب احمد (Netra-Dev Solutions) سے واٹس ایپ پر رابطہ کریں۔',
+    subLockWhatsappBtn: 'حسیب احمد سے واٹس ایپ پر رابطہ کریں',
+    subLockRefreshBtn: 'لائسنس اسٹیٹس چیک کریں',
+    subLockEmailLabel: 'اکاؤنٹ ای میل',
+    subLockPlanLabel: 'موجودہ پلان',
+    subLockExpiryLabel: 'آخری تاریخ',
+
+    saasAdminTitle: 'SaaS سپر ایڈمن — لائسنس اور سبسکرپشن کنٹرول',
+    saasAdminSubtitle:
+      'تمام رجسٹرڈ دکانداروں کے لائسنس دیکھیں، مدت میں توسیع کریں یا اکاؤنٹ بلاک/ان بلاک کریں',
+    totalTenantsLabel: 'کل رجسٹرڈ دکاندار',
+    activeTenantsLabel: 'فعال لائسنس',
+    expiredBlockedLabel: 'ختم شدہ / بلاک',
+    searchTenantsPlaceholder: 'ای میل، اسٹور کا نام یا پلان تلاش کریں...',
+    extend30DaysBtn: '+30 دن توسیع',
+    extend1YearBtn: '+1 سال توسیع',
+    blockUserBtn: 'بلاک کریں',
+    unblockUserBtn: 'ان بلاک کریں',
+    statusActiveLabel: 'فعال',
+    statusExpiredLabel: 'ختم شدہ',
+    statusBlockedLabel: 'بلاک شدہ',
+    tenantEmailCol: 'دکاندار ای میل',
+    tenantShopCol: 'اسٹور کا نام',
+    tenantPlanCol: 'پلان',
+    tenantExpiryCol: 'میعاد ختم',
+    noTenantsFound: 'کوئی دکاندار اکاؤنٹ نہیں ملا۔',
+    refreshListBtn: 'فہرست تازہ کریں',
+
+    expensesTitle: 'دکان کے روزانہ اخراجات',
+    expensesSubtitle:
+      'کرایہ، بجلی، ملازمین کی تنخواہ اور روزانہ کے اخراجات درج کریں تاکہ اصل خالص منافع معلوم ہو سکے',
+    addExpenseBtn: 'نیا خرچہ شامل کریں',
+    editExpenseTitle: 'خرچہ میں ترمیم کریں',
+    addExpenseTitle: 'نیا خرچہ درج کریں',
+    expenseTitleLabel: 'خرچہ کی تفصیل / عنوان',
+    expenseCategoryLabel: 'زمرہ',
+    expenseAmountLabel: 'رقم (روپے)',
+    expenseDateLabel: 'تاریخ',
+    expenseNotesLabel: 'نوٹ (اختیاری)',
+    saveExpenseBtn: 'خرچہ محفوظ کریں',
+    todayExpensesLabel: 'آج کے اخراجات',
+    monthExpensesLabel: 'اس ماہ کے اخراجات',
+    yearExpensesLabel: 'اس سال کے اخراجات',
+    totalExpensesLabel: 'کل اخراجات',
+    noExpensesFound: 'موجودہ فلٹر کے مطابق کوئی خرچہ درج نہیں ہے۔',
+    expCatRent: 'کرایہ',
+    expCatElectricity: 'بجلی بل / فیول',
+    expCatSalary: 'اسٹاف تنخواہ',
+    expCatSupplies: 'سامان / شاپنگ بیگز',
+    expCatMaintenance: 'مرمت و صفائی',
+    expCatOther: 'دیگر اخراجات',
+    netProfitAfterExpensesLabel: 'اخراجات کے بعد خالص منافع',
+
+    customerWhatsappLabel: 'گاہک کا واٹس ایپ نمبر',
+    reminderScheduleLabel: 'یاد دہانی کا شیڈول',
+    scheduleNone: 'کوئی یاد دہانی نہیں',
+    schedule3Days: '3 دن بعد',
+    schedule1Week: '1 ہفتہ بعد',
+    schedule2Weeks: '2 ہفتے بعد',
+    schedule1Month: '1 مہینہ بعد',
+    scheduleCustom: 'مخصوص تاریخ',
+    dueDateLabel: 'واجب الادا تاریخ',
+    dueRemindersTitle: 'واجب الادا یاد دہانیاں',
+    dueTodayLabel: 'آج واجب الادا',
+    overdueLabel: 'تاخیر شدہ',
+    sendWhatsappBtn: 'واٹس ایپ بھیجیں',
+    editReminderBtn: 'یاد دہانی شیڈول',
+    noDueReminders: 'آج کوئی واجب الادا یا تاخیر شدہ ادھار یاد دہانی نہیں ہے۔',
   },
 };
 

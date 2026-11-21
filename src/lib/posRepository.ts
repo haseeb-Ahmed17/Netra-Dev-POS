@@ -3,6 +3,7 @@ import {
   createDefaultStoreSettings,
   createInitialCustomers,
   createInitialEmployees,
+  createInitialExpenses,
   createInitialInventoryAdjustments,
   createInitialOrders,
   createInitialPurchases,
@@ -13,19 +14,34 @@ import {
 import type {
   Customer,
   Employee,
+  ExpenseRecord,
   InventoryAdjustment,
   OfflineQueuedSale,
   OrderRecord,
   Product,
   PurchaseItem,
   PurchaseRecord,
+  ReminderSchedule,
   ShopkeeperUser,
   StoreSettings,
+  SubscriptionRecord,
   UdhaarCustomer,
   UdhaarEntry,
   Vendor,
 } from '../types';
 import { isSupabaseConfigured, supabase } from './supabaseClient';
+
+export const SUPER_ADMIN_EMAIL = 'bc260436573mha@gmail.com';
+export const SUPER_ADMIN_PREFIX = 'bc260436573';
+
+export function isSuperAdminEmail(email?: string | null): boolean {
+  const normalized = (email ?? '').trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized === SUPER_ADMIN_EMAIL ||
+    normalized.startsWith(SUPER_ADMIN_PREFIX)
+  );
+}
 
 export interface ShopkeeperWorkspaceData {
   products: Product[];
@@ -37,6 +53,7 @@ export interface ShopkeeperWorkspaceData {
   inventoryAdjustments: InventoryAdjustment[];
   customers: Customer[];
   employees: Employee[];
+  expenses: ExpenseRecord[];
   storeSettings: StoreSettings;
   cloudSyncError?: string | null;
   isOffline?: boolean;
@@ -51,6 +68,7 @@ interface StoredLocalAccount {
 
 const LOCAL_ACCOUNTS_KEY = 'khaas_pos_local_accounts_v1';
 const LOCAL_SESSION_KEY = 'khaas_pos_local_session_v1';
+const LOCAL_SUBSCRIPTIONS_KEY = 'khaas_pos_subscriptions_v1';
 export const OFFLINE_QUEUE_KEY = 'netra_offline_queue';
 
 function userDataKey(userId: string): string {
@@ -182,6 +200,7 @@ function buildStarterWorkspace(
       inventoryAdjustments: [],
       customers: [],
       employees: [buildDefaultAdminEmployee(userId)],
+      expenses: [],
       storeSettings: defaultSettings,
     };
   }
@@ -235,6 +254,10 @@ function buildStarterWorkspace(
       ...emp,
       id: `${prefix}-${emp.id}`,
     })),
+    expenses: createInitialExpenses().map((exp) => ({
+      ...exp,
+      id: `${prefix}-${exp.id}`,
+    })),
     storeSettings: defaultSettings,
   };
 }
@@ -257,6 +280,12 @@ function loadLocalWorkspace(userId: string, shopName?: string): ShopkeeperWorksp
             id: `${userId.slice(0, 8)}-${c.id}`,
           }))
         : [];
+      const fallbackExpenses = isDemo
+        ? createInitialExpenses().map((exp) => ({
+            ...exp,
+            id: `${userId.slice(0, 8)}-${exp.id}`,
+          }))
+        : [];
       return {
         products: parsed.products ?? [],
         orders: parsed.orders ?? [],
@@ -270,6 +299,7 @@ function loadLocalWorkspace(userId: string, shopName?: string): ShopkeeperWorksp
           parsed.employees && parsed.employees.length > 0
             ? parsed.employees
             : fallbackEmployees,
+        expenses: parsed.expenses ?? fallbackExpenses,
         storeSettings:
           parsed.storeSettings ?? createDefaultStoreSettings(shopName || 'Khaas Retail'),
       };
@@ -585,12 +615,29 @@ function mapOrderToRow(order: OrderRecord, userId: string) {
 }
 
 function mapUdhaarCustomerFromRow(row: Record<string, unknown>): UdhaarCustomer {
+  const schedule = (row.reminder_schedule as ReminderSchedule) || 'none';
   return {
     id: String(row.id),
     name: String(row.name),
-    phone: String(row.phone ?? ''),
+    phone: String(row.customer_phone || row.phone || ''),
     notes: String(row.notes ?? ''),
+    reminderSchedule: schedule,
+    dueDate: row.due_date ? String(row.due_date).slice(0, 10) : undefined,
     createdAt: String(row.created_at),
+  };
+}
+
+function mapUdhaarCustomerToRow(customer: UdhaarCustomer, userId: string) {
+  return {
+    id: customer.id,
+    user_id: userId,
+    name: customer.name,
+    phone: customer.phone,
+    customer_phone: customer.phone,
+    notes: customer.notes ?? '',
+    reminder_schedule: customer.reminderSchedule ?? 'none',
+    due_date: customer.dueDate || null,
+    created_at: customer.createdAt,
   };
 }
 
@@ -756,6 +803,44 @@ function mapStoreSettingsToRow(settings: StoreSettings, userId: string) {
   };
 }
 
+function mapExpenseFromRow(row: Record<string, unknown>): ExpenseRecord {
+  return {
+    id: String(row.id),
+    title: String(row.title),
+    category: (row.category as ExpenseRecord['category']) || 'Other',
+    amount: Number(row.amount ?? 0),
+    notes: String(row.notes ?? ''),
+    expenseDate: String(row.expense_date ?? '').slice(0, 10),
+    createdAt: String(row.created_at),
+  };
+}
+
+function mapExpenseToRow(expense: ExpenseRecord, userId: string) {
+  return {
+    id: expense.id,
+    user_id: userId,
+    title: expense.title,
+    category: expense.category,
+    amount: Math.max(0, expense.amount),
+    notes: expense.notes,
+    expense_date: expense.expenseDate,
+    created_at: expense.createdAt,
+  };
+}
+
+function mapSubscriptionFromRow(row: Record<string, unknown>): SubscriptionRecord {
+  return {
+    userId: String(row.user_id),
+    email: String(row.email ?? ''),
+    shopName: row.shop_name ? String(row.shop_name) : undefined,
+    planName: String(row.plan_name ?? '30-Day Free Trial'),
+    expiresAt: String(row.expires_at),
+    isBlocked: Boolean(row.is_blocked),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
 export async function fetchWorkspaceData(
   userId: string,
   shopName?: string
@@ -776,6 +861,7 @@ export async function fetchWorkspaceData(
         adjRes,
         crmCustRes,
         empRes,
+        expRes,
         settingsRes,
       ] = await Promise.all([
         supabase
@@ -825,6 +911,11 @@ export async function fetchWorkspaceData(
           .eq('user_id', userId)
           .order('created_at', { ascending: true }),
         supabase
+          .from('expenses')
+          .select('*')
+          .eq('user_id', userId)
+          .order('expense_date', { ascending: false }),
+        supabase
           .from('store_settings')
           .select('*')
           .eq('user_id', userId)
@@ -842,6 +933,7 @@ export async function fetchWorkspaceData(
         adjRes.error ||
         crmCustRes.error ||
         empRes.error ||
+        expRes.error ||
         settingsRes.error;
 
       if (firstError) {
@@ -879,6 +971,7 @@ export async function fetchWorkspaceData(
       const inventoryAdjustments = (adjRes.data ?? []).map(mapAdjustmentFromRow);
       let customers = (crmCustRes.data ?? []).map(mapCustomerFromRow);
       let employees = (empRes.data ?? []).map(mapEmployeeFromRow);
+      const expenses = (expRes.data ?? []).map(mapExpenseFromRow);
       let storeSettings = mapStoreSettingsFromRow(
         settingsRes.data as Record<string, unknown> | null,
         shopName
@@ -958,6 +1051,7 @@ export async function fetchWorkspaceData(
         inventoryAdjustments,
         customers,
         employees,
+        expenses,
         storeSettings,
         cloudSyncError: seedError,
         isOffline: false,
@@ -972,6 +1066,7 @@ export async function fetchWorkspaceData(
         inventoryAdjustments,
         customers,
         employees,
+        expenses,
         storeSettings,
       });
       return workspace;
@@ -1270,14 +1365,9 @@ export async function insertUdhaarCustomerRecord(
   saveLocalWorkspace(userId, ws);
 
   if (isSupabaseConfigured && supabase) {
-    const { error: custErr } = await supabase.from('udhaar_customers').insert({
-      id: customer.id,
-      user_id: userId,
-      name: customer.name,
-      phone: customer.phone,
-      notes: customer.notes ?? '',
-      created_at: customer.createdAt,
-    });
+    const { error: custErr } = await supabase
+      .from('udhaar_customers')
+      .upsert(mapUdhaarCustomerToRow(customer, userId));
     if (custErr) return custErr.message;
 
     if (openingEntry) {
@@ -1293,6 +1383,25 @@ export async function insertUdhaarCustomerRecord(
       });
       if (ueErr) return ueErr.message;
     }
+  }
+  return null;
+}
+
+export async function updateUdhaarCustomerRecord(
+  userId: string,
+  customer: UdhaarCustomer
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.udhaarCustomers = ws.udhaarCustomers.map((c) =>
+    c.id === customer.id ? customer : c
+  );
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('udhaar_customers')
+      .upsert(mapUdhaarCustomerToRow(customer, userId));
+    if (error) return error.message;
   }
   return null;
 }
@@ -1713,7 +1822,267 @@ export async function resetUserDemoWorkspace(
     if (insSet.error) {
       return { ...demoData, cloudSyncError: insSet.error.message };
     }
+
+    await supabase.from('expenses').delete().eq('user_id', userId);
+    if (demoData.expenses.length > 0) {
+      const insExp = await supabase
+        .from('expenses')
+        .insert(demoData.expenses.map((e) => mapExpenseToRow(e, userId)));
+      if (insExp.error) {
+        return { ...demoData, cloudSyncError: insExp.error.message };
+      }
+    }
   }
 
   return { ...demoData, cloudSyncError: null };
 }
+
+// Phase 5: Shop Expenses Persistence
+
+export async function upsertExpenseRecord(
+  userId: string,
+  expense: ExpenseRecord
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  const exists = ws.expenses.some((e) => e.id === expense.id);
+  ws.expenses = exists
+    ? ws.expenses.map((e) => (e.id === expense.id ? expense : e))
+    : [expense, ...ws.expenses];
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('expenses')
+      .upsert(mapExpenseToRow(expense, userId));
+    if (error) return error.message;
+  }
+  return null;
+}
+
+export async function deleteExpenseRecord(
+  userId: string,
+  expenseId: string
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.expenses = ws.expenses.filter((e) => e.id !== expenseId);
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('expenses')
+      .delete()
+      .eq('id', expenseId)
+      .eq('user_id', userId);
+    if (error) return error.message;
+  }
+  return null;
+}
+
+// Phase 5: SaaS Subscriptions & Super Admin Control
+
+function loadLocalSubscriptions(): SubscriptionRecord[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_SUBSCRIPTIONS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as SubscriptionRecord[];
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+function saveLocalSubscriptions(list: SubscriptionRecord[]): void {
+  try {
+    localStorage.setItem(LOCAL_SUBSCRIPTIONS_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
+function createTrialSubscription(
+  userId: string,
+  email: string,
+  shopName?: string
+): SubscriptionRecord {
+  const now = new Date();
+  const expires = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  return {
+    userId,
+    email: email.trim().toLowerCase(),
+    shopName: shopName || 'Khaas Retail',
+    planName: isSuperAdminEmail(email) ? 'Super Admin License' : '30-Day Free Trial',
+    expiresAt: expires.toISOString(),
+    isBlocked: false,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  };
+}
+
+export async function ensureUserSubscription(
+  userId: string,
+  email: string,
+  shopName?: string
+): Promise<{ subscription: SubscriptionRecord; syncError: string | null }> {
+  const localSubs = loadLocalSubscriptions();
+  const cached = localSubs.find((s) => s.userId === userId);
+  const browserOffline =
+    typeof navigator !== 'undefined' && navigator.onLine === false;
+
+  if (isSupabaseConfigured && supabase && !browserOffline) {
+    try {
+      const { data, error } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (error) {
+        const fallback = cached ?? createTrialSubscription(userId, email, shopName);
+        if (!cached) saveLocalSubscriptions([...localSubs, fallback]);
+        return {
+          subscription: fallback,
+          syncError: isNetworkLossError(error.message) ? null : error.message,
+        };
+      }
+
+      if (data) {
+        const mapped = mapSubscriptionFromRow(data as Record<string, unknown>);
+        const nextLocal = localSubs.some((s) => s.userId === mapped.userId)
+          ? localSubs.map((s) => (s.userId === mapped.userId ? mapped : s))
+          : [...localSubs, mapped];
+        saveLocalSubscriptions(nextLocal);
+        return { subscription: mapped, syncError: null };
+      }
+
+      // First-time signup/login: insert initial 30-day free trial row
+      const initial = createTrialSubscription(userId, email, shopName);
+      const { error: insErr } = await supabase.from('subscriptions').insert({
+        user_id: initial.userId,
+        email: initial.email,
+        shop_name: initial.shopName ?? '',
+        plan_name: initial.planName,
+        expires_at: initial.expiresAt,
+        is_blocked: false,
+        created_at: initial.createdAt,
+        updated_at: initial.updatedAt,
+      });
+
+      const nextLocal = [...localSubs.filter((s) => s.userId !== initial.userId), initial];
+      saveLocalSubscriptions(nextLocal);
+      return {
+        subscription: initial,
+        syncError: insErr && !isNetworkLossError(insErr.message) ? insErr.message : null,
+      };
+    } catch (err) {
+      const fallback = cached ?? createTrialSubscription(userId, email, shopName);
+      if (!cached) saveLocalSubscriptions([...localSubs, fallback]);
+      const msg = err instanceof Error ? err.message : '';
+      return {
+        subscription: fallback,
+        syncError: isNetworkLossError(msg) ? null : msg,
+      };
+    }
+  }
+
+  const localRecord = cached ?? createTrialSubscription(userId, email, shopName);
+  if (!cached) {
+    saveLocalSubscriptions([...localSubs, localRecord]);
+  }
+  return { subscription: localRecord, syncError: null };
+}
+
+export async function fetchAllSubscriptions(): Promise<{
+  subscriptions: SubscriptionRecord[];
+  error: string | null;
+}> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        return {
+          subscriptions: loadLocalSubscriptions(),
+          error: isNetworkLossError(error.message) ? null : error.message,
+        };
+      }
+
+      const mapped = (data ?? []).map((row) =>
+        mapSubscriptionFromRow(row as Record<string, unknown>)
+      );
+      saveLocalSubscriptions(mapped);
+      return { subscriptions: mapped, error: null };
+    } catch (err) {
+      return {
+        subscriptions: loadLocalSubscriptions(),
+        error: err instanceof Error ? err.message : 'Unable to load subscriptions.',
+      };
+    }
+  }
+
+  return { subscriptions: loadLocalSubscriptions(), error: null };
+}
+
+export async function adminUpdateSubscription(
+  targetUserId: string,
+  action: 'extend_30_days' | 'extend_1_year' | 'toggle_block',
+  currentRecord: SubscriptionRecord
+): Promise<{ updated: SubscriptionRecord; error: string | null }> {
+  const now = new Date();
+  const baseMs = Math.max(now.getTime(), new Date(currentRecord.expiresAt).getTime());
+
+  let nextExpiresAt = currentRecord.expiresAt;
+  let nextPlanName = currentRecord.planName;
+  let nextBlocked = currentRecord.isBlocked;
+
+  if (action === 'extend_30_days') {
+    nextExpiresAt = new Date(baseMs + 30 * 24 * 60 * 60 * 1000).toISOString();
+    nextBlocked = false;
+    if (nextPlanName === '30-Day Free Trial') {
+      nextPlanName = 'Monthly License';
+    }
+  } else if (action === 'extend_1_year') {
+    nextExpiresAt = new Date(baseMs + 365 * 24 * 60 * 60 * 1000).toISOString();
+    nextBlocked = false;
+    nextPlanName = 'Annual License';
+  } else if (action === 'toggle_block') {
+    nextBlocked = !currentRecord.isBlocked;
+  }
+
+  const updated: SubscriptionRecord = {
+    ...currentRecord,
+    planName: nextPlanName,
+    expiresAt: nextExpiresAt,
+    isBlocked: nextBlocked,
+    updatedAt: now.toISOString(),
+  };
+
+  const localSubs = loadLocalSubscriptions();
+  const nextLocal = localSubs.some((s) => s.userId === updated.userId)
+    ? localSubs.map((s) => (s.userId === updated.userId ? updated : s))
+    : [updated, ...localSubs];
+  saveLocalSubscriptions(nextLocal);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('subscriptions')
+      .update({
+        plan_name: updated.planName,
+        expires_at: updated.expiresAt,
+        is_blocked: updated.isBlocked,
+        updated_at: updated.updatedAt,
+      })
+      .eq('user_id', targetUserId);
+
+    if (error) {
+      return { updated, error: error.message };
+    }
+  }
+
+  return { updated, error: null };
+}
+

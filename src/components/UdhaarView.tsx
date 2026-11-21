@@ -2,15 +2,25 @@ import { useMemo, useState } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  Bell,
+  Calendar,
+  MessageCircle,
   Phone,
   Search,
   UserPlus,
   X,
 } from 'lucide-react';
 import { formatCurrency, formatDateTime, type TranslationStrings } from '../i18n';
-import type { Language, UdhaarCustomer, UdhaarEntry, UdhaarEntryType } from '../types';
+import type {
+  Language,
+  ReminderSchedule,
+  UdhaarCustomer,
+  UdhaarEntry,
+  UdhaarEntryType,
+} from '../types';
 
 interface UdhaarViewProps {
+  storeName: string;
   customers: UdhaarCustomer[];
   entries: UdhaarEntry[];
   onAddCustomer: (payload: {
@@ -18,7 +28,10 @@ interface UdhaarViewProps {
     phone: string;
     notes: string;
     openingBalance: number;
+    reminderSchedule: ReminderSchedule;
+    dueDate?: string;
   }) => UdhaarCustomer;
+  onUpdateCustomer: (updated: UdhaarCustomer) => void;
   onAddEntry: (payload: {
     customerId: string;
     type: UdhaarEntryType;
@@ -29,10 +42,87 @@ interface UdhaarViewProps {
   t: TranslationStrings;
 }
 
+function getTodayYmd(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function calculateDueDateFromSchedule(
+  schedule: ReminderSchedule,
+  existingDate?: string
+): string {
+  if (schedule === 'none') return '';
+  if (schedule === 'custom') return existingDate || getTodayYmd();
+
+  const d = new Date();
+  if (schedule === '3_days') d.setDate(d.getDate() + 3);
+  else if (schedule === '1_week') d.setDate(d.getDate() + 7);
+  else if (schedule === '2_weeks') d.setDate(d.getDate() + 14);
+  else if (schedule === '1_month') d.setMonth(d.getMonth() + 1);
+
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+export function formatPakistaniWhatsAppNumber(rawPhone: string): string {
+  const digits = rawPhone.replace(/\D/g, '');
+  if (!digits) return '';
+  let clean = digits;
+  if (clean.startsWith('0092')) {
+    clean = clean.slice(2);
+  } else if (clean.startsWith('0') && clean.length >= 10) {
+    clean = `92${clean.slice(1)}`;
+  } else if (clean.startsWith('3') && clean.length === 10) {
+    clean = `92${clean}`;
+  }
+  return /^[0-9]{7,15}$/.test(clean) ? clean : '';
+}
+
+export function buildUdhaarWhatsAppUrl({
+  storeName,
+  customerName,
+  phone,
+  amount,
+  dueDate,
+}: {
+  storeName: string;
+  customerName: string;
+  phone: string;
+  amount: number;
+  dueDate?: string;
+}): string {
+  const formattedNumber = formatPakistaniWhatsAppNumber(phone);
+  const formattedAmt = `Rs. ${Math.round(Math.max(0, amount)).toLocaleString('en-PK')}`;
+  const dueTextEn = dueDate || 'As soon as convenient';
+  const dueTextUr = dueDate || 'جلد از جلد';
+
+  const message = [
+    `Assalam-o-Alaikum ${customerName},`,
+    `Friendly reminder from *${storeName}*:`,
+    `Your Udhaar / Khata due amount is *${formattedAmt}* (Due Date: ${dueTextEn}).`,
+    ``,
+    `محترم ${customerName}،`,
+    `*${storeName}* کی جانب سے ادھار کھاتہ کی یاد دہانی:`,
+    `آپ کے ذمے واجب الادا رقم *${formattedAmt}* ہے (آخری تاریخ: ${dueTextUr})۔ براہ کرم ادائیگی کی زحمت فرمائیں۔ شکریہ!`,
+  ].join('\n');
+
+  const encoded = encodeURIComponent(message);
+  return formattedNumber
+    ? `https://wa.me/${formattedNumber}?text=${encoded}`
+    : `https://wa.me/?text=${encoded}`;
+}
+
 export function UdhaarView({
+  storeName,
   customers,
   entries,
   onAddCustomer,
+  onUpdateCustomer,
   onAddEntry,
   lang,
   t,
@@ -48,11 +138,26 @@ export function UdhaarView({
   const [newPhone, setNewPhone] = useState('');
   const [newNotes, setNewNotes] = useState('');
   const [newOpeningBalance, setNewOpeningBalance] = useState('');
+  const [newSchedule, setNewSchedule] = useState<ReminderSchedule>('1_week');
+  const [newDueDate, setNewDueDate] = useState<string>(() =>
+    calculateDueDateFromSchedule('1_week')
+  );
+
+  // Edit Customer Reminder Modal state
+  const [editingReminderCustomer, setEditingReminderCustomer] =
+    useState<UdhaarCustomer | null>(null);
+  const [editPhone, setEditPhone] = useState('');
+  const [editSchedule, setEditSchedule] = useState<ReminderSchedule>('none');
+  const [editDueDate, setEditDueDate] = useState('');
 
   // Quick Entry Form state (credit or payment)
   const [entryFormType, setEntryFormType] = useState<UdhaarEntryType | null>(null);
   const [entryAmount, setEntryAmount] = useState('');
   const [entryNote, setEntryNote] = useState('');
+  const [entrySchedule, setEntrySchedule] = useState<ReminderSchedule>('none');
+  const [entryDueDate, setEntryDueDate] = useState('');
+
+  const todayYmd = getTodayYmd();
 
   const customerSummaries = useMemo(() => {
     const map = new Map<
@@ -78,6 +183,25 @@ export function UdhaarView({
 
     return map;
   }, [customers, entries]);
+
+  const dueReminders = useMemo(() => {
+    return customers
+      .map((c) => {
+        const balance = Math.max(0, customerSummaries.get(c.id)?.balance ?? 0);
+        const dueDate = c.dueDate;
+        const isDue = Boolean(dueDate && balance > 0 && dueDate <= todayYmd);
+        const isOverdue = Boolean(dueDate && balance > 0 && dueDate < todayYmd);
+        return {
+          customer: c,
+          balance,
+          dueDate: dueDate || '',
+          isDue,
+          isOverdue,
+        };
+      })
+      .filter((r) => r.isDue)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  }, [customers, customerSummaries, todayYmd]);
 
   const globalStats = useMemo(() => {
     let totalCredit = 0;
@@ -137,6 +261,16 @@ export function UdhaarView({
       }
     : null;
 
+  const handleScheduleChange = (
+    schedule: ReminderSchedule,
+    setSchedule: (s: ReminderSchedule) => void,
+    setDate: (d: string) => void,
+    currentDate?: string
+  ) => {
+    setSchedule(schedule);
+    setDate(calculateDueDateFromSchedule(schedule, currentDate));
+  };
+
   const handleCreateCustomer = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = newName.trim();
@@ -147,6 +281,8 @@ export function UdhaarView({
       phone: newPhone.trim(),
       notes: newNotes.trim(),
       openingBalance: Math.max(0, Number(newOpeningBalance) || 0),
+      reminderSchedule: newSchedule,
+      dueDate: newSchedule === 'none' ? undefined : newDueDate || undefined,
     });
 
     setSelectedCustomerId(created.id);
@@ -154,7 +290,29 @@ export function UdhaarView({
     setNewPhone('');
     setNewNotes('');
     setNewOpeningBalance('');
+    setNewSchedule('1_week');
+    setNewDueDate(calculateDueDateFromSchedule('1_week'));
     setShowAddCustomerModal(false);
+  };
+
+  const openEditReminder = (customer: UdhaarCustomer) => {
+    setEditingReminderCustomer(customer);
+    setEditPhone(customer.phone);
+    const sched = customer.reminderSchedule ?? (customer.dueDate ? 'custom' : 'none');
+    setEditSchedule(sched);
+    setEditDueDate(customer.dueDate || '');
+  };
+
+  const handleSaveReminderEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingReminderCustomer) return;
+    onUpdateCustomer({
+      ...editingReminderCustomer,
+      phone: editPhone.trim(),
+      reminderSchedule: editSchedule,
+      dueDate: editSchedule === 'none' ? undefined : editDueDate || undefined,
+    });
+    setEditingReminderCustomer(null);
   };
 
   const handleSubmitEntry = (e: React.FormEvent) => {
@@ -172,9 +330,19 @@ export function UdhaarView({
         (entryFormType === 'credit' ? t.typeCredit : t.typePayment),
     });
 
+    if (entryFormType === 'credit' && entrySchedule !== 'none') {
+      onUpdateCustomer({
+        ...activeCustomer,
+        reminderSchedule: entrySchedule,
+        dueDate: entryDueDate || activeCustomer.dueDate,
+      });
+    }
+
     setEntryFormType(null);
     setEntryAmount('');
     setEntryNote('');
+    setEntrySchedule('none');
+    setEntryDueDate('');
   };
 
   return (
@@ -224,11 +392,89 @@ export function UdhaarView({
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500">{t.activeCustomersLabel}</p>
-          <p className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-2">
-            {globalStats.customerCount}
+          <p className="text-xs font-medium text-slate-500">{t.dueRemindersTitle}</p>
+          <p className="font-mono text-2xl font-bold text-red-700 tabular-nums mt-2">
+            {dueReminders.length}
           </p>
         </div>
+      </section>
+
+      {/* Due Reminders Section (Today & Overdue) */}
+      <section className="bg-white border border-amber-200 rounded-xl overflow-hidden">
+        <div className="px-5 py-3.5 bg-amber-50/70 border-b border-amber-200 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Bell className="w-4 h-4 text-amber-800 shrink-0" aria-hidden="true" />
+            <h2 className="text-sm font-bold text-amber-950">{t.dueRemindersTitle}</h2>
+            <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-amber-700 text-white tabular-nums">
+              {dueReminders.length}
+            </span>
+          </div>
+          <span className="text-xs font-mono text-amber-900 tabular-nums">
+            {todayYmd}
+          </span>
+        </div>
+
+        {dueReminders.length === 0 ? (
+          <div className="px-5 py-4 text-xs text-slate-500">{t.noDueReminders}</div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {dueReminders.map(({ customer, balance, dueDate, isOverdue }) => {
+              const waUrl = buildUdhaarWhatsAppUrl({
+                storeName,
+                customerName: customer.name,
+                phone: customer.phone,
+                amount: balance,
+                dueDate,
+              });
+              return (
+                <div
+                  key={customer.id}
+                  className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-amber-50/40 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCustomerId(customer.id)}
+                        className="text-sm font-bold text-slate-900 hover:text-teal-800 cursor-pointer"
+                      >
+                        {customer.name}
+                      </button>
+                      <span
+                        className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                          isOverdue
+                            ? 'bg-red-50 text-red-700 border border-red-200'
+                            : 'bg-amber-100 text-amber-900 border border-amber-300'
+                        }`}
+                      >
+                        {isOverdue ? t.overdueLabel : t.dueTodayLabel}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 font-mono mt-0.5">
+                      {customer.phone || '—'} · {t.dueDateLabel}: {dueDate}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="font-mono text-sm font-bold text-amber-800 tabular-nums">
+                      {formatCurrency(balance, lang)}
+                    </span>
+
+                    <a
+                      href={waUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap transition-colors min-h-[36px]"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      <span>{t.sendWhatsappBtn}</span>
+                    </a>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* Master-Detail Khata Register */}
@@ -256,56 +502,105 @@ export function UdhaarView({
               {t.noCustomersFound}
             </div>
           ) : (
-            <div className="divide-y divide-slate-100 max-h-[540px] overflow-y-auto">
+            <div className="divide-y divide-slate-100 max-h-[560px] overflow-y-auto">
               {filteredCustomers.map((customer) => {
                 const summary = customerSummaries.get(customer.id) ?? {
                   totalCredit: 0,
                   totalPayment: 0,
                   balance: 0,
                 };
+                const cleanBalance = Math.max(0, summary.balance);
                 const isSelected = activeCustomer?.id === customer.id;
+                const isDueOrOverdue = Boolean(
+                  customer.dueDate && cleanBalance > 0 && customer.dueDate <= todayYmd
+                );
+                const isOverdue = Boolean(
+                  customer.dueDate && cleanBalance > 0 && customer.dueDate < todayYmd
+                );
+                const waUrl = buildUdhaarWhatsAppUrl({
+                  storeName,
+                  customerName: customer.name,
+                  phone: customer.phone,
+                  amount: cleanBalance,
+                  dueDate: customer.dueDate,
+                });
 
                 return (
-                  <button
+                  <div
                     key={customer.id}
-                    type="button"
                     onClick={() => {
                       setSelectedCustomerId(customer.id);
                       setEntryFormType(null);
                     }}
-                    className={`w-full px-4 py-3.5 text-start flex items-center justify-between gap-3 transition-colors cursor-pointer ${
-                      isSelected ? 'bg-teal-50/70' : 'hover:bg-slate-50'
+                    className={`w-full px-4 py-3.5 transition-colors cursor-pointer space-y-2 ${
+                      isSelected
+                        ? 'bg-teal-50/70'
+                        : isDueOrOverdue
+                        ? 'bg-amber-50/40 hover:bg-amber-50/70'
+                        : 'hover:bg-slate-50'
                     }`}
                   >
-                    <div className="min-w-0">
-                      <p
-                        className={`text-sm font-semibold truncate ${
-                          isSelected ? 'text-teal-900' : 'text-slate-900'
-                        }`}
-                      >
-                        {customer.name}
-                      </p>
-                      <p className="text-xs font-mono text-slate-500 mt-0.5 flex items-center gap-1">
-                        <Phone className="w-3 h-3 shrink-0" aria-hidden="true" />
-                        <span>{customer.phone || '—'}</span>
-                      </p>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p
+                            className={`text-sm font-semibold truncate ${
+                              isSelected ? 'text-teal-900' : 'text-slate-900'
+                            }`}
+                          >
+                            {customer.name}
+                          </p>
+                          {isDueOrOverdue && (
+                            <span
+                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                                isOverdue
+                                  ? 'bg-red-100 text-red-700'
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              {isOverdue ? t.overdueLabel : t.dueTodayLabel}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-mono text-slate-500 mt-0.5 flex items-center gap-1">
+                          <Phone className="w-3 h-3 shrink-0" aria-hidden="true" />
+                          <span>{customer.phone || '—'}</span>
+                        </p>
+                      </div>
+
+                      <div className="text-end shrink-0">
+                        <p
+                          className={`font-mono text-sm font-bold tabular-nums ${
+                            cleanBalance > 0 ? 'text-amber-700' : 'text-emerald-700'
+                          }`}
+                        >
+                          {formatCurrency(cleanBalance, lang)}
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          {cleanBalance <= 0 ? t.settledStatus : t.remainingBalanceLabel}
+                        </p>
+                      </div>
                     </div>
 
-                    <div className="text-end shrink-0">
-                      <p
-                        className={`font-mono text-sm font-bold tabular-nums ${
-                          summary.balance > 0
-                            ? 'text-amber-700'
-                            : 'text-emerald-700'
-                        }`}
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <span className="text-[11px] font-mono text-slate-500">
+                        {customer.dueDate
+                          ? `${t.dueDateLabel}: ${customer.dueDate}`
+                          : t.scheduleNone}
+                      </span>
+
+                      <a
+                        href={waUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md whitespace-nowrap transition-colors"
                       >
-                        {formatCurrency(Math.max(0, summary.balance), lang)}
-                      </p>
-                      <p className="text-[11px] text-slate-500">
-                        {summary.balance <= 0 ? t.settledStatus : t.remainingBalanceLabel}
-                      </p>
+                        <MessageCircle className="w-3 h-3 shrink-0" aria-hidden="true" />
+                        <span>{t.sendWhatsappBtn}</span>
+                      </a>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -321,13 +616,21 @@ export function UdhaarView({
           ) : (
             <div>
               {/* Customer Header & Balance */}
-              <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="p-5 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">
                     {activeCustomer.name}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
                     <span className="font-mono">{activeCustomer.phone || '—'}</span>
+                    {activeCustomer.dueDate ? (
+                      <>
+                        <span aria-hidden="true"> · </span>
+                        <span className="font-mono text-amber-800 font-medium">
+                          {t.dueDateLabel}: {activeCustomer.dueDate}
+                        </span>
+                      </>
+                    ) : null}
                     {activeCustomer.notes ? (
                       <>
                         <span aria-hidden="true"> · </span>
@@ -337,8 +640,8 @@ export function UdhaarView({
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-4">
-                  <div className="text-start md:text-end">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="text-start lg:text-end me-2">
                     <p className="text-xs text-slate-500">{t.remainingBalanceLabel}</p>
                     <p
                       className={`font-mono text-xl font-bold tabular-nums ${
@@ -351,33 +654,62 @@ export function UdhaarView({
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEntryFormType('credit');
-                        setEntryAmount('');
-                        setEntryNote('');
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg whitespace-nowrap min-h-[40px] transition-colors cursor-pointer"
-                    >
-                      <ArrowUpRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      <span>{t.recordCreditBtn}</span>
-                    </button>
+                  <button
+                    type="button"
+                    onClick={() => openEditReminder(activeCustomer)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap min-h-[40px] transition-colors cursor-pointer"
+                  >
+                    <Calendar className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{t.editReminderBtn}</span>
+                  </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEntryFormType('payment');
-                        setEntryAmount('');
-                        setEntryNote('');
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg whitespace-nowrap min-h-[40px] transition-colors cursor-pointer"
-                    >
-                      <ArrowDownLeft className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      <span>{t.receivePaymentBtn}</span>
-                    </button>
-                  </div>
+                  <a
+                    href={buildUdhaarWhatsAppUrl({
+                      storeName,
+                      customerName: activeCustomer.name,
+                      phone: activeCustomer.phone,
+                      amount: Math.max(0, activeSummary.balance),
+                      dueDate: activeCustomer.dueDate,
+                    })}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap min-h-[40px] transition-colors"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{t.sendWhatsappBtn}</span>
+                  </a>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEntryFormType('credit');
+                      setEntryAmount('');
+                      setEntryNote('');
+                      const fallbackSched = activeCustomer.reminderSchedule ?? '1_week';
+                      setEntrySchedule(fallbackSched);
+                      setEntryDueDate(
+                        activeCustomer.dueDate ||
+                          calculateDueDateFromSchedule(fallbackSched)
+                      );
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg whitespace-nowrap min-h-[40px] transition-colors cursor-pointer"
+                  >
+                    <ArrowUpRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{t.recordCreditBtn}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEntryFormType('payment');
+                      setEntryAmount('');
+                      setEntryNote('');
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg whitespace-nowrap min-h-[40px] transition-colors cursor-pointer"
+                  >
+                    <ArrowDownLeft className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{t.receivePaymentBtn}</span>
+                  </button>
                 </div>
               </div>
 
@@ -458,6 +790,60 @@ export function UdhaarView({
                       </button>
                     </div>
                   </div>
+
+                  {entryFormType === 'credit' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label
+                          htmlFor="entry-reminder-sched"
+                          className="block text-xs font-medium text-slate-700 mb-1"
+                        >
+                          {t.reminderScheduleLabel}
+                        </label>
+                        <select
+                          id="entry-reminder-sched"
+                          value={entrySchedule}
+                          onChange={(e) =>
+                            handleScheduleChange(
+                              e.target.value as ReminderSchedule,
+                              setEntrySchedule,
+                              setEntryDueDate,
+                              entryDueDate
+                            )
+                          }
+                          className="w-full h-10 px-3 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700"
+                        >
+                          <option value="none">{t.scheduleNone}</option>
+                          <option value="3_days">{t.schedule3Days}</option>
+                          <option value="1_week">{t.schedule1Week}</option>
+                          <option value="2_weeks">{t.schedule2Weeks}</option>
+                          <option value="1_month">{t.schedule1Month}</option>
+                          <option value="custom">{t.scheduleCustom}</option>
+                        </select>
+                      </div>
+
+                      {entrySchedule !== 'none' && (
+                        <div>
+                          <label
+                            htmlFor="entry-due-date"
+                            className="block text-xs font-medium text-slate-700 mb-1"
+                          >
+                            {t.dueDateLabel}
+                          </label>
+                          <input
+                            id="entry-due-date"
+                            type="date"
+                            value={entryDueDate}
+                            onChange={(e) => {
+                              setEntryDueDate(e.target.value);
+                              setEntrySchedule('custom');
+                            }}
+                            className="w-full h-10 px-3 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </form>
               )}
 
@@ -497,51 +883,77 @@ export function UdhaarView({
                         <th className="py-2.5 px-4 text-end font-medium">
                           {t.paymentCol}
                         </th>
-                        <th className="py-2.5 px-5 text-end font-medium">
+                        <th className="py-2.5 px-4 text-end font-medium">
                           {t.balanceCol}
+                        </th>
+                        <th className="py-2.5 px-5 text-end font-medium">
+                          {t.actionCol}
                         </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {activeLedgerRows.map((entry) => (
-                        <tr key={entry.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="py-3 px-5 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
-                            {formatDateTime(entry.createdAt)}
-                          </td>
-                          <td className="py-3 px-4 whitespace-nowrap">
-                            <span
-                              className={`text-xs font-semibold ${
-                                entry.type === 'credit'
-                                  ? 'text-amber-700'
-                                  : 'text-emerald-700'
-                              }`}
-                            >
-                              {entry.type === 'credit' ? t.typeCredit : t.typePayment}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-slate-700">
-                            <span>{entry.note}</span>
-                            {entry.receiptNumber ? (
-                              <span className="ms-2 font-mono text-xs text-slate-400">
-                                ({entry.receiptNumber})
+                      {activeLedgerRows.map((entry) => {
+                        const entryWhatsappUrl = buildUdhaarWhatsAppUrl({
+                          storeName,
+                          customerName: activeCustomer.name,
+                          phone: activeCustomer.phone,
+                          amount:
+                            entry.type === 'credit'
+                              ? entry.amount
+                              : Math.max(0, activeSummary.balance),
+                          dueDate: activeCustomer.dueDate,
+                        });
+                        return (
+                          <tr key={entry.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-3 px-5 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
+                              {formatDateTime(entry.createdAt)}
+                            </td>
+                            <td className="py-3 px-4 whitespace-nowrap">
+                              <span
+                                className={`text-xs font-semibold ${
+                                  entry.type === 'credit'
+                                    ? 'text-amber-700'
+                                    : 'text-emerald-700'
+                                }`}
+                              >
+                                {entry.type === 'credit' ? t.typeCredit : t.typePayment}
                               </span>
-                            ) : null}
-                          </td>
-                          <td className="py-3 px-4 text-end font-mono font-medium text-amber-700 tabular-nums whitespace-nowrap">
-                            {entry.type === 'credit'
-                              ? formatCurrency(entry.amount, lang)
-                              : '—'}
-                          </td>
-                          <td className="py-3 px-4 text-end font-mono font-medium text-emerald-700 tabular-nums whitespace-nowrap">
-                            {entry.type === 'payment'
-                              ? formatCurrency(entry.amount, lang)
-                              : '—'}
-                          </td>
-                          <td className="py-3 px-5 text-end font-mono font-bold text-slate-900 tabular-nums whitespace-nowrap">
-                            {formatCurrency(Math.max(0, entry.runningBalance), lang)}
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                            <td className="py-3 px-4 text-slate-700">
+                              <span>{entry.note}</span>
+                              {entry.receiptNumber ? (
+                                <span className="ms-2 font-mono text-xs text-slate-400">
+                                  ({entry.receiptNumber})
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className="py-3 px-4 text-end font-mono font-medium text-amber-700 tabular-nums whitespace-nowrap">
+                              {entry.type === 'credit'
+                                ? formatCurrency(entry.amount, lang)
+                                : '—'}
+                            </td>
+                            <td className="py-3 px-4 text-end font-mono font-medium text-emerald-700 tabular-nums whitespace-nowrap">
+                              {entry.type === 'payment'
+                                ? formatCurrency(entry.amount, lang)
+                                : '—'}
+                            </td>
+                            <td className="py-3 px-4 text-end font-mono font-bold text-slate-900 tabular-nums whitespace-nowrap">
+                              {formatCurrency(Math.max(0, entry.runningBalance), lang)}
+                            </td>
+                            <td className="py-3 px-5 text-end">
+                              <a
+                                href={entryWhatsappUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md whitespace-nowrap transition-colors"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                <span>{t.sendWhatsappBtn}</span>
+                              </a>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -551,7 +963,7 @@ export function UdhaarView({
         </section>
       </div>
 
-      {/* Add Customer Modal */}
+      {/* Add Customer Modal (with WhatsApp Phone & Reminder Schedule) */}
       {showAddCustomerModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto"
@@ -601,7 +1013,7 @@ export function UdhaarView({
                   htmlFor="khata-cust-phone"
                   className="block text-xs font-medium text-slate-700 mb-1"
                 >
-                  {t.phoneNumberLabel}
+                  {t.customerWhatsappLabel}
                 </label>
                 <input
                   id="khata-cust-phone"
@@ -612,6 +1024,57 @@ export function UdhaarView({
                   placeholder="0300-1234567"
                   className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
                 />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="khata-cust-schedule"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.reminderScheduleLabel}
+                  </label>
+                  <select
+                    id="khata-cust-schedule"
+                    value={newSchedule}
+                    onChange={(e) =>
+                      handleScheduleChange(
+                        e.target.value as ReminderSchedule,
+                        setNewSchedule,
+                        setNewDueDate,
+                        newDueDate
+                      )
+                    }
+                    className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  >
+                    <option value="none">{t.scheduleNone}</option>
+                    <option value="3_days">{t.schedule3Days}</option>
+                    <option value="1_week">{t.schedule1Week}</option>
+                    <option value="2_weeks">{t.schedule2Weeks}</option>
+                    <option value="1_month">{t.schedule1Month}</option>
+                    <option value="custom">{t.scheduleCustom}</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="khata-cust-due-date"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.dueDateLabel}
+                  </label>
+                  <input
+                    id="khata-cust-due-date"
+                    type="date"
+                    disabled={newSchedule === 'none'}
+                    value={newDueDate}
+                    onChange={(e) => {
+                      setNewDueDate(e.target.value);
+                      setNewSchedule('custom');
+                    }}
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white disabled:opacity-50"
+                  />
+                </div>
               </div>
 
               <div>
@@ -652,6 +1115,121 @@ export function UdhaarView({
                 <button
                   type="button"
                   onClick={() => setShowAddCustomerModal(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg min-h-[40px] cursor-pointer"
+                >
+                  {t.cancelBtn}
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg min-h-[40px] cursor-pointer"
+                >
+                  {t.saveCustomerBtn}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Customer Reminder Schedule & WhatsApp Modal */}
+      {editingReminderCustomer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-reminder-modal-title"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md overflow-hidden shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <h2
+                id="edit-reminder-modal-title"
+                className="text-base font-bold text-slate-900"
+              >
+                {t.editReminderBtn} — {editingReminderCustomer.name}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setEditingReminderCustomer(null)}
+                aria-label={t.closeBtn}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveReminderEdit} className="p-5 space-y-4">
+              <div>
+                <label
+                  htmlFor="edit-khata-phone"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  {t.customerWhatsappLabel}
+                </label>
+                <input
+                  id="edit-khata-phone"
+                  type="text"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="0300-1234567"
+                  className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="edit-khata-schedule"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  {t.reminderScheduleLabel}
+                </label>
+                <select
+                  id="edit-khata-schedule"
+                  value={editSchedule}
+                  onChange={(e) =>
+                    handleScheduleChange(
+                      e.target.value as ReminderSchedule,
+                      setEditSchedule,
+                      setEditDueDate,
+                      editDueDate
+                    )
+                  }
+                  className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                >
+                  <option value="none">{t.scheduleNone}</option>
+                  <option value="3_days">{t.schedule3Days}</option>
+                  <option value="1_week">{t.schedule1Week}</option>
+                  <option value="2_weeks">{t.schedule2Weeks}</option>
+                  <option value="1_month">{t.schedule1Month}</option>
+                  <option value="custom">{t.scheduleCustom}</option>
+                </select>
+              </div>
+
+              {editSchedule !== 'none' && (
+                <div>
+                  <label
+                    htmlFor="edit-khata-due-date"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.dueDateLabel}
+                  </label>
+                  <input
+                    id="edit-khata-due-date"
+                    type="date"
+                    required
+                    value={editDueDate}
+                    onChange={(e) => {
+                      setEditDueDate(e.target.value);
+                      setEditSchedule('custom');
+                    }}
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+              )}
+
+              <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingReminderCustomer(null)}
                   className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg min-h-[40px] cursor-pointer"
                 >
                   {t.cancelBtn}

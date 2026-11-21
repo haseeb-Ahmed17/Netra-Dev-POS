@@ -4,14 +4,17 @@ import { AuthView } from './components/AuthView';
 import { CloudSyncBanner } from './components/CloudSyncBanner';
 import { CustomersView } from './components/CustomersView';
 import { ExecutiveDashboardView } from './components/ExecutiveDashboardView';
+import { ExpensesView } from './components/ExpensesView';
 import { InventoryReportView } from './components/InventoryReportView';
 import { InventoryView } from './components/InventoryView';
 import { PosBillingView } from './components/PosBillingView';
 import { PurchasesView } from './components/PurchasesView';
 import { ReceiptModal } from './components/ReceiptModal';
+import { SaasAdminView } from './components/SaasAdminView';
 import { StaffPinModal } from './components/StaffPinModal';
 import { StaffView } from './components/StaffView';
 import { StoreSettingsView } from './components/StoreSettingsView';
+import { SubscriptionLockModal } from './components/SubscriptionLockModal';
 import { TopBar } from './components/TopBar';
 import { TransactionsView } from './components/TransactionsView';
 import { UdhaarView } from './components/UdhaarView';
@@ -19,9 +22,13 @@ import { VendorsView } from './components/VendorsView';
 import { createDefaultStoreSettings } from './data/initialData';
 import { TRANSLATIONS } from './i18n';
 import {
+  adminUpdateSubscription,
   deleteCustomerRecord,
   deleteEmployeeRecord,
+  deleteExpenseRecord,
   deleteProductRecord,
+  ensureUserSubscription,
+  fetchAllSubscriptions,
   fetchWorkspaceData,
   getActiveShopkeeper,
   getOfflineQueue,
@@ -30,13 +37,16 @@ import {
   insertPurchaseRecord,
   insertUdhaarCustomerRecord,
   insertUdhaarEntryRecord,
+  isSuperAdminEmail,
   resetUserDemoWorkspace,
   signInShopkeeper,
   signOutShopkeeper,
   signUpShopkeeper,
   syncOfflineQueue,
+  updateUdhaarCustomerRecord,
   upsertCustomerRecord,
   upsertEmployeeRecord,
+  upsertExpenseRecord,
   upsertProductRecord,
   upsertStoreSettingsRecord,
   upsertVendorRecord,
@@ -48,6 +58,7 @@ import type {
   Customer,
   Employee,
   EmployeeRole,
+  ExpenseRecord,
   InventoryAdjustment,
   Language,
   NavTab,
@@ -57,8 +68,10 @@ import type {
   Product,
   PurchaseItem,
   PurchaseRecord,
+  ReminderSchedule,
   ShopkeeperUser,
   StoreSettings,
+  SubscriptionRecord,
   UdhaarCustomer,
   UdhaarEntry,
   UdhaarEntryType,
@@ -76,6 +89,7 @@ const ROLE_ALLOWED_TABS: Record<EmployeeRole, NavTab[]> = {
     'inventory_report',
     'purchases',
     'vendors',
+    'expenses',
     'customers',
     'udhaar',
     'staff',
@@ -89,6 +103,7 @@ const ROLE_ALLOWED_TABS: Record<EmployeeRole, NavTab[]> = {
     'inventory_report',
     'purchases',
     'vendors',
+    'expenses',
     'customers',
     'udhaar',
   ],
@@ -127,9 +142,16 @@ export default function App() {
   const [inventoryAdjustments, setInventoryAdjustments] = useState<InventoryAdjustment[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [storeSettings, setStoreSettings] = useState<StoreSettings>(() =>
     createDefaultStoreSettings()
   );
+
+  const [subscription, setSubscription] = useState<SubscriptionRecord | null>(null);
+  const [checkingSubscription, setCheckingSubscription] = useState(false);
+  const [allSubscriptions, setAllSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [loadingAllSubs, setLoadingAllSubs] = useState(false);
+  const [updatingSubUserId, setUpdatingSubUserId] = useState<string | null>(null);
 
   const [activeEmployeeId, setActiveEmployeeId] = useState<string | null>(null);
   const [showStaffModal, setShowStaffModal] = useState(false);
@@ -151,6 +173,14 @@ export default function App() {
 
   const t = TRANSLATIONS[lang];
   const isEffectiveOnline = browserOnline && networkReachable;
+  const isSuperAdmin = Boolean(user && isSuperAdminEmail(user.email));
+  const isSubscriptionLocked = Boolean(
+    user &&
+      !isSuperAdmin &&
+      subscription &&
+      (subscription.isBlocked ||
+        new Date(subscription.expiresAt).getTime() <= Date.now())
+  );
 
   useEffect(() => {
     document.documentElement.lang = lang;
@@ -222,6 +252,7 @@ export default function App() {
       setInventoryAdjustments(ws.inventoryAdjustments);
       setCustomers(ws.customers);
       setEmployees(ws.employees);
+      setExpenses(ws.expenses);
       setStoreSettings(ws.storeSettings);
       setCloudSyncError(ws.cloudSyncError ?? null);
       setNetworkReachable(!ws.isOffline);
@@ -333,7 +364,13 @@ export default function App() {
       setInventoryAdjustments([]);
       setCustomers([]);
       setEmployees([]);
+      setExpenses([]);
       setStoreSettings(createDefaultStoreSettings());
+      setSubscription(null);
+      setCheckingSubscription(false);
+      setAllSubscriptions([]);
+      setLoadingAllSubs(false);
+      setUpdatingSubUserId(null);
       setActiveEmployeeId(null);
       setShowStaffModal(false);
       setIsScreenLocked(false);
@@ -348,6 +385,37 @@ export default function App() {
     }
 
     setLoadingData(true);
+    setCheckingSubscription(true);
+
+    ensureUserSubscription(user.id, user.email, user.shopName)
+      .then((subRes) => {
+        if (!active) return;
+        setSubscription(subRes.subscription);
+        if (subRes.syncError) {
+          setCloudSyncError((prev) => prev ?? subRes.syncError);
+        }
+      })
+      .finally(() => {
+        if (active) setCheckingSubscription(false);
+      });
+
+    if (isSuperAdminEmail(user.email)) {
+      setLoadingAllSubs(true);
+      fetchAllSubscriptions()
+        .then((res) => {
+          if (!active) return;
+          setAllSubscriptions(res.subscriptions);
+          if (res.error) {
+            setCloudSyncError((prev) => prev ?? res.error);
+          }
+        })
+        .finally(() => {
+          if (active) setLoadingAllSubs(false);
+        });
+    } else {
+      setAllSubscriptions([]);
+    }
+
     fetchWorkspaceData(user.id, user.shopName)
       .then((ws) => {
         if (!active) return;
@@ -393,11 +461,15 @@ export default function App() {
 
   // Enforce role permissions on activeTab
   useEffect(() => {
+    if (activeTab === 'saas_admin') {
+      if (!isSuperAdmin) setActiveTab('pos');
+      return;
+    }
     const allowed = ROLE_ALLOWED_TABS[activeRole];
     if (!allowed.includes(activeTab)) {
       setActiveTab('pos');
     }
-  }, [activeRole, activeTab]);
+  }, [activeRole, activeTab, isSuperAdmin]);
 
   const handleRetrySync = async () => {
     if (!user) return;
@@ -691,11 +763,15 @@ export default function App() {
     phone,
     notes,
     openingBalance,
+    reminderSchedule,
+    dueDate,
   }: {
     name: string;
     phone: string;
     notes: string;
     openingBalance: number;
+    reminderSchedule?: ReminderSchedule;
+    dueDate?: string;
   }): UdhaarCustomer => {
     const nowIso = new Date().toISOString();
     const prefix = user?.id.slice(0, 8) ?? 'shop';
@@ -704,6 +780,8 @@ export default function App() {
       name,
       phone,
       notes,
+      reminderSchedule: reminderSchedule ?? 'none',
+      dueDate: dueDate || undefined,
       createdAt: nowIso,
     };
     setUdhaarCustomers((prev) => [customer, ...prev]);
@@ -730,6 +808,17 @@ export default function App() {
     }
 
     return customer;
+  };
+
+  const handleUpdateUdhaarCustomer = (updated: UdhaarCustomer) => {
+    setUdhaarCustomers((prev) =>
+      prev.map((c) => (c.id === updated.id ? updated : c))
+    );
+    if (user) {
+      updateUdhaarCustomerRecord(user.id, updated).then((syncErr) => {
+        if (syncErr) setCloudSyncError(syncErr);
+      });
+    }
   };
 
   const handleAddUdhaarEntry = ({
@@ -1090,10 +1179,95 @@ export default function App() {
     });
   };
 
+  // Phase 5: Daily Shop Expenses & SaaS Subscription Handlers
+  const handleAddExpense = (payload: Omit<ExpenseRecord, 'id' | 'createdAt'>) => {
+    if (!user || activeRole === 'cashier') return;
+    const prefix = user.id.slice(0, 8);
+    const created: ExpenseRecord = {
+      ...payload,
+      id: `${prefix}-exp-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+    };
+    setExpenses((prev) => [created, ...prev]);
+    upsertExpenseRecord(user.id, created).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
+  };
+
+  const handleUpdateExpense = (updated: ExpenseRecord) => {
+    if (!user || activeRole === 'cashier') return;
+    setExpenses((prev) =>
+      prev.map((e) => (e.id === updated.id ? updated : e))
+    );
+    upsertExpenseRecord(user.id, updated).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
+  };
+
+  const handleDeleteExpense = (expenseId: string) => {
+    if (!user || activeRole !== 'admin') return;
+    setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
+    deleteExpenseRecord(user.id, expenseId).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
+  };
+
+  const handleRefreshSubscriptionStatus = async () => {
+    if (!user) return;
+    setCheckingSubscription(true);
+    try {
+      const res = await ensureUserSubscription(
+        user.id,
+        user.email,
+        storeSettings.storeName || user.shopName
+      );
+      setSubscription(res.subscription);
+      if (res.syncError) setCloudSyncError(res.syncError);
+    } finally {
+      setCheckingSubscription(false);
+    }
+  };
+
+  const handleRefreshAllSubscriptions = async () => {
+    if (!user || !isSuperAdmin) return;
+    setLoadingAllSubs(true);
+    try {
+      const res = await fetchAllSubscriptions();
+      setAllSubscriptions(res.subscriptions);
+      if (res.error) setCloudSyncError(res.error);
+    } finally {
+      setLoadingAllSubs(false);
+    }
+  };
+
+  const handleAdminSubscriptionAction = async (
+    sub: SubscriptionRecord,
+    action: 'extend_30_days' | 'extend_1_year' | 'toggle_block'
+  ) => {
+    if (!user || !isSuperAdmin) return;
+    setUpdatingSubUserId(sub.userId);
+    try {
+      const res = await adminUpdateSubscription(sub.userId, action, sub);
+      setAllSubscriptions((prev) =>
+        prev.map((item) => (item.userId === sub.userId ? res.updated : item))
+      );
+      if (sub.userId === user.id) {
+        setSubscription(res.updated);
+      }
+      if (res.error) setCloudSyncError(res.error);
+    } finally {
+      setUpdatingSubUserId(null);
+    }
+  };
+
   const handleSelectEmployeeByPin = (emp: Employee) => {
     setActiveEmployeeId(emp.id);
     setIsScreenLocked(false);
     setShowStaffModal(false);
+    if (activeTab === 'saas_admin') {
+      if (!isSuperAdmin) setActiveTab('pos');
+      return;
+    }
     if (!ROLE_ALLOWED_TABS[emp.role].includes(activeTab)) {
       setActiveTab('pos');
     }
@@ -1143,6 +1317,8 @@ export default function App() {
         onSelectTab={setActiveTab}
         activeRole={activeRole}
         activeEmployeeName={activeEmployee?.name ?? 'Admin'}
+        isSuperAdmin={isSuperAdmin}
+        subscription={subscription}
         onOpenStaffSwitcher={() => setShowStaffModal(true)}
         onLockScreen={() => setIsScreenLocked(true)}
         isOnline={isEffectiveOnline}
@@ -1234,6 +1410,7 @@ export default function App() {
               <ExecutiveDashboardView
                 storeName={activeStoreName}
                 orders={orders}
+                expenses={expenses}
                 latestNewOrderId={latestNewOrderId}
                 canResetDemo={activeRole === 'admin'}
                 suppressPrint={Boolean(activeReceiptOrder)}
@@ -1308,6 +1485,7 @@ export default function App() {
 
             {activeTab === 'customers' && (
               <CustomersView
+                storeName={activeStoreName}
                 customers={customers}
                 orders={orders}
                 canDelete={activeRole === 'admin'}
@@ -1321,11 +1499,25 @@ export default function App() {
               />
             )}
 
+            {activeTab === 'expenses' && activeRole !== 'cashier' && (
+              <ExpensesView
+                expenses={expenses}
+                canDelete={activeRole === 'admin'}
+                onAddExpense={handleAddExpense}
+                onUpdateExpense={handleUpdateExpense}
+                onDeleteExpense={handleDeleteExpense}
+                lang={lang}
+                t={t}
+              />
+            )}
+
             {activeTab === 'udhaar' && activeRole !== 'cashier' && (
               <UdhaarView
+                storeName={activeStoreName}
                 customers={udhaarCustomers}
                 entries={udhaarEntries}
                 onAddCustomer={handleAddUdhaarCustomer}
+                onUpdateCustomer={handleUpdateUdhaarCustomer}
                 onAddEntry={handleAddUdhaarEntry}
                 lang={lang}
                 t={t}
@@ -1351,6 +1543,20 @@ export default function App() {
                 t={t}
               />
             )}
+
+            {activeTab === 'saas_admin' && isSuperAdmin && (
+              <SaasAdminView
+                subscriptions={allSubscriptions}
+                loading={loadingAllSubs}
+                updatingUserId={updatingSubUserId}
+                onRefresh={() => void handleRefreshAllSubscriptions()}
+                onAdminAction={(sub, action) =>
+                  void handleAdminSubscriptionAction(sub, action)
+                }
+                lang={lang}
+                t={t}
+              />
+            )}
           </>
         )}
       </main>
@@ -1364,21 +1570,35 @@ export default function App() {
         t={t}
       />
 
-      <StaffPinModal
-        isOpen={showStaffModal}
-        isLocked={isScreenLocked}
-        employees={employees}
-        activeEmployee={activeEmployee}
-        shopName={activeStoreName}
-        onSelectEmployeeByPin={handleSelectEmployeeByPin}
-        onLockScreen={() => {
-          setShowStaffModal(false);
-          setIsScreenLocked(true);
-        }}
-        onClose={() => setShowStaffModal(false)}
-        onLogout={handleLogout}
-        t={t}
-      />
+      {!isSubscriptionLocked && (
+        <StaffPinModal
+          isOpen={showStaffModal}
+          isLocked={isScreenLocked}
+          employees={employees}
+          activeEmployee={activeEmployee}
+          shopName={activeStoreName}
+          onSelectEmployeeByPin={handleSelectEmployeeByPin}
+          onLockScreen={() => {
+            setShowStaffModal(false);
+            setIsScreenLocked(true);
+          }}
+          onClose={() => setShowStaffModal(false)}
+          onLogout={handleLogout}
+          t={t}
+        />
+      )}
+
+      {isSubscriptionLocked && subscription && (
+        <SubscriptionLockModal
+          subscription={subscription}
+          shopName={activeStoreName}
+          checkingStatus={checkingSubscription}
+          onRefreshStatus={() => void handleRefreshSubscriptionStatus()}
+          onLogout={() => void handleLogout()}
+          lang={lang}
+          t={t}
+        />
+      )}
     </div>
   );
 }

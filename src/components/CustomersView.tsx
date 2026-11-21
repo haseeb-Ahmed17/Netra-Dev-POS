@@ -3,6 +3,7 @@ import {
   Banknote,
   FileText,
   MapPin,
+  MessageCircle,
   Pencil,
   Phone,
   Plus,
@@ -19,8 +20,10 @@ import {
   type TranslationStrings,
 } from '../i18n';
 import type { Customer, Language, OrderRecord } from '../types';
+import { buildUdhaarWhatsAppUrl } from './UdhaarView';
 
 interface CustomersViewProps {
+  storeName: string;
   customers: Customer[];
   orders: OrderRecord[];
   canDelete: boolean;
@@ -53,6 +56,7 @@ const EMPTY_FORM: CustomerFormState = {
 };
 
 export function CustomersView({
+  storeName,
   customers,
   orders,
   canDelete,
@@ -374,14 +378,30 @@ export function CustomersView({
                           </button>
 
                           {cust.balance > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => openPaymentModal(cust)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors cursor-pointer"
-                            >
-                              <Banknote className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                              <span>{t.recordCustomerPaymentBtn}</span>
-                            </button>
+                            <>
+                              <a
+                                href={buildUdhaarWhatsAppUrl({
+                                  storeName,
+                                  customerName: cust.name,
+                                  phone: cust.phone,
+                                  amount: cust.balance,
+                                })}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors whitespace-nowrap"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                <span>{t.sendWhatsappBtn}</span>
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() => openPaymentModal(cust)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors cursor-pointer"
+                              >
+                                <Banknote className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                <span>{t.recordCustomerPaymentBtn}</span>
+                              </button>
+                            </>
                           )}
 
                           <button

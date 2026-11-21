@@ -8,10 +8,12 @@ export type NavTab =
   | 'inventory_report'
   | 'purchases'
   | 'vendors'
+  | 'expenses'
   | 'customers'
   | 'udhaar'
   | 'staff'
-  | 'settings';
+  | 'settings'
+  | 'saas_admin';
 
 export type CategoryId = 'all' | 'beverages' | 'bakery' | 'pantry';
 
@@ -82,11 +84,21 @@ export interface OrderRecord {
 
 export type UdhaarEntryType = 'credit' | 'payment';
 
+export type ReminderSchedule =
+  | 'none'
+  | '3_days'
+  | '1_week'
+  | '2_weeks'
+  | '1_month'
+  | 'custom';
+
 export interface UdhaarCustomer {
   id: string;
   name: string;
   phone: string;
   notes?: string;
+  reminderSchedule?: ReminderSchedule;
+  dueDate?: string; // YYYY-MM-DD
   createdAt: string;
 }
 
@@ -196,3 +208,34 @@ export interface OfflineQueuedSale {
   newUdhaarEntry?: UdhaarEntry;
   updatedCustomer?: Customer;
 }
+
+// Phase 5: Commercial SaaS Subscriptions, Shop Expenses
+export interface SubscriptionRecord {
+  userId: string;
+  email: string;
+  shopName?: string;
+  planName: string;
+  expiresAt: string; // ISO timestamp
+  isBlocked: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type ExpenseCategory =
+  | 'Rent'
+  | 'Electricity'
+  | 'Staff Salary'
+  | 'Supplies'
+  | 'Maintenance'
+  | 'Other';
+
+export interface ExpenseRecord {
+  id: string;
+  title: string;
+  category: ExpenseCategory;
+  amount: number;
+  notes: string;
+  expenseDate: string; // YYYY-MM-DD
+  createdAt: string;
+}
+

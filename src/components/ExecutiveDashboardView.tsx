@@ -7,7 +7,7 @@ import {
   getPaymentLabel,
   type TranslationStrings,
 } from '../i18n';
-import type { CategoryId, Language, OrderRecord } from '../types';
+import type { CategoryId, ExpenseRecord, Language, OrderRecord } from '../types';
 
 type TimeframeFilter = 'today' | 'month' | 'year' | 'custom';
 type BreakdownMethod = 'cash' | 'jazzcash' | 'easypaisa' | 'card' | 'udhaar';
@@ -15,6 +15,7 @@ type BreakdownMethod = 'cash' | 'jazzcash' | 'easypaisa' | 'card' | 'udhaar';
 interface ExecutiveDashboardViewProps {
   storeName: string;
   orders: OrderRecord[];
+  expenses: ExpenseRecord[];
   latestNewOrderId: string | null;
   canResetDemo?: boolean;
   suppressPrint?: boolean;
@@ -58,6 +59,7 @@ function downloadCsvFile(filename: string, rows: (string | number)[][]) {
 export function ExecutiveDashboardView({
   storeName,
   orders,
+  expenses,
   latestNewOrderId,
   canResetDemo = true,
   suppressPrint = false,
@@ -124,6 +126,24 @@ export function ExecutiveDashboardView({
       return ts >= customStartMs && ts <= customEndMs;
     });
   }, [orders, timeframe, customStartDate, customEndDate]);
+
+  const filteredExpenses = useMemo(() => {
+    const now = new Date();
+    const todayStr = toLocalDateInputValue(now);
+    const monthPrefix = todayStr.slice(0, 7);
+    const yearPrefix = todayStr.slice(0, 4);
+
+    return expenses.filter((exp) => {
+      const dateStr = exp.expenseDate;
+      if (!dateStr) return false;
+      if (timeframe === 'today') return dateStr === todayStr;
+      if (timeframe === 'month') return dateStr.startsWith(monthPrefix) && dateStr <= todayStr;
+      if (timeframe === 'year') return dateStr.startsWith(yearPrefix) && dateStr <= todayStr;
+      if (customStartDate && dateStr < customStartDate) return false;
+      if (customEndDate && dateStr > customEndDate) return false;
+      return true;
+    });
+  }, [expenses, timeframe, customStartDate, customEndDate]);
 
   const metrics = useMemo(() => {
     let totalRevenue = 0;
@@ -211,8 +231,11 @@ export function ExecutiveDashboardView({
 
     const orderCount = filteredOrders.length;
     const avgOrderValue = orderCount > 0 ? totalRevenue / orderCount : 0;
-    const netProfit = totalRevenue - totalCogs;
-    const marginPct = totalRevenue > 0 ? Math.round((netProfit / totalRevenue) * 100) : 0;
+    const grossProfit = totalRevenue - totalCogs;
+    const totalExpenses = filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0);
+    const netProfitAfterExpenses = grossProfit - totalExpenses;
+    const marginPct =
+      totalRevenue > 0 ? Math.round((netProfitAfterExpenses / totalRevenue) * 100) : 0;
 
     const paymentBreakdown = (
       ['cash', 'jazzcash', 'easypaisa', 'card', 'udhaar'] as BreakdownMethod[]
@@ -268,7 +291,9 @@ export function ExecutiveDashboardView({
     return {
       totalRevenue,
       totalCogs,
-      netProfit,
+      grossProfit,
+      totalExpenses,
+      netProfitAfterExpenses,
       totalDiscounts,
       totalTax,
       orderCount,
@@ -282,7 +307,7 @@ export function ExecutiveDashboardView({
       maxHourlyRevenue,
       recentOrders,
     };
-  }, [filteredOrders]);
+  }, [filteredOrders, filteredExpenses]);
 
   const latestOrder = useMemo(
     () => orders.find((o) => o.id === latestNewOrderId) ?? null,
@@ -301,7 +326,9 @@ export function ExecutiveDashboardView({
       [],
       [t.totalRevenue, Math.round(metrics.totalRevenue)],
       [t.totalCogsLabel, Math.round(metrics.totalCogs)],
-      [t.netProfitLabel, Math.round(metrics.netProfit)],
+      [t.grossProfit, Math.round(metrics.grossProfit)],
+      [t.totalExpensesLabel, Math.round(metrics.totalExpenses)],
+      [t.netProfitAfterExpensesLabel, Math.round(metrics.netProfitAfterExpenses)],
       [t.totalDiscountsLabel, Math.round(metrics.totalDiscounts)],
       [t.totalTaxCollectedLabel, Math.round(metrics.totalTax)],
       [t.ordersCompleted, metrics.orderCount],
@@ -474,10 +501,10 @@ export function ExecutiveDashboardView({
         )}
       </div>
 
-      {/* 5-Column Financial KPI Strip (Revenue, COGS, Net Profit, Discounts, Tax) */}
+      {/* 6-Column Financial KPI Strip (Revenue, COGS, Gross Profit, Expenses, Net Profit After Expenses, Discounts & Tax) */}
       <section
         aria-label="Key Financial Metrics"
-        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4"
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4"
       >
         <div className="bg-white border border-slate-200 rounded-xl p-5">
           <p className="text-xs font-medium text-slate-500">{t.totalRevenue}</p>
@@ -508,26 +535,38 @@ export function ExecutiveDashboardView({
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500">{t.netProfitLabel}</p>
-          <p
-            className={`font-mono text-2xl font-bold tabular-nums mt-2 ${
-              metrics.netProfit >= 0 ? 'text-emerald-700' : 'text-red-700'
-            }`}
-          >
-            {formatCurrency(metrics.netProfit, lang)}
+          <p className="text-xs font-medium text-slate-500">{t.grossProfit}</p>
+          <p className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-2">
+            {formatCurrency(metrics.grossProfit, lang)}
           </p>
-          <p className="text-xs text-emerald-700 font-medium mt-2 tabular-nums">
-            {metrics.marginPct}% {t.marginLabel}
+          <p className="text-xs text-slate-500 mt-2 tabular-nums">
+            {t.avgOrderValue}: {formatCurrency(metrics.avgOrderValue, lang)}
           </p>
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500">{t.totalDiscountsLabel}</p>
-          <p className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-2">
-            {formatCurrency(metrics.totalDiscounts, lang)}
+          <p className="text-xs font-medium text-slate-500">{t.totalExpensesLabel}</p>
+          <p className="font-mono text-2xl font-bold text-amber-800 tabular-nums mt-2">
+            {formatCurrency(metrics.totalExpenses, lang)}
           </p>
           <p className="text-xs text-slate-500 mt-2 tabular-nums">
-            {t.avgOrderValue}: {formatCurrency(metrics.avgOrderValue, lang)}
+            {filteredExpenses.length} {t.navExpenses}
+          </p>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <p className="text-xs font-medium text-slate-500">
+            {t.netProfitAfterExpensesLabel}
+          </p>
+          <p
+            className={`font-mono text-2xl font-bold tabular-nums mt-2 ${
+              metrics.netProfitAfterExpenses >= 0 ? 'text-emerald-700' : 'text-red-700'
+            }`}
+          >
+            {formatCurrency(metrics.netProfitAfterExpenses, lang)}
+          </p>
+          <p className="text-xs text-emerald-700 font-medium mt-2 tabular-nums">
+            {metrics.marginPct}% {t.marginLabel}
           </p>
         </div>
 
@@ -537,7 +576,7 @@ export function ExecutiveDashboardView({
             {formatCurrency(metrics.totalTax, lang)}
           </p>
           <p className="text-xs text-slate-500 mt-2 tabular-nums">
-            {metrics.orderCount} {t.ordersCompleted.toLowerCase()}
+            {t.totalDiscountsLabel}: {formatCurrency(metrics.totalDiscounts, lang)}
           </p>
         </div>
       </section>
