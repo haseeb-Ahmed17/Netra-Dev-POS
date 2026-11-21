@@ -108,8 +108,17 @@ create table if not exists public.orders (
   tax_amount numeric not null default 0,
   total numeric not null default 0,
   amount_tendered numeric not null default 0,
-  change_due numeric not null default 0
+  change_due numeric not null default 0,
+  return_status text not null default 'completed',
+  refunded_amount numeric not null default 0,
+  returned_at timestamptz,
+  return_note text not null default ''
 );
+
+alter table public.orders add column if not exists return_status text not null default 'completed';
+alter table public.orders add column if not exists refunded_amount numeric not null default 0;
+alter table public.orders add column if not exists returned_at timestamptz;
+alter table public.orders add column if not exists return_note text not null default '';
 
 alter table public.orders drop constraint if exists orders_payment_method_check;
 alter table public.orders add constraint orders_payment_method_check

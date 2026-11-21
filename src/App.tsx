@@ -16,7 +16,10 @@ import { StaffView } from './components/StaffView';
 import { StoreSettingsView } from './components/StoreSettingsView';
 import { SubscriptionLockModal } from './components/SubscriptionLockModal';
 import { TopBar } from './components/TopBar';
-import { TransactionsView } from './components/TransactionsView';
+import {
+  TransactionsView,
+  type ReturnRequestPayload,
+} from './components/TransactionsView';
 import { UdhaarView } from './components/UdhaarView';
 import { VendorsView } from './components/VendorsView';
 import { createDefaultStoreSettings } from './data/initialData';
@@ -43,6 +46,7 @@ import {
   signOutShopkeeper,
   signUpShopkeeper,
   syncOfflineQueue,
+  updateOrderReturnRecord,
   updateUdhaarCustomerRecord,
   upsertCustomerRecord,
   upsertEmployeeRecord,
@@ -516,39 +520,123 @@ export default function App() {
 
   const handleAddToCart = (productId: string) => {
     const product = products.find((p) => p.id === productId);
-    if (!product || product.stock <= 0) return;
+    if (!product) return;
 
     setCart((prev) => {
-      const existing = prev.find((item) => item.productId === productId);
+      const usedPositiveQty = prev
+        .filter((i) => i.productId === productId && !i.isReturn)
+        .reduce((s, i) => s + i.quantity, 0);
+      if (usedPositiveQty >= product.stock) return prev;
+
+      const existing = prev.find(
+        (item) => item.productId === productId && !item.isReturn
+      );
       if (existing) {
-        if (existing.quantity >= product.stock) return prev;
         return prev.map((item) =>
-          item.productId === productId
+          item.productId === productId && !item.isReturn
             ? { ...item, quantity: item.quantity + 1 }
             : item
         );
       }
-      return [...prev, { productId, quantity: 1 }];
+      return [...prev, { productId, quantity: 1, isReturn: false }];
     });
   };
 
-  const handleUpdateQuantity = (productId: string, delta: number) => {
+  const handleUpdateQuantity = (
+    productId: string,
+    delta: number,
+    isReturn = false
+  ) => {
     const product = products.find((p) => p.id === productId);
     const maxStock = product?.stock ?? 0;
 
     setCart((prev) =>
       prev
         .map((item) => {
-          if (item.productId !== productId) return item;
-          const nextQty = Math.min(maxStock, item.quantity + delta);
+          if (item.productId !== productId || Boolean(item.isReturn) !== isReturn) {
+            return item;
+          }
+          const rawNext = item.quantity + delta;
+          const nextQty = isReturn ? rawNext : Math.min(maxStock, rawNext);
           return { ...item, quantity: nextQty };
         })
         .filter((item) => item.quantity > 0)
     );
   };
 
-  const handleRemoveFromCart = (productId: string) => {
-    setCart((prev) => prev.filter((item) => item.productId !== productId));
+  const handleToggleCartItemReturn = (
+    productId: string,
+    currentIsReturn: boolean
+  ) => {
+    const product = products.find((p) => p.id === productId);
+    const maxStock = product?.stock ?? 0;
+
+    setCart((prev) => {
+      const target = prev.find(
+        (item) =>
+          item.productId === productId && Boolean(item.isReturn) === currentIsReturn
+      );
+      if (!target) return prev;
+
+      const nextIsReturn = !currentIsReturn;
+      const existingOpposite = prev.find(
+        (item) =>
+          item.productId === productId && Boolean(item.isReturn) === nextIsReturn
+      );
+
+      if (existingOpposite) {
+        return prev
+          .filter(
+            (item) =>
+              !(
+                item.productId === productId &&
+                Boolean(item.isReturn) === currentIsReturn
+              )
+          )
+          .map((item) => {
+            if (
+              item.productId === productId &&
+              Boolean(item.isReturn) === nextIsReturn
+            ) {
+              const merged = item.quantity + target.quantity;
+              return {
+                ...item,
+                quantity: nextIsReturn ? merged : Math.min(maxStock, merged),
+              };
+            }
+            return item;
+          })
+          .filter((item) => item.quantity > 0);
+      }
+
+      return prev
+        .map((item) => {
+          if (
+            item.productId === productId &&
+            Boolean(item.isReturn) === currentIsReturn
+          ) {
+            const clampedQty = nextIsReturn
+              ? item.quantity
+              : Math.min(maxStock, item.quantity);
+            return {
+              ...item,
+              isReturn: nextIsReturn,
+              quantity: clampedQty,
+            };
+          }
+          return item;
+        })
+        .filter((item) => item.quantity > 0);
+    });
+  };
+
+  const handleRemoveFromCart = (productId: string, isReturn = false) => {
+    setCart((prev) =>
+      prev.filter(
+        (item) =>
+          !(item.productId === productId && Boolean(item.isReturn) === isReturn)
+      )
+    );
   };
 
   const handleClearCart = () => {
@@ -575,7 +663,14 @@ export default function App() {
     const lineItems: OrderLineItem[] = [];
     for (const cartItem of cart) {
       const product = products.find((p) => p.id === cartItem.productId);
-      if (!product || product.stock < cartItem.quantity) continue;
+      const isRet = Boolean(cartItem.isReturn);
+      if (!product || (!isRet && product.stock < cartItem.quantity)) continue;
+
+      const signedQty = isRet ? -cartItem.quantity : cartItem.quantity;
+      const signedLineTotal = isRet
+        ? -(product.price * cartItem.quantity)
+        : product.price * cartItem.quantity;
+
       lineItems.push({
         productId: product.id,
         sku: product.sku,
@@ -585,34 +680,40 @@ export default function App() {
         unitPrice: product.price,
         unitCost: product.cost,
         taxRate: product.taxRate ?? 0,
-        quantity: cartItem.quantity,
-        lineTotal: product.price * cartItem.quantity,
+        quantity: signedQty,
+        lineTotal: signedLineTotal,
+        isReturn: isRet,
       });
     }
 
     if (lineItems.length === 0) return null;
 
     const subtotal = lineItems.reduce((sum, item) => sum + item.lineTotal, 0);
-    const discountAmount = Math.round(subtotal * (discountPercent / 100));
-    const taxable = Math.max(0, subtotal - discountAmount);
-    const discountFactor = 1 - discountPercent / 100;
+    const discountAmount =
+      subtotal > 0 ? Math.round(subtotal * (discountPercent / 100)) : 0;
+    const discountFactor = subtotal > 0 ? 1 - discountPercent / 100 : 1;
     const taxAmount = Math.round(
       lineItems.reduce((sum, item) => {
         const discountedLine = item.lineTotal * discountFactor;
         return sum + discountedLine * ((item.taxRate ?? 0) / 100);
       }, 0)
     );
-    const effectiveTaxRate = taxable > 0 ? taxAmount / taxable : 0;
+    const taxable = subtotal - discountAmount;
+    const effectiveTaxRate = taxable !== 0 ? taxAmount / taxable : 0;
     const total = taxable + taxAmount;
 
     const effectiveTendered =
       paymentMethod === 'cash'
-        ? Math.max(total, amountTendered)
+        ? total > 0
+          ? Math.max(total, amountTendered)
+          : total
         : paymentMethod === 'udhaar'
         ? 0
         : total;
     const changeDue =
-      paymentMethod === 'cash' ? Math.max(0, effectiveTendered - total) : 0;
+      paymentMethod === 'cash' && total > 0
+        ? Math.max(0, effectiveTendered - total)
+        : 0;
 
     // Resolve matching CRM customer if selected or matched by Khata customer name
     let resolvedCustomer = customerId
@@ -624,6 +725,16 @@ export default function App() {
         (c) => c.name.trim().toLowerCase() === lowerName
       );
     }
+
+    const hasReturnItems = lineItems.some((li) => Boolean(li.isReturn));
+    const hasSaleItems = lineItems.some((li) => !li.isReturn);
+    const returnStatus: OrderRecord['returnStatus'] =
+      hasReturnItems && !hasSaleItems
+        ? 'refunded'
+        : hasReturnItems && hasSaleItems
+        ? 'exchanged'
+        : 'completed';
+    const refundedAmount = hasReturnItems && total < 0 ? Math.abs(total) : 0;
 
     const nextSeq = 1001 + orders.length;
     const newOrder: OrderRecord = {
@@ -643,14 +754,26 @@ export default function App() {
       total,
       amountTendered: effectiveTendered,
       changeDue,
+      returnStatus,
+      refundedAmount,
     };
 
+    // Net stock delta per productId (deduct positive purchases, add back returns)
+    const netDeltaByProduct = new Map<string, number>();
+    for (const li of lineItems) {
+      const delta = li.isReturn ? Math.abs(li.quantity) : -li.quantity;
+      netDeltaByProduct.set(
+        li.productId,
+        (netDeltaByProduct.get(li.productId) ?? 0) + delta
+      );
+    }
+
     const updatedProducts = products.map((prod) => {
-      const sold = lineItems.find((li) => li.productId === prod.id);
-      if (!sold) return prod;
+      const delta = netDeltaByProduct.get(prod.id);
+      if (!delta) return prod;
       return {
         ...prod,
-        stock: Math.max(0, prod.stock - sold.quantity),
+        stock: Math.max(0, prod.stock + delta),
       };
     });
 
@@ -708,6 +831,148 @@ export default function App() {
     return newOrder;
   };
 
+  const handleProcessOrderReturn = ({
+    orderId,
+    mode,
+    items,
+    reason,
+  }: ReturnRequestPayload) => {
+    if (!user) return;
+    const targetOrder = orders.find((o) => o.id === orderId);
+    if (!targetOrder) return;
+
+    const reqQtyMap = new Map<string, number>();
+    for (const entry of items) {
+      if (entry.quantity > 0) {
+        reqQtyMap.set(
+          entry.productId,
+          (reqQtyMap.get(entry.productId) ?? 0) + entry.quantity
+        );
+      }
+    }
+    if (reqQtyMap.size === 0) return;
+
+    const appliedQtyMap = new Map<string, number>();
+    let totalRemainingBefore = 0;
+    let totalReturnedNow = 0;
+    let returnedSubtotal = 0;
+    let returnedTax = 0;
+    const discountFactor = 1 - targetOrder.discountPercent / 100;
+
+    const updatedItems = targetOrder.items.map((item) => {
+      const remaining = Math.max(0, item.quantity - (item.returnedQty ?? 0));
+      totalRemainingBefore += remaining;
+
+      const requested = reqQtyMap.get(item.productId) ?? 0;
+      const qtyToApply = Math.min(remaining, Math.max(0, requested));
+      if (qtyToApply <= 0) return item;
+
+      appliedQtyMap.set(item.productId, qtyToApply);
+      totalReturnedNow += qtyToApply;
+
+      const lineSub = item.unitPrice * qtyToApply;
+      returnedSubtotal += lineSub;
+      returnedTax += lineSub * discountFactor * ((item.taxRate ?? 0) / 100);
+
+      return {
+        ...item,
+        returnedQty: (item.returnedQty ?? 0) + qtyToApply,
+        refundedQty:
+          mode === 'refund'
+            ? (item.refundedQty ?? 0) + qtyToApply
+            : item.refundedQty ?? 0,
+        exchangedQty:
+          mode === 'exchange'
+            ? (item.exchangedQty ?? 0) + qtyToApply
+            : item.exchangedQty ?? 0,
+      };
+    });
+
+    if (totalReturnedNow === 0) return;
+
+    const returnedAllRemaining = totalReturnedNow >= totalRemainingBefore;
+
+    let nextSubtotal = targetOrder.subtotal;
+    let nextDiscountAmount = targetOrder.discountAmount;
+    let nextTaxAmount = targetOrder.taxAmount;
+    let nextTotal = targetOrder.total;
+    let addedRefundAmount = 0;
+
+    if (mode === 'refund') {
+      if (returnedAllRemaining) {
+        addedRefundAmount = targetOrder.total;
+        nextSubtotal = 0;
+        nextDiscountAmount = 0;
+        nextTaxAmount = 0;
+        nextTotal = 0;
+      } else {
+        const returnedDiscount = Math.round(
+          returnedSubtotal * (targetOrder.discountPercent / 100)
+        );
+        const roundedTax = Math.round(returnedTax);
+        const computedRefund = Math.max(
+          0,
+          returnedSubtotal - returnedDiscount + roundedTax
+        );
+        addedRefundAmount = Math.min(targetOrder.total, computedRefund);
+        nextTotal = Math.max(0, targetOrder.total - addedRefundAmount);
+        nextSubtotal = Math.max(0, targetOrder.subtotal - returnedSubtotal);
+        nextDiscountAmount = Math.max(
+          0,
+          targetOrder.discountAmount - returnedDiscount
+        );
+        nextTaxAmount = Math.max(0, targetOrder.taxAmount - roundedTax);
+      }
+    }
+
+    let nextReturnStatus: OrderRecord['returnStatus'] =
+      targetOrder.returnStatus ?? 'completed';
+    if (mode === 'refund') {
+      const allUnitsRefunded = updatedItems.every(
+        (li) => (li.refundedQty ?? 0) >= li.quantity
+      );
+      nextReturnStatus = allUnitsRefunded ? 'refunded' : 'partially_refunded';
+    } else if (nextReturnStatus !== 'partially_refunded') {
+      nextReturnStatus = 'exchanged';
+    }
+
+    const updatedOrder: OrderRecord = {
+      ...targetOrder,
+      items: updatedItems,
+      subtotal: nextSubtotal,
+      discountAmount: nextDiscountAmount,
+      taxAmount: nextTaxAmount,
+      total: nextTotal,
+      returnStatus: nextReturnStatus,
+      refundedAmount: (targetOrder.refundedAmount ?? 0) + addedRefundAmount,
+      returnedAt: new Date().toISOString(),
+      returnNote: reason || targetOrder.returnNote,
+    };
+
+    const restockedProducts: Product[] = [];
+    const updatedProducts = products.map((prod) => {
+      const addBackQty = appliedQtyMap.get(prod.id) ?? 0;
+      if (addBackQty <= 0) return prod;
+      const nextProd = {
+        ...prod,
+        stock: prod.stock + addBackQty,
+      };
+      restockedProducts.push(nextProd);
+      return nextProd;
+    });
+
+    setOrders((prev) =>
+      prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
+    );
+    setProducts(updatedProducts);
+
+    updateOrderReturnRecord(user.id, updatedOrder, restockedProducts).then(
+      (syncErr) => {
+        if (syncErr) setCloudSyncError(syncErr);
+      }
+    );
+  };
+
   // Stock Management Handlers
   const handleAdjustStock = (productId: string, delta: number) => {
     if (!user) return;
@@ -749,7 +1014,7 @@ export default function App() {
   };
 
   const handleDeleteProduct = (productId: string) => {
-    if (!user || activeRole !== 'admin') return;
+    if (!user || activeRole === 'cashier') return;
     setProducts((prev) => prev.filter((prod) => prod.id !== productId));
     setCart((prev) => prev.filter((item) => item.productId !== productId));
     deleteProductRecord(user.id, productId).then((syncErr) => {
@@ -1396,6 +1661,7 @@ export default function App() {
                 canViewDashboard={activeRole !== 'cashier'}
                 onAddToCart={handleAddToCart}
                 onUpdateQuantity={handleUpdateQuantity}
+                onToggleReturn={handleToggleCartItemReturn}
                 onRemoveFromCart={handleRemoveFromCart}
                 onClearCart={handleClearCart}
                 onCompleteSale={handleCompleteSale}
@@ -1426,6 +1692,7 @@ export default function App() {
               <TransactionsView
                 orders={orders}
                 onPrintReceipt={(order) => setActiveReceiptOrder(order)}
+                onProcessReturn={handleProcessOrderReturn}
                 lang={lang}
                 t={t}
               />
@@ -1437,7 +1704,7 @@ export default function App() {
                 shopName={activeStoreName}
                 products={products}
                 adjustments={inventoryAdjustments}
-                canDelete={activeRole === 'admin'}
+                canDelete={activeRole === 'admin' || activeRole === 'manager'}
                 onAdjustStock={handleAdjustStock}
                 onRecordAdjustment={handleRecordInventoryAdjustment}
                 onAddProduct={handleAddProduct}

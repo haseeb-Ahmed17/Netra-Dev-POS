@@ -203,14 +203,22 @@ export function ExecutiveDashboardView({
       hourlyMap.set(clampedHour, hourEntry);
 
       for (const item of order.items) {
-        totalUnits += item.quantity;
-        const itemCost = item.unitCost * item.quantity;
+        const isPosReturnItem = Boolean(item.isReturn) || item.quantity < 0;
+        const activeQty = isPosReturnItem
+          ? item.quantity
+          : Math.max(0, item.quantity - (item.refundedQty ?? 0));
+        const activeRatio =
+          isPosReturnItem || item.quantity <= 0 ? 1 : activeQty / item.quantity;
+        const activeLineTotal = item.lineTotal * activeRatio;
+        const itemCost = item.unitCost * activeQty;
+
+        totalUnits += activeQty;
         totalCogs += itemCost;
 
         const catBucket = categoryTotals[item.category];
         if (catBucket) {
-          catBucket.revenue += item.lineTotal;
-          catBucket.units += item.quantity;
+          catBucket.revenue += activeLineTotal;
+          catBucket.units += activeQty;
         }
 
         const existing = productStats.get(item.productId) ?? {
@@ -222,9 +230,9 @@ export function ExecutiveDashboardView({
           revenue: 0,
           profit: 0,
         };
-        existing.units += item.quantity;
-        existing.revenue += item.lineTotal;
-        existing.profit += item.lineTotal - itemCost;
+        existing.units += activeQty;
+        existing.revenue += activeLineTotal;
+        existing.profit += activeLineTotal - itemCost;
         productStats.set(item.productId, existing);
       }
     }

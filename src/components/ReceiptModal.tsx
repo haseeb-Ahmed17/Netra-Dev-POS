@@ -67,7 +67,9 @@ export function ReceiptModal({
       '----------------------------------------',
       ...order.items.map((item) => {
         const name = lang === 'ur' ? item.nameUr : item.nameEn;
-        return `${name}\n  ${item.quantity} x Rs. ${item.unitPrice} = Rs. ${item.lineTotal}`;
+        const isRet = Boolean(item.isReturn) || item.quantity < 0;
+        const prefix = isRet ? `[${t.posReturnBadge}] ` : '';
+        return `${prefix}${name}\n  ${item.quantity} x Rs. ${item.unitPrice} = ${formatCurrency(item.lineTotal, lang)}`;
       }),
       '----------------------------------------',
       `${t.subtotalLabel}: Rs. ${order.subtotal}`,
@@ -195,18 +197,36 @@ export function ReceiptModal({
                 </tr>
               </thead>
               <tbody className="divide-y divide-dotted divide-slate-200">
-                {order.items.map((item) => (
-                  <tr key={item.productId}>
-                    <td className="py-2 pe-2">
-                      {lang === 'ur' ? item.nameUr : item.nameEn}
-                    </td>
-                    <td className="py-2 text-end tabular-nums">{item.quantity}</td>
-                    <td className="py-2 text-end tabular-nums">{item.unitPrice}</td>
-                    <td className="py-2 text-end font-semibold tabular-nums">
-                      {item.lineTotal}
-                    </td>
-                  </tr>
-                ))}
+                {order.items.map((item, idx) => {
+                  const isRet = Boolean(item.isReturn) || item.quantity < 0;
+                  return (
+                    <tr key={`${item.productId}-${isRet ? 'ret' : 'sale'}-${idx}`}>
+                      <td className="py-2 pe-2">
+                        <span>{lang === 'ur' ? item.nameUr : item.nameEn}</span>
+                        {isRet && (
+                          <span className="ms-1 inline-block px-1 py-0.2 rounded text-[9px] font-bold bg-red-100 text-red-700 border border-red-200">
+                            {t.posReturnBadge}
+                          </span>
+                        )}
+                      </td>
+                      <td
+                        className={`py-2 text-end tabular-nums ${
+                          isRet ? 'text-red-700 font-semibold' : ''
+                        }`}
+                      >
+                        {item.quantity}
+                      </td>
+                      <td className="py-2 text-end tabular-nums">{item.unitPrice}</td>
+                      <td
+                        className={`py-2 text-end font-semibold tabular-nums ${
+                          isRet ? 'text-red-700' : ''
+                        }`}
+                      >
+                        {item.lineTotal}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
 
@@ -230,8 +250,12 @@ export function ReceiptModal({
                 <span className="text-slate-600">{t.taxLabel}</span>
                 <span className="tabular-nums">{formatCurrency(order.taxAmount, lang)}</span>
               </div>
-              <div className="flex justify-between pt-2 mt-1 border-t border-slate-300 text-sm font-bold text-slate-900">
-                <span>{t.grandTotalLabel}</span>
+              <div
+                className={`flex justify-between pt-2 mt-1 border-t border-slate-300 text-sm font-bold ${
+                  order.total < 0 ? 'text-red-700' : 'text-slate-900'
+                }`}
+              >
+                <span>{order.total < 0 ? t.netRefundDueLabel : t.grandTotalLabel}</span>
                 <span className="tabular-nums">{formatCurrency(order.total, lang)}</span>
               </div>
             </div>

@@ -136,6 +136,9 @@ export interface TranslationStrings {
   editBtn: string;
   deleteBtn: string;
   confirmDeleteBtn: string;
+  deleteProductTitle: string;
+  deleteProductConfirmDesc: string;
+  deleteForeverBtn: string;
   filterAllStock: string;
   filterInStock: string;
   filterLowStock: string;
@@ -502,6 +505,34 @@ export interface TranslationStrings {
   sendWhatsappBtn: string;
   editReminderBtn: string;
   noDueReminders: string;
+
+  returnExchangeBtn: string;
+  returnModalTitle: string;
+  returnModalSubtitle: string;
+  returnSelectItemsLabel: string;
+  returnQtyCol: string;
+  purchasedQtyCol: string;
+  alreadyReturnedLabel: string;
+  returnResolutionLabel: string;
+  returnRefundOptionTitle: string;
+  returnRefundOptionDesc: string;
+  returnExchangeOptionTitle: string;
+  returnExchangeOptionDesc: string;
+  returnReasonLabel: string;
+  returnReasonPlaceholder: string;
+  returnSummaryStockLabel: string;
+  returnSummaryRevenueLabel: string;
+  confirmRefundBtn: string;
+  confirmExchangeBtn: string;
+  statusCompletedLabel: string;
+  statusPartiallyRefundedLabel: string;
+  statusRefundedLabel: string;
+  statusExchangedLabel: string;
+  refundedBadgePrefix: string;
+  fullyReturnedLabel: string;
+  posReturnToggleBtn: string;
+  posReturnBadge: string;
+  netRefundDueLabel: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -636,6 +667,10 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     editBtn: 'Edit',
     deleteBtn: 'Delete',
     confirmDeleteBtn: 'Confirm',
+    deleteProductTitle: 'Delete Product Permanently?',
+    deleteProductConfirmDesc:
+      'This product will be permanently removed from your inventory and Supabase cloud database. This action cannot be undone.',
+    deleteForeverBtn: 'Delete Product',
     filterAllStock: 'All Stock',
     filterInStock: 'Healthy',
     filterLowStock: 'Low / Out',
@@ -995,6 +1030,34 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     sendWhatsappBtn: 'Send WhatsApp',
     editReminderBtn: 'Reminder Schedule',
     noDueReminders: 'No Udhaar reminders due today or overdue.',
+
+    returnExchangeBtn: 'Return / Exchange',
+    returnModalTitle: 'Return / Exchange Items',
+    returnModalSubtitle: 'Select invoice items and quantities to restock, then choose Cash Refund or Exchange.',
+    returnSelectItemsLabel: 'Select Items to Return',
+    returnQtyCol: 'Return Qty',
+    purchasedQtyCol: 'Sold',
+    alreadyReturnedLabel: 'Returned',
+    returnResolutionLabel: 'Resolution Mode',
+    returnRefundOptionTitle: 'Cash / Wallet Refund (Paise Wapas)',
+    returnRefundOptionDesc: 'Adds returned items back to inventory stock and deducts the refunded amount from sale & revenue totals.',
+    returnExchangeOptionTitle: 'Exchange / Store Credit (Cheez Badli)',
+    returnExchangeOptionDesc: 'Adds returned items back to inventory stock without deducting cash revenue so the customer can take another item.',
+    returnReasonLabel: 'Reason / Note (Optional)',
+    returnReasonPlaceholder: 'e.g., Seal broken, wrong flavor, customer exchange...',
+    returnSummaryStockLabel: 'Units Added Back to Stock',
+    returnSummaryRevenueLabel: 'Revenue / Sale Deduction',
+    confirmRefundBtn: 'Confirm Cash Refund',
+    confirmExchangeBtn: 'Confirm Exchange',
+    statusCompletedLabel: 'Completed',
+    statusPartiallyRefundedLabel: 'Partially Refunded',
+    statusRefundedLabel: 'Refunded',
+    statusExchangedLabel: 'Exchanged',
+    refundedBadgePrefix: 'Refunded',
+    fullyReturnedLabel: 'Returned',
+    posReturnToggleBtn: 'Return',
+    posReturnBadge: 'RETURN',
+    netRefundDueLabel: 'Net Refund Due',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -1127,6 +1190,10 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     editBtn: 'ترمیم',
     deleteBtn: 'حذف',
     confirmDeleteBtn: 'تصدیق',
+    deleteProductTitle: 'پروڈکٹ مستقل طور پر حذف کریں؟',
+    deleteProductConfirmDesc:
+      'یہ پروڈکٹ آپ کے اسٹاک اور کلاؤڈ ڈیٹابیس سے مستقل طور پر حذف ہو جائے گی۔ یہ عمل واپس نہیں ہو سکتا۔',
+    deleteForeverBtn: 'حذف کریں',
     filterAllStock: 'تمام اسٹاک',
     filterInStock: 'دستیاب',
     filterLowStock: 'کم / ختم',
@@ -1486,13 +1553,43 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     sendWhatsappBtn: 'واٹس ایپ بھیجیں',
     editReminderBtn: 'یاد دہانی شیڈول',
     noDueReminders: 'آج کوئی واجب الادا یا تاخیر شدہ ادھار یاد دہانی نہیں ہے۔',
+
+    returnExchangeBtn: 'واپسی / تبدیلی',
+    returnModalTitle: 'اشیاء کی واپسی / تبدیلی',
+    returnModalSubtitle: 'بل میں سے واپس کی جانے والی اشیاء اور مقدار منتخب کریں، پھر رقم واپسی یا تبدیلی منتخب کریں۔',
+    returnSelectItemsLabel: 'واپسی کے لیے اشیاء منتخب کریں',
+    returnQtyCol: 'واپسی مقدار',
+    purchasedQtyCol: 'فروخت',
+    alreadyReturnedLabel: 'واپس شدہ',
+    returnResolutionLabel: 'واپسی کا طریقہ منتخب کریں',
+    returnRefundOptionTitle: 'نقد / والٹ ریفنڈ (پیسے واپس)',
+    returnRefundOptionDesc: 'واپس کی گئی اشیاء خودکار طور پر اسٹاک میں شامل ہو جائیں گی اور واپسی کی رقم کل سیلز/آمدنی سے منہا ہو جائے گی۔',
+    returnExchangeOptionTitle: 'تبدیلی / اسٹور کریڈٹ (چیز بدلی)',
+    returnExchangeOptionDesc: 'واپس کی گئی اشیاء اسٹاک میں شامل ہو جائیں گی لیکن نقد آمدنی کم نہیں ہوگی تاکہ گاہک متبادل چیز لے سکے۔',
+    returnReasonLabel: 'وجہ / نوٹ (اختیاری)',
+    returnReasonPlaceholder: 'مثلاً پیکنگ خراب تھی، دوسری چیز تبدیل کی...',
+    returnSummaryStockLabel: 'اسٹاک میں شامل یونٹس',
+    returnSummaryRevenueLabel: 'سیلز / آمدنی میں کٹوتی',
+    confirmRefundBtn: 'رقم واپسی کی تصدیق کریں',
+    confirmExchangeBtn: 'تبدیلی کی تصدیق کریں',
+    statusCompletedLabel: 'مکمل',
+    statusPartiallyRefundedLabel: 'جزوی ریفنڈ',
+    statusRefundedLabel: 'ریفنڈ شدہ',
+    statusExchangedLabel: 'تبدیل شدہ',
+    refundedBadgePrefix: 'واپسی',
+    fullyReturnedLabel: 'مکمل واپسی',
+    posReturnToggleBtn: 'واپسی',
+    posReturnBadge: 'واپسی',
+    netRefundDueLabel: 'واپس کی جانے والی رقم',
   },
 };
 
 export function formatCurrency(amount: number, _lang?: Language): string {
   const rounded = Math.round(amount);
-  const formatted = rounded.toLocaleString('en-PK');
-  return `Rs. ${formatted}`;
+  if (rounded < 0) {
+    return `-Rs. ${Math.abs(rounded).toLocaleString('en-PK')}`;
+  }
+  return `Rs. ${rounded.toLocaleString('en-PK')}`;
 }
 
 export function getCategoryLabel(category: CategoryId, t: TranslationStrings): string {

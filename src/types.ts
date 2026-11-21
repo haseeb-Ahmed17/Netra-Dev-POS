@@ -48,7 +48,14 @@ export interface Product {
 export interface CartItem {
   productId: string;
   quantity: number;
+  isReturn?: boolean;
 }
+
+export type ReturnStatus =
+  | 'completed'
+  | 'partially_refunded'
+  | 'refunded'
+  | 'exchanged';
 
 export interface OrderLineItem {
   productId: string;
@@ -61,6 +68,10 @@ export interface OrderLineItem {
   taxRate: number;
   quantity: number;
   lineTotal: number;
+  isReturn?: boolean;
+  returnedQty?: number;
+  refundedQty?: number;
+  exchangedQty?: number;
 }
 
 export interface OrderRecord {
@@ -80,6 +91,10 @@ export interface OrderRecord {
   total: number;
   amountTendered: number;
   changeDue: number;
+  returnStatus?: ReturnStatus;
+  refundedAmount?: number;
+  returnedAt?: string;
+  returnNote?: string;
 }
 
 export type UdhaarEntryType = 'credit' | 'payment';

@@ -570,6 +570,14 @@ export async function uploadProductImage(
 }
 
 function mapOrderFromRow(row: Record<string, unknown>): OrderRecord {
+  const rawStatus = String(row.return_status ?? 'completed');
+  const returnStatus: OrderRecord['returnStatus'] =
+    rawStatus === 'refunded' ||
+    rawStatus === 'partially_refunded' ||
+    rawStatus === 'exchanged'
+      ? rawStatus
+      : 'completed';
+
   return {
     id: String(row.id),
     receiptNumber: String(row.receipt_number),
@@ -589,6 +597,10 @@ function mapOrderFromRow(row: Record<string, unknown>): OrderRecord {
     total: Number(row.total),
     amountTendered: Number(row.amount_tendered),
     changeDue: Number(row.change_due),
+    returnStatus,
+    refundedAmount: Number(row.refunded_amount ?? 0),
+    returnedAt: row.returned_at ? String(row.returned_at) : undefined,
+    returnNote: row.return_note ? String(row.return_note) : undefined,
   };
 }
 
@@ -611,6 +623,10 @@ function mapOrderToRow(order: OrderRecord, userId: string) {
     total: order.total,
     amount_tendered: order.amountTendered,
     change_due: order.changeDue,
+    return_status: order.returnStatus ?? 'completed',
+    refunded_amount: order.refundedAmount ?? 0,
+    returned_at: order.returnedAt ?? null,
+    return_note: order.returnNote ?? '',
   };
 }
 
@@ -1268,6 +1284,57 @@ export async function insertOrderRecord(
   }
 
   return { syncError: null, queuedOffline: false };
+}
+
+export async function updateOrderReturnRecord(
+  userId: string,
+  updatedOrder: OrderRecord,
+  restockedProducts: Product[]
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.orders = ws.orders.map((o) =>
+    o.id === updatedOrder.id ? updatedOrder : o
+  );
+  if (restockedProducts.length > 0) {
+    const restockMap = new Map(restockedProducts.map((p) => [p.id, p]));
+    ws.products = ws.products.map((p) => restockMap.get(p.id) ?? p);
+  }
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    if (restockedProducts.length > 0) {
+      const { error: prodErr } = await supabase
+        .from('products')
+        .upsert(restockedProducts.map((p) => mapProductToRow(p, userId)));
+      if (prodErr) return prodErr.message;
+    }
+
+    const { error: ordErr } = await supabase
+      .from('orders')
+      .upsert(mapOrderToRow(updatedOrder, userId), { onConflict: 'id' });
+
+    if (ordErr) {
+      // Fallback if user has not yet added the optional return_* columns in SQL Editor
+      if (/return_status|refunded_amount|returned_at|return_note/i.test(ordErr.message)) {
+        const { error: fallbackErr } = await supabase
+          .from('orders')
+          .update({
+            items: updatedOrder.items,
+            subtotal: updatedOrder.subtotal,
+            discount_amount: updatedOrder.discountAmount,
+            tax_amount: updatedOrder.taxAmount,
+            total: updatedOrder.total,
+          })
+          .eq('id', updatedOrder.id)
+          .eq('user_id', userId);
+        if (fallbackErr) return fallbackErr.message;
+        return ordErr.message;
+      }
+      return ordErr.message;
+    }
+  }
+
+  return null;
 }
 
 export async function syncOfflineQueue(userId: string): Promise<{

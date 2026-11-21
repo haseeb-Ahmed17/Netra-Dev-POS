@@ -108,7 +108,9 @@ export function InventoryView({
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [pendingDeleteProduct, setPendingDeleteProduct] = useState<Product | null>(
+    null
+  );
   const [stickerProduct, setStickerProduct] = useState<Pick<
     Product,
     'nameEn' | 'nameUr' | 'barcode' | 'sku' | 'price'
@@ -467,7 +469,6 @@ export function InventoryView({
                   const name = lang === 'ur' ? product.nameUr : product.nameEn;
                   const isOut = product.stock === 0;
                   const isLow = product.stock > 0 && product.stock <= 5;
-                  const isConfirmingDelete = confirmDeleteId === product.id;
                   const stockValue = product.stock * product.cost;
 
                   return (
@@ -583,38 +584,17 @@ export function InventoryView({
                             <span>{t.editBtn}</span>
                           </button>
 
-                          {canDelete &&
-                            (isConfirmingDelete ? (
-                              <div className="inline-flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onDeleteProduct(product.id);
-                                    setConfirmDeleteId(null);
-                                  }}
-                                  className="px-2.5 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors cursor-pointer"
-                                >
-                                  {t.confirmDeleteBtn}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteId(null)}
-                                  className="px-2 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 rounded-md cursor-pointer"
-                                >
-                                  {t.cancelBtn}
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(product.id)}
-                                aria-label={`${t.deleteBtn} ${name}`}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 rounded-md transition-colors cursor-pointer"
-                              >
-                                <Trash2 className="w-3 h-3 shrink-0" aria-hidden="true" />
-                                <span>{t.deleteBtn}</span>
-                              </button>
-                            ))}
+                          {canDelete && (
+                            <button
+                              type="button"
+                              onClick={() => setPendingDeleteProduct(product)}
+                              aria-label={`${t.deleteBtn} ${name}`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3 shrink-0" aria-hidden="true" />
+                              <span>{t.deleteBtn}</span>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -992,21 +972,45 @@ export function InventoryView({
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg min-h-[40px] cursor-pointer"
-                >
-                  {t.cancelBtn}
-                </button>
-                <button
-                  type="submit"
-                  disabled={uploadingPhoto}
-                  className="px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 disabled:bg-slate-300 rounded-lg min-h-[40px] cursor-pointer"
-                >
-                  {t.saveProductBtn}
-                </button>
+              <div className="pt-4 border-t border-slate-200 flex items-center justify-between gap-2">
+                <div>
+                  {modalMode === 'edit' &&
+                    canDelete &&
+                    editingProductId &&
+                    (() => {
+                      const editingTarget = products.find(
+                        (p) => p.id === editingProductId
+                      );
+                      if (!editingTarget) return null;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => setPendingDeleteProduct(editingTarget)}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg min-h-[40px] cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                          <span>{t.deleteBtn}</span>
+                        </button>
+                      );
+                    })()}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={closeModal}
+                    className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg min-h-[40px] cursor-pointer"
+                  >
+                    {t.cancelBtn}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={uploadingPhoto}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 disabled:bg-slate-300 rounded-lg min-h-[40px] cursor-pointer"
+                  >
+                    {t.saveProductBtn}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -1185,6 +1189,80 @@ export function InventoryView({
         lang={lang}
         t={t}
       />
+
+      {/* Delete Product Confirmation Dialog */}
+      {pendingDeleteProduct && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-product-dialog-title"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-red-50 border border-red-200 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-4 h-4 text-red-600" aria-hidden="true" />
+                </div>
+                <h2
+                  id="delete-product-dialog-title"
+                  className="text-base font-bold text-slate-900"
+                >
+                  {t.deleteProductTitle}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDeleteProduct(null)}
+                aria-label={t.closeBtn}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5">
+                <div className="text-sm font-semibold text-slate-900">
+                  {lang === 'ur'
+                    ? pendingDeleteProduct.nameUr
+                    : pendingDeleteProduct.nameEn}
+                </div>
+                <div className="text-xs font-mono text-slate-500 mt-0.5">
+                  {pendingDeleteProduct.sku} · {pendingDeleteProduct.barcode}
+                </div>
+              </div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                {t.deleteProductConfirmDesc}
+              </p>
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteProduct(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg min-h-[40px] cursor-pointer"
+              >
+                {t.cancelBtn}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteProduct(pendingDeleteProduct.id);
+                  if (editingProductId === pendingDeleteProduct.id) {
+                    closeModal();
+                  }
+                  setPendingDeleteProduct(null);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg min-h-[40px] cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>{t.deleteForeverBtn}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
