@@ -6,7 +6,13 @@ export interface TranslationStrings {
   navDashboard: string;
   navTransactions: string;
   navInventory: string;
+  navInventoryReport: string;
+  navPurchases: string;
+  navVendors: string;
+  navCustomers: string;
   navUdhaar: string;
+  navStaff: string;
+  navSettings: string;
   langToggleLabel: string;
 
   // POS Billing
@@ -39,6 +45,8 @@ export interface TranslationStrings {
   grandTotalLabel: string;
   paymentMethodLabel: string;
   paymentCash: string;
+  paymentJazzCash: string;
+  paymentEasyPaisa: string;
   paymentCard: string;
   paymentMobile: string;
   paymentUdhaar: string;
@@ -224,6 +232,201 @@ export interface TranslationStrings {
   cloudSyncModalDesc: string;
   copySqlBtn: string;
   copiedSqlBtn: string;
+
+  // Phase 2: Stock & Adjustments
+  adjustStockBtn: string;
+  totalStockValueLabel: string;
+  totalUnitsInStockLabel: string;
+  lowStockCountLabel: string;
+  stockValueCol: string;
+  adjustModalTitle: string;
+  adjustmentTypeLabel: string;
+  adjTypeDamaged: string;
+  adjTypeExpired: string;
+  adjTypeLost: string;
+  adjTypeCorrection: string;
+  qtyChangeLabel: string;
+  qtyDirectionAdd: string;
+  qtyDirectionRemove: string;
+  currentStockLabel: string;
+  newStockPreviewLabel: string;
+  adjustmentReasonLabel: string;
+  adjustmentReasonPlaceholder: string;
+  saveAdjustmentBtn: string;
+  adjustmentHistoryTitle: string;
+  noAdjustmentsRecorded: string;
+  previousNewCol: string;
+  reasonCol: string;
+
+  // Phase 2: Vendors / Suppliers
+  vendorsTitle: string;
+  vendorsSubtitle: string;
+  addVendorBtn: string;
+  editVendorTitle: string;
+  addVendorTitle: string;
+  totalVendorsLabel: string;
+  totalPayableLabel: string;
+  vendorsWithDueLabel: string;
+  totalPurchasedLabel: string;
+  searchVendorsPlaceholder: string;
+  filterAllVendors: string;
+  filterPayableVendors: string;
+  vendorNameLabel: string;
+  vendorCompanyLabel: string;
+  vendorPhoneLabel: string;
+  vendorAddressLabel: string;
+  vendorOpeningBalanceLabel: string;
+  saveVendorBtn: string;
+  payableBalanceCol: string;
+  payVendorBtn: string;
+  payVendorModalTitle: string;
+  paymentAmountLabel: string;
+  confirmPaymentBtn: string;
+  noVendorsFound: string;
+  vendorPurchasesTitle: string;
+  noVendorPurchases: string;
+
+  // Phase 2: Purchases / Stock In
+  purchasesTitle: string;
+  purchasesSubtitle: string;
+  newPurchaseTitle: string;
+  selectVendorLabel: string;
+  chooseVendorOption: string;
+  invoiceNoLabel: string;
+  addProductToPurchaseLabel: string;
+  chooseProductOption: string;
+  addRowBtn: string;
+  purchaseCostCol: string;
+  lineTotalCol: string;
+  purchaseTotalLabel: string;
+  paidAmountLabel: string;
+  payFullBtn: string;
+  remainingPayableLabel: string;
+  purchaseNoteLabel: string;
+  purchaseNotePlaceholder: string;
+  receiveInventoryBtn: string;
+  purchaseSuccessMsg: string;
+  purchaseHistoryTitle: string;
+  noPurchasesYet: string;
+  vendorCol: string;
+  paidCol: string;
+  balanceDueCol: string;
+  noVendorsNotice: string;
+  goToVendorsBtn: string;
+
+  // Phase 3: Customers & Purchase History
+  selectSaleCustomerLabel: string;
+  walkInOption: string;
+  posCustomerBalanceBadge: string;
+  customersTitle: string;
+  customersSubtitle: string;
+  addCrmCustomerBtn: string;
+  editCrmCustomerTitle: string;
+  addCrmCustomerTitle: string;
+  customerAddressLabel: string;
+  customerUdhaarBalanceLabel: string;
+  totalCrmCustomersLabel: string;
+  customersWithBalanceLabel: string;
+  totalCustomerPurchasesLabel: string;
+  customerBillsCol: string;
+  customerAddressCol: string;
+  filterAllCustomers: string;
+  filterUdhaarCustomers: string;
+  viewProfileHistoryBtn: string;
+  customerProfileTitle: string;
+  customerHistoryTitle: string;
+  customerTotalBillsLabel: string;
+  noCustomerBills: string;
+  recordCustomerPaymentBtn: string;
+  payCustomerModalTitle: string;
+
+  // Phase 3: Staff & Permissions + PIN Switcher
+  staffTitle: string;
+  staffSubtitle: string;
+  addEmployeeBtn: string;
+  editEmployeeTitle: string;
+  addEmployeeTitle: string;
+  employeeNameLabel: string;
+  employeePhoneLabel: string;
+  employeeRoleLabel: string;
+  employeePinLabel: string;
+  employeePinHint: string;
+  employeePinError: string;
+  employeeActiveLabel: string;
+  activeStatusLabel: string;
+  inactiveStatusLabel: string;
+  saveEmployeeBtn: string;
+  roleAdmin: string;
+  roleManager: string;
+  roleCashier: string;
+  roleAdminDesc: string;
+  roleManagerDesc: string;
+  roleCashierDesc: string;
+  permissionsGuideTitle: string;
+  switchStaffBtn: string;
+  lockScreenBtn: string;
+  activeStaffLabel: string;
+  lockScreenTitle: string;
+  lockScreenSubtitle: string;
+  enterPinLabel: string;
+  unlockRegisterBtn: string;
+  invalidPinError: string;
+  quickSwitchStaffLabel: string;
+  lastAdminNotice: string;
+  pinTakenError: string;
+
+  // Phase 3: Store Settings & Thermal Receipt Width
+  storeSettingsTitle: string;
+  storeSettingsSubtitle: string;
+  storeNameInputLabel: string;
+  storePhoneInputLabel: string;
+  storeAddressInputLabel: string;
+  storeTaxNumberLabel: string;
+  receiptFooterLabel: string;
+  saveStoreSettingsBtn: string;
+  storeSettingsSavedMsg: string;
+  receiptPreviewTitle: string;
+  paperSizeLabel: string;
+  paper58mm: string;
+  paper80mm: string;
+
+  // Phase 4: Monthly/Yearly Sales & Profit Reports, Inventory Report, Offline Auto-Sync
+  timeframeToday: string;
+  timeframeMonth: string;
+  timeframeYear: string;
+  timeframeCustom: string;
+  startDateLabel: string;
+  endDateLabel: string;
+  totalCogsLabel: string;
+  netProfitLabel: string;
+  totalDiscountsLabel: string;
+  totalTaxCollectedLabel: string;
+  paymentBreakdownTitle: string;
+  paymentBreakdownSubtitle: string;
+  exportCsvBtn: string;
+  printReportBtn: string;
+  qtySoldCol: string;
+  reportGeneratedLabel: string;
+  noOrdersInRange: string;
+
+  invReportTitle: string;
+  invReportSubtitle: string;
+  totalExpectedRetailLabel: string;
+  potentialProfitLabel: string;
+  lowStockSectionTitle: string;
+  noLowStockItems: string;
+  stockValuationTitle: string;
+  retailValueCol: string;
+  potentialProfitCol: string;
+  adjustmentsSummaryTitle: string;
+
+  onlineStatusLabel: string;
+  offlineStatusLabel: string;
+  pendingSyncLabel: string;
+  syncNowBtn: string;
+  syncingNowLabel: string;
+  offlineSaleQueuedNotice: string;
+  offlineSyncedToast: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -232,8 +435,14 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navPos: 'POS Billing',
     navDashboard: 'Dashboard',
     navTransactions: 'Transactions',
-    navInventory: 'Stock',
+    navInventory: 'Stock & Adjustments',
+    navInventoryReport: 'Inventory Report',
+    navPurchases: 'Purchases',
+    navVendors: 'Vendors',
+    navCustomers: 'Customers',
     navUdhaar: 'Udhaar / Khata',
+    navStaff: 'Staff & Permissions',
+    navSettings: 'Store Settings',
     langToggleLabel: 'اردو',
 
     posTitle: 'Point of Sale Register',
@@ -264,6 +473,8 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     grandTotalLabel: 'Grand Total',
     paymentMethodLabel: 'Payment Method',
     paymentCash: 'Cash',
+    paymentJazzCash: 'JazzCash',
+    paymentEasyPaisa: 'EasyPaisa',
     paymentCard: 'Card',
     paymentMobile: 'Mobile Pay',
     paymentUdhaar: 'Udhaar',
@@ -444,14 +655,208 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
       'Copy and run this SQL in your Supabase Project → SQL Editor to grant table permissions, enable Row Level Security, and create the product-images storage bucket.',
     copySqlBtn: 'Copy SQL',
     copiedSqlBtn: 'Copied!',
+
+    adjustStockBtn: 'Adjust Stock',
+    totalStockValueLabel: 'Total Stock Value (Cost)',
+    totalUnitsInStockLabel: 'Total Units in Stock',
+    lowStockCountLabel: 'Low / Out of Stock',
+    stockValueCol: 'Stock Value',
+    adjustModalTitle: 'Inventory Stock Adjustment',
+    adjustmentTypeLabel: 'Adjustment Type',
+    adjTypeDamaged: 'Damaged',
+    adjTypeExpired: 'Expired',
+    adjTypeLost: 'Lost / Theft',
+    adjTypeCorrection: 'Stock Count Correction',
+    qtyChangeLabel: 'Quantity Change',
+    qtyDirectionAdd: 'Add (+)',
+    qtyDirectionRemove: 'Deduct (-)',
+    currentStockLabel: 'Current Stock',
+    newStockPreviewLabel: 'New Stock After Adjustment',
+    adjustmentReasonLabel: 'Reason / Remarks',
+    adjustmentReasonPlaceholder: 'e.g., Damaged carton during storage, physical audit...',
+    saveAdjustmentBtn: 'Save Stock Adjustment',
+    adjustmentHistoryTitle: 'Recent Inventory Adjustments',
+    noAdjustmentsRecorded: 'No stock adjustments recorded yet.',
+    previousNewCol: 'Prev → New',
+    reasonCol: 'Reason',
+
+    vendorsTitle: 'Vendors & Suppliers',
+    vendorsSubtitle: 'Manage wholesale suppliers, track payable balances (Baqi Udhaar), and record vendor payments',
+    addVendorBtn: 'Add Vendor',
+    editVendorTitle: 'Edit Vendor',
+    addVendorTitle: 'Add New Vendor',
+    totalVendorsLabel: 'Total Vendors',
+    totalPayableLabel: 'Total Payable (Baqi Udhaar)',
+    vendorsWithDueLabel: 'Vendors With Balance Due',
+    totalPurchasedLabel: 'Total Purchases Volume',
+    searchVendorsPlaceholder: 'Search vendor name, company, or phone...',
+    filterAllVendors: 'All Vendors',
+    filterPayableVendors: 'Payable Due',
+    vendorNameLabel: 'Contact Person Name',
+    vendorCompanyLabel: 'Company / Business Name',
+    vendorPhoneLabel: 'Phone Number',
+    vendorAddressLabel: 'Address / Market',
+    vendorOpeningBalanceLabel: 'Opening Payable Balance (Rs., optional)',
+    saveVendorBtn: 'Save Vendor',
+    payableBalanceCol: 'Payable Balance',
+    payVendorBtn: 'Record Payment',
+    payVendorModalTitle: 'Record Vendor Payment',
+    paymentAmountLabel: 'Payment Amount (Rs.)',
+    confirmPaymentBtn: 'Confirm Payment',
+    noVendorsFound: 'No vendors match your search.',
+    vendorPurchasesTitle: 'Purchase History for Vendor',
+    noVendorPurchases: 'No purchases recorded for this vendor yet.',
+
+    purchasesTitle: 'Purchases & Receiving Inventory',
+    purchasesSubtitle: 'Receive supplier deliveries, automatically increase stock, update latest cost prices, and post unpaid balances to vendor Khata',
+    newPurchaseTitle: 'Create Purchase / Stock In',
+    selectVendorLabel: 'Select Vendor / Supplier',
+    chooseVendorOption: 'Choose a vendor...',
+    invoiceNoLabel: 'Supplier Invoice / PO #',
+    addProductToPurchaseLabel: 'Add Product to Purchase List',
+    chooseProductOption: 'Select a product to add...',
+    addRowBtn: 'Add Item',
+    purchaseCostCol: 'Purchase Cost',
+    lineTotalCol: 'Line Total',
+    purchaseTotalLabel: 'Total Purchase Bill',
+    paidAmountLabel: 'Paid Amount (Rs.)',
+    payFullBtn: 'Paid Full',
+    remainingPayableLabel: 'Added to Vendor Payable (Baqi)',
+    purchaseNoteLabel: 'Delivery Note (optional)',
+    purchaseNotePlaceholder: 'e.g., Weekly wholesale delivery...',
+    receiveInventoryBtn: 'Receive Inventory',
+    purchaseSuccessMsg: 'Inventory received! Product stock & cost prices updated.',
+    purchaseHistoryTitle: 'Recent Purchases & Stock In History',
+    noPurchasesYet: 'No purchases recorded yet.',
+    vendorCol: 'Vendor',
+    paidCol: 'Paid',
+    balanceDueCol: 'Unpaid / Baqi',
+    noVendorsNotice: 'Add a vendor first before receiving a purchase.',
+    goToVendorsBtn: 'Go to Vendors',
+
+    selectSaleCustomerLabel: 'Link Customer (Optional)',
+    walkInOption: 'Walk-in Customer (No Profile)',
+    posCustomerBalanceBadge: 'Udhaar Bal:',
+    customersTitle: 'Customer Management & History',
+    customersSubtitle: 'Manage store customers, track Udhaar balances, and inspect itemized purchase histories',
+    addCrmCustomerBtn: 'Add Customer',
+    editCrmCustomerTitle: 'Edit Customer Profile',
+    addCrmCustomerTitle: 'Add New Customer',
+    customerAddressLabel: 'Address / Area',
+    customerUdhaarBalanceLabel: 'Udhaar / Khata Balance (Rs.)',
+    totalCrmCustomersLabel: 'Total Customers',
+    customersWithBalanceLabel: 'Customers With Udhaar',
+    totalCustomerPurchasesLabel: 'Total Billed Volume',
+    customerBillsCol: 'Past Bills',
+    customerAddressCol: 'Address',
+    filterAllCustomers: 'All Customers',
+    filterUdhaarCustomers: 'With Balance Due',
+    viewProfileHistoryBtn: 'Profile & History',
+    customerProfileTitle: 'Customer Profile & Purchase History',
+    customerHistoryTitle: 'Past Bills & Itemized Purchases',
+    customerTotalBillsLabel: 'Completed Bills',
+    noCustomerBills: 'No completed sales linked to this customer yet.',
+    recordCustomerPaymentBtn: 'Receive Payment',
+    payCustomerModalTitle: 'Receive Customer Payment',
+
+    staffTitle: 'Staff & Role Permissions',
+    staffSubtitle: 'Manage cashiers, managers, and admins with 4-digit PIN codes for quick register switching',
+    addEmployeeBtn: 'Add Staff Member',
+    editEmployeeTitle: 'Edit Staff Member',
+    addEmployeeTitle: 'Add New Staff Member',
+    employeeNameLabel: 'Staff Full Name',
+    employeePhoneLabel: 'Phone Number',
+    employeeRoleLabel: 'Access Role',
+    employeePinLabel: '4-Digit PIN Code',
+    employeePinHint: 'Used for quick staff switch & register lock screen',
+    employeePinError: 'Please enter a valid 4-digit numeric PIN.',
+    employeeActiveLabel: 'Active Staff Account',
+    activeStatusLabel: 'Active',
+    inactiveStatusLabel: 'Disabled',
+    saveEmployeeBtn: 'Save Staff Member',
+    roleAdmin: 'Admin',
+    roleManager: 'Manager',
+    roleCashier: 'Cashier',
+    roleAdminDesc: 'Full access: cost prices, margins, analytics, staff, store settings, and delete actions.',
+    roleManagerDesc: 'Manage products, purchases, stock adjustments, vendors, and customers (no staff/settings/delete).',
+    roleCashierDesc: 'POS Billing, Sales History, and Customers only. Cost prices, margins, analytics, and delete hidden.',
+    permissionsGuideTitle: 'Role Permission Matrix',
+    switchStaffBtn: 'Switch Staff / Lock',
+    lockScreenBtn: 'Lock Register',
+    activeStaffLabel: 'Active Staff',
+    lockScreenTitle: 'Register Locked — Enter Staff PIN',
+    lockScreenSubtitle: 'Enter your 4-digit PIN or select an active staff profile to resume POS operations.',
+    enterPinLabel: '4-Digit PIN',
+    unlockRegisterBtn: 'Unlock Register',
+    invalidPinError: 'Invalid PIN code or inactive staff account.',
+    quickSwitchStaffLabel: 'Select Active Staff Member',
+    lastAdminNotice: 'At least one active Admin account must remain active.',
+    pinTakenError: 'Another staff member is already using this 4-digit PIN.',
+
+    storeSettingsTitle: 'Business & Store Settings',
+    storeSettingsSubtitle: 'Configure your store identity, contact info, tax/NTN number, and printed receipt footer',
+    storeNameInputLabel: 'Store / Business Name',
+    storePhoneInputLabel: 'Store Phone Number',
+    storeAddressInputLabel: 'Store Address',
+    storeTaxNumberLabel: 'Tax / NTN / STRN Number',
+    receiptFooterLabel: 'Custom Receipt Footer Message',
+    saveStoreSettingsBtn: 'Save Store Settings',
+    storeSettingsSavedMsg: 'Store settings saved! Header and thermal receipts updated.',
+    receiptPreviewTitle: 'Live Thermal Receipt Preview',
+    paperSizeLabel: 'Paper Width',
+    paper58mm: '58mm',
+    paper80mm: '80mm',
+
+    timeframeToday: 'Today',
+    timeframeMonth: 'This Month',
+    timeframeYear: 'This Year',
+    timeframeCustom: 'Custom Range',
+    startDateLabel: 'From',
+    endDateLabel: 'To',
+    totalCogsLabel: 'Total Cost of Goods (COGS)',
+    netProfitLabel: 'Net Profit (Rev - Cost)',
+    totalDiscountsLabel: 'Total Discounts',
+    totalTaxCollectedLabel: 'Total Tax Collected',
+    paymentBreakdownTitle: 'Payment Method Breakdown',
+    paymentBreakdownSubtitle: 'Revenue share across Cash, JazzCash, EasyPaisa, Card & Udhaar',
+    exportCsvBtn: 'Export CSV (Excel)',
+    printReportBtn: 'Print Report',
+    qtySoldCol: 'Qty Sold',
+    reportGeneratedLabel: 'Report Period',
+    noOrdersInRange: 'No sales recorded in the selected date range.',
+
+    invReportTitle: 'Inventory Valuation & Stock Report',
+    invReportSubtitle: 'Live stock cost value, expected retail value, potential profit, low-stock alerts & adjustments summary',
+    totalExpectedRetailLabel: 'Expected Retail Value',
+    potentialProfitLabel: 'Potential Profit',
+    lowStockSectionTitle: 'Low-Stock & Out-of-Stock Items (<= 5 units)',
+    noLowStockItems: 'All inventory items are comfortably stocked.',
+    stockValuationTitle: 'Stock Valuation Breakdown',
+    retailValueCol: 'Retail Value',
+    potentialProfitCol: 'Potential Profit',
+    adjustmentsSummaryTitle: 'Inventory Adjustments Summary',
+
+    onlineStatusLabel: 'Online • Cloud Synced',
+    offlineStatusLabel: 'Offline Mode • Saving Locally',
+    pendingSyncLabel: 'pending',
+    syncNowBtn: 'Sync Now',
+    syncingNowLabel: 'Syncing...',
+    offlineSaleQueuedNotice: 'Offline sale saved locally to queue and ready for auto-sync.',
+    offlineSyncedToast: 'offline sale(s) & stock updates synced to Supabase cloud.',
   },
   ur: {
     brandName: 'خاص ریٹیل',
     navPos: 'بلنگ کاؤنٹر',
     navDashboard: 'ڈیش بورڈ',
     navTransactions: 'لین دین',
-    navInventory: 'اسٹاک',
+    navInventory: 'اسٹاک و ایڈجسٹمنٹ',
+    navInventoryReport: 'اسٹاک رپورٹ',
+    navPurchases: 'خریداری / اسٹاک ان',
+    navVendors: 'سپلائرز',
+    navCustomers: 'گاہک',
     navUdhaar: 'ادھار / کھاتہ',
+    navStaff: 'اسٹاف و پرمیشنز',
+    navSettings: 'اسٹور سیٹنگز',
     langToggleLabel: 'English',
 
     posTitle: 'پوائنٹ آف سیل رجسٹر',
@@ -482,6 +887,8 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     grandTotalLabel: 'کل رقم',
     paymentMethodLabel: 'ادائیگی کا طریقہ',
     paymentCash: 'نقد',
+    paymentJazzCash: 'جاز کیش',
+    paymentEasyPaisa: 'ایزی پیسہ',
     paymentCard: 'کارڈ',
     paymentMobile: 'موبائل پے',
     paymentUdhaar: 'ادھار',
@@ -662,6 +1069,194 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
       'ٹیبل پرمیشنز، RLS پالیسیز اور product-images اسٹوریج بکٹ بنانے کے لیے یہ SQL اپنے Supabase SQL Editor میں چلائیں۔',
     copySqlBtn: 'SQL کاپی کریں',
     copiedSqlBtn: 'کاپی ہو گیا!',
+
+    adjustStockBtn: 'اسٹاک ایڈجسٹ کریں',
+    totalStockValueLabel: 'کل اسٹاک مالیت (لاگت)',
+    totalUnitsInStockLabel: 'کل دستیاب یونٹس',
+    lowStockCountLabel: 'کم / ختم اسٹاک',
+    stockValueCol: 'اسٹاک مالیت',
+    adjustModalTitle: 'اسٹاک ایڈجسٹمنٹ فارم',
+    adjustmentTypeLabel: 'ایڈجسٹمنٹ کی قسم',
+    adjTypeDamaged: 'خراب / ٹوٹ پھوٹ (Damaged)',
+    adjTypeExpired: 'میعاد ختم (Expired)',
+    adjTypeLost: 'گمشدہ / چوری (Lost/Theft)',
+    adjTypeCorrection: 'گنتی کی تصحیح (Correction)',
+    qtyChangeLabel: 'تعداد میں تبدیلی',
+    qtyDirectionAdd: 'اضافہ (+)',
+    qtyDirectionRemove: 'کمی (-)',
+    currentStockLabel: 'موجودہ اسٹاک',
+    newStockPreviewLabel: 'تبدیلی کے بعد نیا اسٹاک',
+    adjustmentReasonLabel: 'وجہ / تفصیل',
+    adjustmentReasonPlaceholder: 'مثلاً اسٹوریج میں نقصان یا گنتی کی درستگی...',
+    saveAdjustmentBtn: 'ایڈجسٹمنٹ محفوظ کریں',
+    adjustmentHistoryTitle: 'حالیہ اسٹاک ایڈجسٹمنٹ ریکارڈ',
+    noAdjustmentsRecorded: 'ابھی تک کوئی اسٹاک ایڈجسٹمنٹ درج نہیں ہوئی۔',
+    previousNewCol: 'پہلے ← نیا',
+    reasonCol: 'وجہ',
+
+    vendorsTitle: 'وینڈرز اور سپلائرز',
+    vendorsSubtitle: 'سپلائرز شامل اور ایڈٹ کریں، واجب الادا ادھار دیکھیں اور ادائیگی ریکارڈ کریں',
+    addVendorBtn: 'نیا سپلائر شامل کریں',
+    editVendorTitle: 'سپلائر میں ترمیم کریں',
+    addVendorTitle: 'نیا سپلائر شامل کریں',
+    totalVendorsLabel: 'کل سپلائرز',
+    totalPayableLabel: 'کل واجب الادا رقم (باقی ادھار)',
+    vendorsWithDueLabel: 'واجب الادا سپلائرز',
+    totalPurchasedLabel: 'کل خریداری حجم',
+    searchVendorsPlaceholder: 'سپلائر کا نام، کمپنی یا فون تلاش کریں...',
+    filterAllVendors: 'تمام سپلائرز',
+    filterPayableVendors: 'واجب الادا',
+    vendorNameLabel: 'رابطہ شخص کا نام',
+    vendorCompanyLabel: 'کمپنی / کاروبار کا نام',
+    vendorPhoneLabel: 'فون نمبر',
+    vendorAddressLabel: 'پتہ / مارکیٹ',
+    vendorOpeningBalanceLabel: 'ابتدائی واجب الادا بیلنس (اختیاری)',
+    saveVendorBtn: 'سپلائر محفوظ کریں',
+    payableBalanceCol: 'واجب الادا بیلنس',
+    payVendorBtn: 'ادائیگی درج کریں',
+    payVendorModalTitle: 'سپلائر کو ادائیگی ریکارڈ کریں',
+    paymentAmountLabel: 'ادائیگی کی رقم (روپے)',
+    confirmPaymentBtn: 'ادائیگی محفوظ کریں',
+    noVendorsFound: 'تلاش کے مطابق کوئی سپلائر نہیں ملا۔',
+    vendorPurchasesTitle: 'سپلائر کی خریداری کا ریکارڈ',
+    noVendorPurchases: 'اس سپلائر سے ابھی تک کوئی خریداری درج نہیں ہوئی۔',
+
+    purchasesTitle: 'خریداری اور اسٹاک وصولی (Stock In)',
+    purchasesSubtitle: 'سپلائر سے مال وصول کریں، اسٹاک اور لاگت قیمت خودکار اپڈیٹ کریں اور بقایا ادھار درج کریں',
+    newPurchaseTitle: 'نئی خریداری / اسٹاک انٹری',
+    selectVendorLabel: 'سپلائر منتخب کریں',
+    chooseVendorOption: 'سپلائر چنیں...',
+    invoiceNoLabel: 'سپلائر بل / انوائس نمبر',
+    addProductToPurchaseLabel: 'خریداری میں پروڈکٹ شامل کریں',
+    chooseProductOption: 'پروڈکٹ منتخب کریں...',
+    addRowBtn: 'شامل کریں',
+    purchaseCostCol: 'خرید قیمت',
+    lineTotalCol: 'کل رقم',
+    purchaseTotalLabel: 'کل خریداری بل',
+    paidAmountLabel: 'ادا شدہ رقم (روپے)',
+    payFullBtn: 'مکمل ادائیگی',
+    remainingPayableLabel: 'سپلائر کے کھاتے میں باقی ادھار',
+    purchaseNoteLabel: 'نوٹ / تفصیل (اختیاری)',
+    purchaseNotePlaceholder: 'مثلاً ہفتہ وار ہول سیل ڈیلیوری...',
+    receiveInventoryBtn: 'اسٹاک وصول کریں (Receive Inventory)',
+    purchaseSuccessMsg: 'اسٹاک وصول ہو گیا! مصنوعات کا اسٹاک اور لاگت قیمت اپڈیٹ ہو گئی۔',
+    purchaseHistoryTitle: 'حالیہ خریداری اور اسٹاک ان ریکارڈ',
+    noPurchasesYet: 'ابھی تک کوئی خریداری ریکارڈ نہیں ہوئی۔',
+    vendorCol: 'سپلائر',
+    paidCol: 'ادا شدہ',
+    balanceDueCol: 'باقی ادھار',
+    noVendorsNotice: 'خریداری درج کرنے سے پہلے کم از کم ایک سپلائر شامل کریں۔',
+    goToVendorsBtn: 'سپلائرز پر جائیں',
+
+    selectSaleCustomerLabel: 'گاہک منتخب کریں (اختیاری)',
+    walkInOption: 'عام گاہک (بغیر پروفائل)',
+    posCustomerBalanceBadge: 'ادھار بیلنس:',
+    customersTitle: 'گاہک مینجمنٹ اور خریداری ریکارڈ',
+    customersSubtitle: 'گاہکوں کا ریکارڈ، ادھار بیلنس اور تمام گزشتہ بلز کی تفصیلات دیکھیں',
+    addCrmCustomerBtn: 'نیا گاہک شامل کریں',
+    editCrmCustomerTitle: 'گاہک کی معلومات میں ترمیم',
+    addCrmCustomerTitle: 'نیا گاہک شامل کریں',
+    customerAddressLabel: 'پتہ / علاقہ',
+    customerUdhaarBalanceLabel: 'ادھار / کھاتہ بیلنس (روپے)',
+    totalCrmCustomersLabel: 'کل گاہک',
+    customersWithBalanceLabel: 'ادھار والے گاہک',
+    totalCustomerPurchasesLabel: 'کل بلز مالیت',
+    customerBillsCol: 'گزشتہ بلز',
+    customerAddressCol: 'پتہ',
+    filterAllCustomers: 'تمام گاہک',
+    filterUdhaarCustomers: 'واجب الادا ادھار',
+    viewProfileHistoryBtn: 'پروفائل اور ریکارڈ',
+    customerProfileTitle: 'گاہک پروفائل اور خریداری کی تاریخ',
+    customerHistoryTitle: 'گزشتہ بلز اور اشیاء کی تفصیل',
+    customerTotalBillsLabel: 'مکمل بلز',
+    noCustomerBills: 'اس گاہک کے نام ابھی تک کوئی سیل ریکارڈ نہیں ہوئی۔',
+    recordCustomerPaymentBtn: 'رقم وصول کریں',
+    payCustomerModalTitle: 'گاہک سے ادائیگی وصول کریں',
+
+    staffTitle: 'اسٹاف اور رسائی کے اختیارات',
+    staffSubtitle: 'ایڈمن، مینیجر اور کیشیئر کے لیے 4 ہندسوں کے PIN کوڈ اور رولز ترتیب دیں',
+    addEmployeeBtn: 'نیا اسٹاف ممبر شامل کریں',
+    editEmployeeTitle: 'اسٹاف ممبر میں ترمیم کریں',
+    addEmployeeTitle: 'نیا اسٹاف ممبر شامل کریں',
+    employeeNameLabel: 'اسٹاف کا پورا نام',
+    employeePhoneLabel: 'فون نمبر',
+    employeeRoleLabel: 'عہدہ / رول',
+    employeePinLabel: '4 ہندسوں کا PIN کوڈ',
+    employeePinHint: 'فوری اسٹاف تبدیلی اور لاک اسکرین کے لیے استعمال ہوتا ہے',
+    employeePinError: 'براہ کرم 4 ہندسوں کا درست عددی PIN درج کریں۔',
+    employeeActiveLabel: 'فعال اسٹاف اکاؤنٹ',
+    activeStatusLabel: 'فعال',
+    inactiveStatusLabel: 'غیر فعال',
+    saveEmployeeBtn: 'اسٹاف محفوظ کریں',
+    roleAdmin: 'ایڈمن (Admin)',
+    roleManager: 'مینیجر (Manager)',
+    roleCashier: 'کیشیئر (Cashier)',
+    roleAdminDesc: 'مکمل رسائی: لاگت قیمت، منافع، رپورٹس، اسٹاف، اسٹور سیٹنگز اور حذف کرنے کی اجازت۔',
+    roleManagerDesc: 'اسٹاک، خریداری، سپلائرز اور گاہکوں کا انتظام (اسٹاف، سیٹنگز اور حذف بند)۔',
+    roleCashierDesc: 'صرف پی او ایس بلنگ، سیلز ریکارڈ اور گاہک۔ لاگت، منافع، رپورٹس اور حذف خفیہ رہیں گے۔',
+    permissionsGuideTitle: 'عہدوں کے اختیارات کی تفصیل',
+    switchStaffBtn: 'اسٹاف تبدیل / لاک',
+    lockScreenBtn: 'رجسٹر لاک کریں',
+    activeStaffLabel: 'موجودہ اسٹاف',
+    lockScreenTitle: 'رجسٹر لاک ہے — اسٹاف PIN درج کریں',
+    lockScreenSubtitle: 'بلنگ جاری رکھنے کے لیے اپنا 4 ہندسوں کا PIN کوڈ درج کریں یا فعال اسٹاف منتخب کریں۔',
+    enterPinLabel: '4 ہندسوں کا PIN',
+    unlockRegisterBtn: 'رجسٹر ان لاک کریں',
+    invalidPinError: 'غلط PIN کوڈ یا غیر فعال اسٹاف اکاؤنٹ۔',
+    quickSwitchStaffLabel: 'فعال اسٹاف ممبر منتخب کریں',
+    lastAdminNotice: 'کم از کم ایک فعال ایڈمن اکاؤنٹ رہنا ضروری ہے۔',
+    pinTakenError: 'یہ 4 ہندسوں کا PIN کوڈ کسی اور اسٹاف کے پاس موجود ہے۔',
+
+    storeSettingsTitle: 'کاروبار اور اسٹور کی ترتیبات',
+    storeSettingsSubtitle: 'اسٹور کا نام، فون، پتہ، ٹیکس/NTN نمبر اور رسید کا فٹر سیٹ کریں',
+    storeNameInputLabel: 'اسٹور / کاروبار کا نام',
+    storePhoneInputLabel: 'اسٹور کا فون نمبر',
+    storeAddressInputLabel: 'اسٹور کا پتہ',
+    storeTaxNumberLabel: 'ٹیکس / NTN / STRN نمبر',
+    receiptFooterLabel: 'رسید کا اختتامی پیغام (Footer)',
+    saveStoreSettingsBtn: 'اسٹور سیٹنگز محفوظ کریں',
+    storeSettingsSavedMsg: 'اسٹور سیٹنگز محفوظ ہو گئیں! ہیڈر اور تھرمل رسیدیں اپڈیٹ ہو گئیں۔',
+    receiptPreviewTitle: 'تھرمل رسید کا لائیو پیش نظارہ',
+    paperSizeLabel: 'کاغذ کی چوڑائی',
+    paper58mm: '58mm',
+    paper80mm: '80mm',
+
+    timeframeToday: 'آج',
+    timeframeMonth: 'اس ماہ',
+    timeframeYear: 'اس سال',
+    timeframeCustom: 'مخصوص تاریخ',
+    startDateLabel: 'شروع تاریخ',
+    endDateLabel: 'اختتامی تاریخ',
+    totalCogsLabel: 'کل لاگتِ مال (COGS)',
+    netProfitLabel: 'خالص منافع (آمدنی - لاگت)',
+    totalDiscountsLabel: 'کل دی گئی رعایت',
+    totalTaxCollectedLabel: 'کل وصول شدہ ٹیکس',
+    paymentBreakdownTitle: 'ادائیگی کے طریقوں کی تفصیل',
+    paymentBreakdownSubtitle: 'نقد، جاز کیش، ایزی پیسہ، کارڈ اور ادھار کے لحاظ سے آمدنی',
+    exportCsvBtn: 'CSV (Excel) ڈاؤن لوڈ',
+    printReportBtn: 'رپورٹ پرنٹ کریں',
+    qtySoldCol: 'فروخت تعداد',
+    reportGeneratedLabel: 'رپورٹ کا دورانیہ',
+    noOrdersInRange: 'منتخب کردہ تاریخوں میں کوئی سیل ریکارڈ نہیں ہے۔',
+
+    invReportTitle: 'اسٹاک مالیت اور انوینٹری رپورٹ',
+    invReportSubtitle: 'اسٹاک کی لاگت، متوقع فروخت مالیت، ممکنہ منافع، کم اسٹاک الرٹس اور ایڈجسٹمنٹ کا خلاصہ',
+    totalExpectedRetailLabel: 'متوقع فروخت مالیت',
+    potentialProfitLabel: 'ممکنہ منافع',
+    lowStockSectionTitle: 'کم یا ختم اسٹاک والی اشیاء (5 یا کم یونٹس)',
+    noLowStockItems: 'تمام اشیاء کا اسٹاک تسلی بخش ہے۔',
+    stockValuationTitle: 'اسٹاک مالیت کی تفصیل',
+    retailValueCol: 'فروخت مالیت',
+    potentialProfitCol: 'ممکنہ منافع',
+    adjustmentsSummaryTitle: 'اسٹاک ایڈجسٹمنٹ کا خلاصہ',
+
+    onlineStatusLabel: 'آن لائن • کلاؤڈ سنک شدہ',
+    offlineStatusLabel: 'آف لائن موڈ • مقامی محفوظ',
+    pendingSyncLabel: 'زیرِ التواء',
+    syncNowBtn: 'ابھی سنک کریں',
+    syncingNowLabel: 'سنک ہو رہا ہے...',
+    offlineSaleQueuedNotice: 'آف لائن سیل مقامی قطار میں محفوظ ہو گئی اور انٹرنیٹ آتے ہی سنک ہو گی۔',
+    offlineSyncedToast: 'آف لائن سیلز اور اسٹاک اپڈیٹس کامیابی سے کلاؤڈ پر سنک ہو گئیں۔',
   },
 };
 
@@ -688,6 +1283,10 @@ export function getPaymentLabel(method: PaymentMethod, t: TranslationStrings): s
   switch (method) {
     case 'cash':
       return t.paymentCash;
+    case 'jazzcash':
+      return t.paymentJazzCash;
+    case 'easypaisa':
+      return t.paymentEasyPaisa;
     case 'card':
       return t.paymentCard;
     case 'mobile':

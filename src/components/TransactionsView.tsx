@@ -68,25 +68,27 @@ export function TransactionsView({
         </div>
 
         <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
-          {(['all', 'cash', 'card', 'mobile'] as const).map((method) => {
-            const active = paymentFilter === method;
-            const label =
-              method === 'all' ? t.filterAllPayments : getPaymentLabel(method, t);
-            return (
-              <button
-                key={method}
-                type="button"
-                onClick={() => setPaymentFilter(method)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                  active
-                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {label}
-              </button>
-            );
-          })}
+          {(['all', 'cash', 'jazzcash', 'easypaisa', 'card', 'udhaar'] as const).map(
+            (method) => {
+              const active = paymentFilter === method;
+              const label =
+                method === 'all' ? t.filterAllPayments : getPaymentLabel(method, t);
+              return (
+                <button
+                  key={method}
+                  type="button"
+                  onClick={() => setPaymentFilter(method)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            }
+          )}
         </div>
       </div>
 

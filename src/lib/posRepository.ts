@@ -1,15 +1,29 @@
 import {
   INITIAL_PRODUCTS,
+  createDefaultStoreSettings,
+  createInitialCustomers,
+  createInitialEmployees,
+  createInitialInventoryAdjustments,
   createInitialOrders,
+  createInitialPurchases,
   createInitialUdhaarCustomers,
   createInitialUdhaarEntries,
+  createInitialVendors,
 } from '../data/initialData';
 import type {
+  Customer,
+  Employee,
+  InventoryAdjustment,
+  OfflineQueuedSale,
   OrderRecord,
   Product,
+  PurchaseItem,
+  PurchaseRecord,
   ShopkeeperUser,
+  StoreSettings,
   UdhaarCustomer,
   UdhaarEntry,
+  Vendor,
 } from '../types';
 import { isSupabaseConfigured, supabase } from './supabaseClient';
 
@@ -18,7 +32,14 @@ export interface ShopkeeperWorkspaceData {
   orders: OrderRecord[];
   udhaarCustomers: UdhaarCustomer[];
   udhaarEntries: UdhaarEntry[];
+  vendors: Vendor[];
+  purchases: PurchaseRecord[];
+  inventoryAdjustments: InventoryAdjustment[];
+  customers: Customer[];
+  employees: Employee[];
+  storeSettings: StoreSettings;
   cloudSyncError?: string | null;
+  isOffline?: boolean;
 }
 
 interface StoredLocalAccount {
@@ -30,9 +51,57 @@ interface StoredLocalAccount {
 
 const LOCAL_ACCOUNTS_KEY = 'khaas_pos_local_accounts_v1';
 const LOCAL_SESSION_KEY = 'khaas_pos_local_session_v1';
+export const OFFLINE_QUEUE_KEY = 'netra_offline_queue';
 
 function userDataKey(userId: string): string {
   return `khaas_pos_workspace_${userId}_v1`;
+}
+
+function offlineProductsCacheKey(userId: string): string {
+  return `netra_offline_products_${userId}_v1`;
+}
+
+export function isNetworkLossError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror') ||
+    lower.includes('network request failed') ||
+    lower.includes('load failed') ||
+    lower.includes('fetch failed') ||
+    lower.includes('err_internet_disconnected') ||
+    lower.includes('econnrefused') ||
+    lower.includes('timeout') ||
+    lower.includes('offline')
+  );
+}
+
+export function getOfflineQueue(userId?: string): OfflineQueuedSale[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const all = parsed as OfflineQueuedSale[];
+    return userId ? all.filter((item) => item.userId === userId) : all;
+  } catch {
+    return [];
+  }
+}
+
+function saveOfflineQueue(queue: OfflineQueuedSale[]): void {
+  try {
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+export function enqueueOfflineSale(item: OfflineQueuedSale): OfflineQueuedSale[] {
+  const current = getOfflineQueue();
+  const next = current.some((q) => q.id === item.id) ? current : [...current, item];
+  saveOfflineQueue(next);
+  return next.filter((q) => q.userId === item.userId);
 }
 
 function getDemoAccount(): StoredLocalAccount {
@@ -81,14 +150,39 @@ function buildStarterProducts(userId: string): Product[] {
   }));
 }
 
-function buildStarterWorkspace(userId: string, includeDemoOrders: boolean): ShopkeeperWorkspaceData {
+function buildDefaultAdminEmployee(userId: string): Employee {
+  const prefix = userId.slice(0, 8);
+  return {
+    id: `${prefix}-emp-admin`,
+    name: 'Store Owner (Admin)',
+    phone: '',
+    role: 'admin',
+    pinCode: '1234',
+    isActive: true,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function buildStarterWorkspace(
+  userId: string,
+  includeDemoOrders: boolean,
+  shopName?: string
+): ShopkeeperWorkspaceData {
   const products = buildStarterProducts(userId);
+  const defaultSettings = createDefaultStoreSettings(shopName || 'Khaas Retail');
+
   if (!includeDemoOrders) {
     return {
       products,
       orders: [],
       udhaarCustomers: [],
       udhaarEntries: [],
+      vendors: [],
+      purchases: [],
+      inventoryAdjustments: [],
+      customers: [],
+      employees: [buildDefaultAdminEmployee(userId)],
+      storeSettings: defaultSettings,
     };
   }
   const prefix = userId.slice(0, 8);
@@ -97,6 +191,7 @@ function buildStarterWorkspace(userId: string, includeDemoOrders: boolean): Shop
     orders: createInitialOrders().map((o) => ({
       ...o,
       id: `${prefix}-${o.id}`,
+      customerId: o.customerId ? `${prefix}-${o.customerId}` : undefined,
       udhaarCustomerId: o.udhaarCustomerId ? `${prefix}-${o.udhaarCustomerId}` : undefined,
       items: o.items.map((item) => ({
         ...item,
@@ -112,20 +207,78 @@ function buildStarterWorkspace(userId: string, includeDemoOrders: boolean): Shop
       id: `${prefix}-${e.id}`,
       customerId: `${prefix}-${e.customerId}`,
     })),
+    vendors: createInitialVendors().map((v) => ({
+      ...v,
+      id: `${prefix}-${v.id}`,
+    })),
+    purchases: createInitialPurchases().map((p) => ({
+      ...p,
+      id: `${prefix}-${p.id}`,
+      vendorId: `${prefix}-${p.vendorId}`,
+      items: p.items.map((pi) => ({
+        ...pi,
+        id: `${prefix}-${pi.id}`,
+        purchaseId: `${prefix}-${pi.purchaseId}`,
+        productId: `${prefix}-${pi.productId}`,
+      })),
+    })),
+    inventoryAdjustments: createInitialInventoryAdjustments().map((a) => ({
+      ...a,
+      id: `${prefix}-${a.id}`,
+      productId: `${prefix}-${a.productId}`,
+    })),
+    customers: createInitialCustomers().map((c) => ({
+      ...c,
+      id: `${prefix}-${c.id}`,
+    })),
+    employees: createInitialEmployees().map((emp) => ({
+      ...emp,
+      id: `${prefix}-${emp.id}`,
+    })),
+    storeSettings: defaultSettings,
   };
 }
 
-function loadLocalWorkspace(userId: string): ShopkeeperWorkspaceData {
+function loadLocalWorkspace(userId: string, shopName?: string): ShopkeeperWorkspaceData {
   try {
     const raw = localStorage.getItem(userDataKey(userId));
     if (raw) {
-      return JSON.parse(raw) as ShopkeeperWorkspaceData;
+      const parsed = JSON.parse(raw) as Partial<ShopkeeperWorkspaceData>;
+      const isDemo = userId === 'demo-shopkeeper-1';
+      const fallbackEmployees = isDemo
+        ? createInitialEmployees().map((emp) => ({
+            ...emp,
+            id: `${userId.slice(0, 8)}-${emp.id}`,
+          }))
+        : [buildDefaultAdminEmployee(userId)];
+      const fallbackCustomers = isDemo
+        ? createInitialCustomers().map((c) => ({
+            ...c,
+            id: `${userId.slice(0, 8)}-${c.id}`,
+          }))
+        : [];
+      return {
+        products: parsed.products ?? [],
+        orders: parsed.orders ?? [],
+        udhaarCustomers: parsed.udhaarCustomers ?? [],
+        udhaarEntries: parsed.udhaarEntries ?? [],
+        vendors: parsed.vendors ?? [],
+        purchases: parsed.purchases ?? [],
+        inventoryAdjustments: parsed.inventoryAdjustments ?? [],
+        customers: parsed.customers ?? fallbackCustomers,
+        employees:
+          parsed.employees && parsed.employees.length > 0
+            ? parsed.employees
+            : fallbackEmployees,
+        storeSettings:
+          parsed.storeSettings ?? createDefaultStoreSettings(shopName || 'Khaas Retail'),
+      };
     }
   } catch {
     // ignore
   }
   const isDemo = userId === 'demo-shopkeeper-1';
-  const starter = buildStarterWorkspace(userId, isDemo);
+  const starter = buildStarterWorkspace(userId, isDemo, shopName);
   saveLocalWorkspace(userId, starter);
   return starter;
 }
@@ -133,6 +286,10 @@ function loadLocalWorkspace(userId: string): ShopkeeperWorkspaceData {
 function saveLocalWorkspace(userId: string, data: ShopkeeperWorkspaceData): void {
   try {
     localStorage.setItem(userDataKey(userId), JSON.stringify(data));
+    localStorage.setItem(
+      offlineProductsCacheKey(userId),
+      JSON.stringify(data.products)
+    );
   } catch {
     // ignore
   }
@@ -260,7 +417,7 @@ export async function signUpShopkeeper(
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(sessionUser));
 
   // Initialize starter catalog for the new private shopkeeper account
-  saveLocalWorkspace(newAccount.id, buildStarterWorkspace(newAccount.id, false));
+  saveLocalWorkspace(newAccount.id, buildStarterWorkspace(newAccount.id, false, cleanShop));
   return sessionUser;
 }
 
@@ -387,6 +544,7 @@ function mapOrderFromRow(row: Record<string, unknown>): OrderRecord {
     id: String(row.id),
     receiptNumber: String(row.receipt_number),
     createdAt: String(row.created_at),
+    customerId: row.customer_id ? String(row.customer_id) : undefined,
     customerName: String(row.customer_name ?? ''),
     udhaarCustomerId: row.udhaar_customer_id
       ? String(row.udhaar_customer_id)
@@ -410,6 +568,7 @@ function mapOrderToRow(order: OrderRecord, userId: string) {
     user_id: userId,
     receipt_number: order.receiptNumber,
     created_at: order.createdAt,
+    customer_id: order.customerId ?? null,
     customer_name: order.customerName,
     udhaar_customer_id: order.udhaarCustomerId ?? null,
     payment_method: order.paymentMethod,
@@ -447,12 +606,178 @@ function mapUdhaarEntryFromRow(row: Record<string, unknown>): UdhaarEntry {
   };
 }
 
+function mapVendorFromRow(row: Record<string, unknown>): Vendor {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    company: String(row.company ?? ''),
+    phone: String(row.phone ?? ''),
+    address: String(row.address ?? ''),
+    balance: Number(row.balance ?? 0),
+    createdAt: String(row.created_at),
+  };
+}
+
+function mapVendorToRow(vendor: Vendor, userId: string) {
+  return {
+    id: vendor.id,
+    user_id: userId,
+    name: vendor.name,
+    company: vendor.company,
+    phone: vendor.phone,
+    address: vendor.address,
+    balance: vendor.balance,
+    created_at: vendor.createdAt,
+  };
+}
+
+function mapPurchaseItemFromRow(row: Record<string, unknown>): PurchaseItem {
+  return {
+    id: String(row.id),
+    purchaseId: String(row.purchase_id),
+    productId: String(row.product_id),
+    productName: String(row.product_name),
+    sku: String(row.sku ?? ''),
+    quantity: Number(row.quantity ?? 0),
+    unitCost: Number(row.unit_cost ?? 0),
+    lineTotal: Number(row.line_total ?? 0),
+  };
+}
+
+function mapPurchaseFromRow(
+  row: Record<string, unknown>,
+  itemsByPurchase: Map<string, PurchaseItem[]>
+): PurchaseRecord {
+  const id = String(row.id);
+  return {
+    id,
+    vendorId: String(row.vendor_id),
+    vendorName: String(row.vendor_name ?? ''),
+    invoiceNumber: String(row.invoice_number ?? ''),
+    totalAmount: Number(row.total_amount ?? 0),
+    paidAmount: Number(row.paid_amount ?? 0),
+    balanceDue: Number(row.balance_due ?? 0),
+    note: String(row.note ?? ''),
+    items: itemsByPurchase.get(id) ?? [],
+    createdAt: String(row.created_at),
+  };
+}
+
+function mapAdjustmentFromRow(row: Record<string, unknown>): InventoryAdjustment {
+  return {
+    id: String(row.id),
+    productId: String(row.product_id),
+    productName: String(row.product_name),
+    sku: String(row.sku ?? ''),
+    adjustmentType: row.adjustment_type as InventoryAdjustment['adjustmentType'],
+    quantityChange: Number(row.quantity_change ?? 0),
+    previousStock: Number(row.previous_stock ?? 0),
+    newStock: Number(row.new_stock ?? 0),
+    reason: String(row.reason ?? ''),
+    createdAt: String(row.created_at),
+  };
+}
+
+function mapCustomerFromRow(row: Record<string, unknown>): Customer {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    phone: String(row.phone ?? ''),
+    address: String(row.address ?? ''),
+    balance: Number(row.balance ?? 0),
+    createdAt: String(row.created_at),
+  };
+}
+
+function mapCustomerToRow(customer: Customer, userId: string) {
+  return {
+    id: customer.id,
+    user_id: userId,
+    name: customer.name,
+    phone: customer.phone,
+    address: customer.address,
+    balance: Math.max(0, customer.balance),
+    created_at: customer.createdAt,
+  };
+}
+
+function mapEmployeeFromRow(row: Record<string, unknown>): Employee {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    phone: String(row.phone ?? ''),
+    role: row.role as Employee['role'],
+    pinCode: String(row.pin_code ?? '1234'),
+    isActive: row.is_active !== false,
+    createdAt: String(row.created_at),
+  };
+}
+
+function mapEmployeeToRow(employee: Employee, userId: string) {
+  return {
+    id: employee.id,
+    user_id: userId,
+    name: employee.name,
+    phone: employee.phone,
+    role: employee.role,
+    pin_code: employee.pinCode,
+    is_active: employee.isActive,
+    created_at: employee.createdAt,
+  };
+}
+
+function mapStoreSettingsFromRow(
+  row: Record<string, unknown> | null | undefined,
+  fallbackShopName?: string
+): StoreSettings {
+  if (!row) {
+    return createDefaultStoreSettings(fallbackShopName || 'Khaas Retail');
+  }
+  return {
+    storeName: String(row.store_name || fallbackShopName || 'Khaas Retail'),
+    phone: String(row.phone ?? '+92 42 3578 9021'),
+    address: String(row.address ?? 'Plot 14-B, Gulberg III, Lahore'),
+    taxNumber: String(row.tax_number ?? 'STRN: 32-08-9410-221-4'),
+    receiptFooter: String(
+      row.receipt_footer ?? 'Thank you for shopping at Khaas Retail!'
+    ),
+  };
+}
+
+function mapStoreSettingsToRow(settings: StoreSettings, userId: string) {
+  return {
+    user_id: userId,
+    store_name: settings.storeName,
+    phone: settings.phone,
+    address: settings.address,
+    tax_number: settings.taxNumber,
+    receipt_footer: settings.receiptFooter,
+    updated_at: new Date().toISOString(),
+  };
+}
+
 export async function fetchWorkspaceData(
-  userId: string
+  userId: string,
+  shopName?: string
 ): Promise<ShopkeeperWorkspaceData> {
-  if (isSupabaseConfigured && supabase) {
+  const browserOffline =
+    typeof navigator !== 'undefined' && navigator.onLine === false;
+
+  if (isSupabaseConfigured && supabase && !browserOffline) {
     try {
-      const [prodRes, ordRes, custRes, entryRes] = await Promise.all([
+      const [
+        prodRes,
+        ordRes,
+        custRes,
+        entryRes,
+        vendRes,
+        purRes,
+        purItemsRes,
+        adjRes,
+        crmCustRes,
+        empRes,
+        settingsRes,
+      ] = await Promise.all([
         supabase
           .from('products')
           .select('*')
@@ -473,23 +798,92 @@ export async function fetchWorkspaceData(
           .select('*')
           .eq('user_id', userId)
           .order('created_at', { ascending: true }),
+        supabase
+          .from('vendors')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('purchases')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase.from('purchase_items').select('*').eq('user_id', userId),
+        supabase
+          .from('inventory_adjustments')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('customers')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('employees')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('store_settings')
+          .select('*')
+          .eq('user_id', userId)
+          .maybeSingle(),
       ]);
 
       const firstError =
-        prodRes.error || ordRes.error || custRes.error || entryRes.error;
+        prodRes.error ||
+        ordRes.error ||
+        custRes.error ||
+        entryRes.error ||
+        vendRes.error ||
+        purRes.error ||
+        purItemsRes.error ||
+        adjRes.error ||
+        crmCustRes.error ||
+        empRes.error ||
+        settingsRes.error;
 
       if (firstError) {
-        const localFallback = loadLocalWorkspace(userId);
+        const localFallback = loadLocalWorkspace(userId, shopName);
+        if (isNetworkLossError(firstError.message)) {
+          return {
+            ...localFallback,
+            cloudSyncError: null,
+            isOffline: true,
+          };
+        }
         return {
           ...localFallback,
           cloudSyncError: firstError.message,
+          isOffline: false,
         };
       }
 
       let products = (prodRes.data ?? []).map(mapProductFromRow);
-      const orders = (ordRes.data ?? []).map(mapOrderFromRow);
+      let orders = (ordRes.data ?? []).map(mapOrderFromRow);
       const udhaarCustomers = (custRes.data ?? []).map(mapUdhaarCustomerFromRow);
-      const udhaarEntries = (entryRes.data ?? []).map(mapUdhaarEntryFromRow);
+      let udhaarEntries = (entryRes.data ?? []).map(mapUdhaarEntryFromRow);
+      const vendors = (vendRes.data ?? []).map(mapVendorFromRow);
+
+      const itemsByPurchase = new Map<string, PurchaseItem[]>();
+      for (const rawItem of purItemsRes.data ?? []) {
+        const mapped = mapPurchaseItemFromRow(rawItem as Record<string, unknown>);
+        const list = itemsByPurchase.get(mapped.purchaseId) ?? [];
+        list.push(mapped);
+        itemsByPurchase.set(mapped.purchaseId, list);
+      }
+      const purchases = (purRes.data ?? []).map((row) =>
+        mapPurchaseFromRow(row as Record<string, unknown>, itemsByPurchase)
+      );
+      const inventoryAdjustments = (adjRes.data ?? []).map(mapAdjustmentFromRow);
+      let customers = (crmCustRes.data ?? []).map(mapCustomerFromRow);
+      let employees = (empRes.data ?? []).map(mapEmployeeFromRow);
+      let storeSettings = mapStoreSettingsFromRow(
+        settingsRes.data as Record<string, unknown> | null,
+        shopName
+      );
+
       let seedError: string | null = null;
 
       // Seed starter catalog on first login for a brand-new shopkeeper
@@ -498,11 +892,59 @@ export async function fetchWorkspaceData(
         const { error: seedErr } = await supabase
           .from('products')
           .insert(starter.map((p) => mapProductToRow(p, userId)));
-        if (!seedErr) {
-          products = starter;
-        } else {
-          products = starter;
+        products = starter;
+        if (seedErr) {
           seedError = seedErr.message;
+        }
+      }
+
+      // Ensure at least one Admin employee exists so the shopkeeper is never locked out
+      if (employees.length === 0) {
+        const defaultAdmin = buildDefaultAdminEmployee(userId);
+        const { error: empSeedErr } = await supabase
+          .from('employees')
+          .insert(mapEmployeeToRow(defaultAdmin, userId));
+        employees = [defaultAdmin];
+        if (empSeedErr && !seedError) {
+          seedError = empSeedErr.message;
+        }
+      }
+
+      // Seed default store settings row if missing
+      if (!settingsRes.data) {
+        const defaultSettings = createDefaultStoreSettings(shopName || 'Khaas Retail');
+        const { error: setSeedErr } = await supabase
+          .from('store_settings')
+          .upsert(mapStoreSettingsToRow(defaultSettings, userId));
+        storeSettings = defaultSettings;
+        if (setSeedErr && !seedError) {
+          seedError = setSeedErr.message;
+        }
+      }
+
+      // Merge any pending offline queued sales onto fetched cloud state so nothing disappears before sync
+      const pendingQueue = getOfflineQueue(userId);
+      if (pendingQueue.length > 0) {
+        const existingOrderIds = new Set(orders.map((o) => o.id));
+        const existingEntryIds = new Set(udhaarEntries.map((e) => e.id));
+        for (const qItem of pendingQueue) {
+          if (!existingOrderIds.has(qItem.order.id)) {
+            orders = [...orders, qItem.order];
+            existingOrderIds.add(qItem.order.id);
+          }
+          if (qItem.updatedProducts.length > 0) {
+            const qProdMap = new Map(qItem.updatedProducts.map((p) => [p.id, p]));
+            products = products.map((p) => qProdMap.get(p.id) ?? p);
+          }
+          if (qItem.newUdhaarEntry && !existingEntryIds.has(qItem.newUdhaarEntry.id)) {
+            udhaarEntries = [...udhaarEntries, qItem.newUdhaarEntry];
+            existingEntryIds.add(qItem.newUdhaarEntry.id);
+          }
+          if (qItem.updatedCustomer) {
+            customers = customers.map((c) =>
+              c.id === qItem.updatedCustomer!.id ? qItem.updatedCustomer! : c
+            );
+          }
         }
       }
 
@@ -511,28 +953,45 @@ export async function fetchWorkspaceData(
         orders,
         udhaarCustomers,
         udhaarEntries,
+        vendors,
+        purchases,
+        inventoryAdjustments,
+        customers,
+        employees,
+        storeSettings,
         cloudSyncError: seedError,
+        isOffline: false,
       };
       saveLocalWorkspace(userId, {
         products,
         orders,
         udhaarCustomers,
         udhaarEntries,
+        vendors,
+        purchases,
+        inventoryAdjustments,
+        customers,
+        employees,
+        storeSettings,
       });
       return workspace;
     } catch (err) {
-      const localFallback = loadLocalWorkspace(userId);
+      const localFallback = loadLocalWorkspace(userId, shopName);
+      const errMsg =
+        err instanceof Error ? err.message : 'Unable to reach Supabase.';
+      const offlineErr = isNetworkLossError(errMsg) || browserOffline;
       return {
         ...localFallback,
-        cloudSyncError:
-          err instanceof Error ? err.message : 'Unable to reach Supabase.',
+        cloudSyncError: offlineErr ? null : errMsg,
+        isOffline: offlineErr,
       };
     }
   }
 
   return {
-    ...loadLocalWorkspace(userId),
+    ...loadLocalWorkspace(userId, shopName),
     cloudSyncError: null,
+    isOffline: browserOffline,
   };
 }
 
@@ -575,51 +1034,227 @@ export async function deleteProductRecord(
   return null;
 }
 
-export async function insertOrderRecord(
+async function pushOrderBundleToSupabase(
   userId: string,
   order: OrderRecord,
   updatedProducts: Product[],
-  newUdhaarEntry?: UdhaarEntry
-): Promise<string | null> {
-  const ws = loadLocalWorkspace(userId);
-  ws.orders = [...ws.orders, order];
-  ws.products = updatedProducts;
-  if (newUdhaarEntry) {
-    ws.udhaarEntries = [...ws.udhaarEntries, newUdhaarEntry];
+  newUdhaarEntry?: UdhaarEntry,
+  updatedCustomer?: Customer
+): Promise<{ error: string | null; networkFailure: boolean }> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { error: null, networkFailure: false };
   }
-  saveLocalWorkspace(userId, ws);
 
-  if (isSupabaseConfigured && supabase) {
+  try {
     const { error: ordErr } = await supabase
       .from('orders')
-      .insert(mapOrderToRow(order, userId));
-    if (ordErr) return ordErr.message;
+      .upsert(mapOrderToRow(order, userId), { onConflict: 'id' });
+    if (ordErr) {
+      return {
+        error: ordErr.message,
+        networkFailure: isNetworkLossError(ordErr.message),
+      };
+    }
 
-    // Persist decremented stock counts for sold products
     const soldIds = new Set(order.items.map((i) => i.productId));
     const productsToUpdate = updatedProducts.filter((p) => soldIds.has(p.id));
     if (productsToUpdate.length > 0) {
       const { error: stockErr } = await supabase
         .from('products')
         .upsert(productsToUpdate.map((p) => mapProductToRow(p, userId)));
-      if (stockErr) return stockErr.message;
+      if (stockErr) {
+        return {
+          error: stockErr.message,
+          networkFailure: isNetworkLossError(stockErr.message),
+        };
+      }
     }
 
     if (newUdhaarEntry) {
-      const { error: ueErr } = await supabase.from('udhaar_entries').insert({
-        id: newUdhaarEntry.id,
-        user_id: userId,
-        customer_id: newUdhaarEntry.customerId,
-        type: newUdhaarEntry.type,
-        amount: newUdhaarEntry.amount,
-        note: newUdhaarEntry.note,
-        receipt_number: newUdhaarEntry.receiptNumber ?? null,
-        created_at: newUdhaarEntry.createdAt,
+      const { error: ueErr } = await supabase.from('udhaar_entries').upsert(
+        {
+          id: newUdhaarEntry.id,
+          user_id: userId,
+          customer_id: newUdhaarEntry.customerId,
+          type: newUdhaarEntry.type,
+          amount: newUdhaarEntry.amount,
+          note: newUdhaarEntry.note,
+          receipt_number: newUdhaarEntry.receiptNumber ?? null,
+          created_at: newUdhaarEntry.createdAt,
+        },
+        { onConflict: 'id' }
+      );
+      if (ueErr) {
+        return {
+          error: ueErr.message,
+          networkFailure: isNetworkLossError(ueErr.message),
+        };
+      }
+    }
+
+    if (updatedCustomer) {
+      const { error: custErr } = await supabase
+        .from('customers')
+        .upsert(mapCustomerToRow(updatedCustomer, userId));
+      if (custErr) {
+        return {
+          error: custErr.message,
+          networkFailure: isNetworkLossError(custErr.message),
+        };
+      }
+    }
+
+    return { error: null, networkFailure: false };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Network error';
+    return { error: msg, networkFailure: true };
+  }
+}
+
+export async function insertOrderRecord(
+  userId: string,
+  order: OrderRecord,
+  updatedProducts: Product[],
+  newUdhaarEntry?: UdhaarEntry,
+  updatedCustomer?: Customer
+): Promise<{ syncError: string | null; queuedOffline: boolean }> {
+  const ws = loadLocalWorkspace(userId);
+  ws.orders = [...ws.orders, order];
+  ws.products = updatedProducts;
+  if (newUdhaarEntry) {
+    ws.udhaarEntries = [...ws.udhaarEntries, newUdhaarEntry];
+  }
+  if (updatedCustomer) {
+    ws.customers = ws.customers.map((c) =>
+      c.id === updatedCustomer.id ? updatedCustomer : c
+    );
+  }
+  saveLocalWorkspace(userId, ws);
+
+  const browserOffline =
+    typeof navigator !== 'undefined' && navigator.onLine === false;
+
+  if (browserOffline) {
+    enqueueOfflineSale({
+      id: order.id,
+      userId,
+      createdAt: order.createdAt,
+      order,
+      updatedProducts,
+      newUdhaarEntry,
+      updatedCustomer,
+    });
+    return { syncError: null, queuedOffline: true };
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    const res = await pushOrderBundleToSupabase(
+      userId,
+      order,
+      updatedProducts,
+      newUdhaarEntry,
+      updatedCustomer
+    );
+    if (res.networkFailure) {
+      enqueueOfflineSale({
+        id: order.id,
+        userId,
+        createdAt: order.createdAt,
+        order,
+        updatedProducts,
+        newUdhaarEntry,
+        updatedCustomer,
       });
-      if (ueErr) return ueErr.message;
+      return { syncError: null, queuedOffline: true };
+    }
+    if (res.error) {
+      return { syncError: res.error, queuedOffline: false };
     }
   }
-  return null;
+
+  return { syncError: null, queuedOffline: false };
+}
+
+export async function syncOfflineQueue(userId: string): Promise<{
+  syncedCount: number;
+  remainingCount: number;
+  syncError: string | null;
+  offlineStill: boolean;
+}> {
+  const allQueue = getOfflineQueue();
+  const userQueue = allQueue
+    .filter((item) => item.userId === userId)
+    .sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+  if (userQueue.length === 0) {
+    return {
+      syncedCount: 0,
+      remainingCount: 0,
+      syncError: null,
+      offlineStill: false,
+    };
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return {
+      syncedCount: 0,
+      remainingCount: userQueue.length,
+      syncError: null,
+      offlineStill: true,
+    };
+  }
+
+  if (!isSupabaseConfigured || !supabase) {
+    // Local-only mode: clear local queue cleanly
+    const otherUsers = allQueue.filter((item) => item.userId !== userId);
+    saveOfflineQueue(otherUsers);
+    return {
+      syncedCount: userQueue.length,
+      remainingCount: 0,
+      syncError: null,
+      offlineStill: false,
+    };
+  }
+
+  const syncedIds = new Set<string>();
+  let lastError: string | null = null;
+  let offlineStill = false;
+
+  for (const item of userQueue) {
+    const res = await pushOrderBundleToSupabase(
+      userId,
+      item.order,
+      item.updatedProducts,
+      item.newUdhaarEntry,
+      item.updatedCustomer
+    );
+
+    if (res.networkFailure) {
+      offlineStill = true;
+      break;
+    }
+    if (res.error) {
+      lastError = res.error;
+      break;
+    }
+
+    syncedIds.add(item.id);
+  }
+
+  if (syncedIds.size > 0) {
+    const updatedQueue = allQueue.filter((item) => !syncedIds.has(item.id));
+    saveOfflineQueue(updatedQueue);
+  }
+
+  const remainingForUser = userQueue.length - syncedIds.size;
+  return {
+    syncedCount: syncedIds.size,
+    remainingCount: remainingForUser,
+    syncError: lastError,
+    offlineStill,
+  };
 }
 
 export async function insertUdhaarCustomerRecord(
@@ -686,23 +1321,261 @@ export async function insertUdhaarEntryRecord(
   return null;
 }
 
+// Phase 2: Vendors, Purchases & Inventory Adjustments Persistence
+
+export async function upsertVendorRecord(
+  userId: string,
+  vendor: Vendor
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  const exists = ws.vendors.some((v) => v.id === vendor.id);
+  ws.vendors = exists
+    ? ws.vendors.map((v) => (v.id === vendor.id ? vendor : v))
+    : [vendor, ...ws.vendors];
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('vendors')
+      .upsert(mapVendorToRow(vendor, userId));
+    if (error) return error.message;
+  }
+  return null;
+}
+
+export async function insertPurchaseRecord(
+  userId: string,
+  purchase: PurchaseRecord,
+  updatedProducts: Product[],
+  updatedVendor: Vendor
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.purchases = [purchase, ...ws.purchases];
+  ws.products = updatedProducts;
+  ws.vendors = ws.vendors.map((v) =>
+    v.id === updatedVendor.id ? updatedVendor : v
+  );
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error: purErr } = await supabase.from('purchases').insert({
+      id: purchase.id,
+      user_id: userId,
+      vendor_id: purchase.vendorId,
+      vendor_name: purchase.vendorName,
+      invoice_number: purchase.invoiceNumber,
+      total_amount: purchase.totalAmount,
+      paid_amount: purchase.paidAmount,
+      balance_due: purchase.balanceDue,
+      note: purchase.note,
+      created_at: purchase.createdAt,
+    });
+    if (purErr) return purErr.message;
+
+    if (purchase.items.length > 0) {
+      const { error: itemsErr } = await supabase.from('purchase_items').insert(
+        purchase.items.map((item) => ({
+          id: item.id,
+          user_id: userId,
+          purchase_id: purchase.id,
+          product_id: item.productId,
+          product_name: item.productName,
+          sku: item.sku,
+          quantity: item.quantity,
+          unit_cost: item.unitCost,
+          line_total: item.lineTotal,
+        }))
+      );
+      if (itemsErr) return itemsErr.message;
+    }
+
+    const receivedIds = new Set(purchase.items.map((i) => i.productId));
+    const productsToUpdate = updatedProducts.filter((p) => receivedIds.has(p.id));
+    if (productsToUpdate.length > 0) {
+      const { error: prodErr } = await supabase
+        .from('products')
+        .upsert(productsToUpdate.map((p) => mapProductToRow(p, userId)));
+      if (prodErr) return prodErr.message;
+    }
+
+    if (purchase.balanceDue > 0) {
+      const { error: vendErr } = await supabase
+        .from('vendors')
+        .update({ balance: updatedVendor.balance })
+        .eq('id', updatedVendor.id)
+        .eq('user_id', userId);
+      if (vendErr) return vendErr.message;
+    }
+  }
+
+  return null;
+}
+
+export async function insertInventoryAdjustmentRecord(
+  userId: string,
+  adjustment: InventoryAdjustment,
+  updatedProduct: Product
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.inventoryAdjustments = [adjustment, ...ws.inventoryAdjustments];
+  ws.products = ws.products.map((p) =>
+    p.id === updatedProduct.id ? updatedProduct : p
+  );
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error: adjErr } = await supabase
+      .from('inventory_adjustments')
+      .insert({
+        id: adjustment.id,
+        user_id: userId,
+        product_id: adjustment.productId,
+        product_name: adjustment.productName,
+        sku: adjustment.sku,
+        adjustment_type: adjustment.adjustmentType,
+        quantity_change: adjustment.quantityChange,
+        previous_stock: adjustment.previousStock,
+        new_stock: adjustment.newStock,
+        reason: adjustment.reason,
+        created_at: adjustment.createdAt,
+      });
+    if (adjErr) return adjErr.message;
+
+    const { error: prodErr } = await supabase
+      .from('products')
+      .upsert(mapProductToRow(updatedProduct, userId));
+    if (prodErr) return prodErr.message;
+  }
+
+  return null;
+}
+
+// Phase 3: Customers, Employees & Store Settings Persistence
+
+export async function upsertCustomerRecord(
+  userId: string,
+  customer: Customer
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  const exists = ws.customers.some((c) => c.id === customer.id);
+  ws.customers = exists
+    ? ws.customers.map((c) => (c.id === customer.id ? customer : c))
+    : [customer, ...ws.customers];
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('customers')
+      .upsert(mapCustomerToRow(customer, userId));
+    if (error) return error.message;
+  }
+  return null;
+}
+
+export async function deleteCustomerRecord(
+  userId: string,
+  customerId: string
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.customers = ws.customers.filter((c) => c.id !== customerId);
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('customers')
+      .delete()
+      .eq('id', customerId)
+      .eq('user_id', userId);
+    if (error) return error.message;
+  }
+  return null;
+}
+
+export async function upsertEmployeeRecord(
+  userId: string,
+  employee: Employee
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  const exists = ws.employees.some((e) => e.id === employee.id);
+  ws.employees = exists
+    ? ws.employees.map((e) => (e.id === employee.id ? employee : e))
+    : [...ws.employees, employee];
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('employees')
+      .upsert(mapEmployeeToRow(employee, userId));
+    if (error) return error.message;
+  }
+  return null;
+}
+
+export async function deleteEmployeeRecord(
+  userId: string,
+  employeeId: string
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.employees = ws.employees.filter((e) => e.id !== employeeId);
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('employees')
+      .delete()
+      .eq('id', employeeId)
+      .eq('user_id', userId);
+    if (error) return error.message;
+  }
+  return null;
+}
+
+export async function upsertStoreSettingsRecord(
+  userId: string,
+  settings: StoreSettings
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.storeSettings = settings;
+  saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('store_settings')
+      .upsert(mapStoreSettingsToRow(settings, userId));
+    if (error) return error.message;
+  }
+  return null;
+}
+
 export async function resetUserDemoWorkspace(
-  userId: string
+  userId: string,
+  shopName?: string
 ): Promise<ShopkeeperWorkspaceData> {
-  const demoData = buildStarterWorkspace(userId, true);
+  const demoData = buildStarterWorkspace(userId, true, shopName);
   saveLocalWorkspace(userId, demoData);
 
   if (isSupabaseConfigured && supabase) {
-    const results = await Promise.all([
+    const delResults = await Promise.all([
+      supabase.from('purchase_items').delete().eq('user_id', userId),
+      supabase.from('inventory_adjustments').delete().eq('user_id', userId),
       supabase.from('udhaar_entries').delete().eq('user_id', userId),
+    ]);
+    const delErr1 = delResults.find((r) => r.error)?.error;
+    if (delErr1) return { ...demoData, cloudSyncError: delErr1.message };
+
+    const delResults2 = await Promise.all([
+      supabase.from('purchases').delete().eq('user_id', userId),
       supabase.from('udhaar_customers').delete().eq('user_id', userId),
       supabase.from('orders').delete().eq('user_id', userId),
       supabase.from('products').delete().eq('user_id', userId),
+      supabase.from('customers').delete().eq('user_id', userId),
+      supabase.from('employees').delete().eq('user_id', userId),
     ]);
-    const delErr = results.find((r) => r.error)?.error;
-    if (delErr) {
-      return { ...demoData, cloudSyncError: delErr.message };
-    }
+    const delErr2 = delResults2.find((r) => r.error)?.error;
+    if (delErr2) return { ...demoData, cloudSyncError: delErr2.message };
+
+    const delVend = await supabase.from('vendors').delete().eq('user_id', userId);
+    if (delVend.error) return { ...demoData, cloudSyncError: delVend.error.message };
 
     const insProd = await supabase
       .from('products')
@@ -746,6 +1619,99 @@ export async function resetUserDemoWorkspace(
     );
     if (insEnt.error) {
       return { ...demoData, cloudSyncError: insEnt.error.message };
+    }
+
+    const insVend = await supabase
+      .from('vendors')
+      .insert(demoData.vendors.map((v) => mapVendorToRow(v, userId)));
+    if (insVend.error) {
+      return { ...demoData, cloudSyncError: insVend.error.message };
+    }
+
+    const insPur = await supabase.from('purchases').insert(
+      demoData.purchases.map((p) => ({
+        id: p.id,
+        user_id: userId,
+        vendor_id: p.vendorId,
+        vendor_name: p.vendorName,
+        invoice_number: p.invoiceNumber,
+        total_amount: p.totalAmount,
+        paid_amount: p.paidAmount,
+        balance_due: p.balanceDue,
+        note: p.note,
+        created_at: p.createdAt,
+      }))
+    );
+    if (insPur.error) {
+      return { ...demoData, cloudSyncError: insPur.error.message };
+    }
+
+    const allPurchaseItems = demoData.purchases.flatMap((p) =>
+      p.items.map((item) => ({
+        id: item.id,
+        user_id: userId,
+        purchase_id: p.id,
+        product_id: item.productId,
+        product_name: item.productName,
+        sku: item.sku,
+        quantity: item.quantity,
+        unit_cost: item.unitCost,
+        line_total: item.lineTotal,
+      }))
+    );
+    if (allPurchaseItems.length > 0) {
+      const insPurItems = await supabase
+        .from('purchase_items')
+        .insert(allPurchaseItems);
+      if (insPurItems.error) {
+        return { ...demoData, cloudSyncError: insPurItems.error.message };
+      }
+    }
+
+    if (demoData.inventoryAdjustments.length > 0) {
+      const insAdj = await supabase.from('inventory_adjustments').insert(
+        demoData.inventoryAdjustments.map((a) => ({
+          id: a.id,
+          user_id: userId,
+          product_id: a.productId,
+          product_name: a.productName,
+          sku: a.sku,
+          adjustment_type: a.adjustmentType,
+          quantity_change: a.quantityChange,
+          previous_stock: a.previousStock,
+          new_stock: a.newStock,
+          reason: a.reason,
+          created_at: a.createdAt,
+        }))
+      );
+      if (insAdj.error) {
+        return { ...demoData, cloudSyncError: insAdj.error.message };
+      }
+    }
+
+    if (demoData.customers.length > 0) {
+      const insCrm = await supabase
+        .from('customers')
+        .insert(demoData.customers.map((c) => mapCustomerToRow(c, userId)));
+      if (insCrm.error) {
+        return { ...demoData, cloudSyncError: insCrm.error.message };
+      }
+    }
+
+    if (demoData.employees.length > 0) {
+      const insEmp = await supabase
+        .from('employees')
+        .insert(demoData.employees.map((e) => mapEmployeeToRow(e, userId)));
+      if (insEmp.error) {
+        return { ...demoData, cloudSyncError: insEmp.error.message };
+      }
+    }
+
+    const insSet = await supabase
+      .from('store_settings')
+      .upsert(mapStoreSettingsToRow(demoData.storeSettings, userId));
+    if (insSet.error) {
+      return { ...demoData, cloudSyncError: insSet.error.message };
     }
   }
 

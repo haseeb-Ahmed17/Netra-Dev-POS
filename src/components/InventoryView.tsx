@@ -7,14 +7,26 @@ import {
   Plus,
   RefreshCw,
   Search,
+  SlidersHorizontal,
   Trash2,
   Upload,
   X,
   XCircle,
 } from 'lucide-react';
-import { formatCurrency, getCategoryLabel, type TranslationStrings } from '../i18n';
+import {
+  formatCurrency,
+  formatDateTime,
+  getCategoryLabel,
+  type TranslationStrings,
+} from '../i18n';
 import { uploadProductImage } from '../lib/posRepository';
-import type { CategoryId, Language, Product } from '../types';
+import type {
+  AdjustmentType,
+  CategoryId,
+  InventoryAdjustment,
+  Language,
+  Product,
+} from '../types';
 import { BarcodeStickerModal } from './BarcodeStickerModal';
 import { ProductImage } from './ProductImage';
 
@@ -22,7 +34,15 @@ interface InventoryViewProps {
   userId: string;
   shopName: string;
   products: Product[];
+  adjustments: InventoryAdjustment[];
+  canDelete?: boolean;
   onAdjustStock: (productId: string, delta: number) => void;
+  onRecordAdjustment: (payload: {
+    productId: string;
+    adjustmentType: AdjustmentType;
+    quantityChange: number;
+    reason: string;
+  }) => void;
   onAddProduct: (product: Omit<Product, 'id'>) => void;
   onUpdateProduct: (product: Product) => void;
   onDeleteProduct: (productId: string) => void;
@@ -71,7 +91,10 @@ export function InventoryView({
   userId,
   shopName,
   products,
+  adjustments,
+  canDelete = true,
   onAdjustStock,
+  onRecordAdjustment,
   onAddProduct,
   onUpdateProduct,
   onDeleteProduct,
@@ -91,7 +114,29 @@ export function InventoryView({
     'nameEn' | 'nameUr' | 'barcode' | 'sku' | 'price'
   > | null>(null);
 
+  // Stock Adjustment Modal state
+  const [showAdjustModal, setShowAdjustModal] = useState(false);
+  const [adjustProductId, setAdjustProductId] = useState<string>(
+    products[0]?.id ?? ''
+  );
+  const [adjustType, setAdjustType] = useState<AdjustmentType>('Damaged');
+  const [adjustDirection, setAdjustDirection] = useState<'add' | 'remove'>('remove');
+  const [adjustQty, setAdjustQty] = useState<string>('1');
+  const [adjustReason, setAdjustReason] = useState<string>('');
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const stockStats = useMemo(() => {
+    const totalUnits = products.reduce((sum, p) => sum + p.stock, 0);
+    const totalStockValue = products.reduce((sum, p) => sum + p.stock * p.cost, 0);
+    const lowStockCount = products.filter((p) => p.stock <= 5).length;
+    return {
+      totalProducts: products.length,
+      totalUnits,
+      totalStockValue,
+      lowStockCount,
+    };
+  }, [products]);
 
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -225,6 +270,58 @@ export function InventoryView({
     closeModal();
   };
 
+  const openAdjustModal = (targetProductId?: string) => {
+    const fallbackId = targetProductId || products[0]?.id || '';
+    setAdjustProductId(fallbackId);
+    setAdjustType('Damaged');
+    setAdjustDirection('remove');
+    setAdjustQty('1');
+    setAdjustReason('');
+    setShowAdjustModal(true);
+  };
+
+  const selectedAdjustProduct = useMemo(
+    () =>
+      products.find((p) => p.id === adjustProductId) ?? products[0] ?? null,
+    [products, adjustProductId]
+  );
+
+  const adjustQtyNum = Math.max(0, Math.floor(Number(adjustQty) || 0));
+  const signedAdjustDelta =
+    adjustDirection === 'add' ? adjustQtyNum : -adjustQtyNum;
+  const previewNewStock = selectedAdjustProduct
+    ? Math.max(0, selectedAdjustProduct.stock + signedAdjustDelta)
+    : 0;
+
+  const handleSubmitAdjustment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAdjustProduct || adjustQtyNum <= 0) return;
+
+    onRecordAdjustment({
+      productId: selectedAdjustProduct.id,
+      adjustmentType: adjustType,
+      quantityChange: signedAdjustDelta,
+      reason: adjustReason.trim() || adjustType,
+    });
+
+    setShowAdjustModal(false);
+    setAdjustQty('1');
+    setAdjustReason('');
+  };
+
+  const getAdjustmentTypeLabel = (type: AdjustmentType) => {
+    switch (type) {
+      case 'Damaged':
+        return t.adjTypeDamaged;
+      case 'Expired':
+        return t.adjTypeExpired;
+      case 'Lost/Theft':
+        return t.adjTypeLost;
+      case 'Stock Count Correction':
+        return t.adjTypeCorrection;
+    }
+  };
+
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-slate-200 rounded-xl p-5">
@@ -235,15 +332,62 @@ export function InventoryView({
           <p className="text-sm text-slate-600 mt-1">{t.inventorySubtitle}</p>
         </div>
 
-        <button
-          type="button"
-          onClick={openAddModal}
-          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg shadow-xs whitespace-nowrap shrink-0 min-h-[44px] transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
-        >
-          <Plus className="w-4 h-4 shrink-0" aria-hidden="true" />
-          <span>{t.addProductBtn}</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            disabled={products.length === 0}
+            onClick={() => openAdjustModal()}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-50 rounded-lg whitespace-nowrap shrink-0 min-h-[44px] transition-colors cursor-pointer"
+          >
+            <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>{t.adjustStockBtn}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={openAddModal}
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg shadow-xs whitespace-nowrap shrink-0 min-h-[44px] transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
+          >
+            <Plus className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>{t.addProductBtn}</span>
+          </button>
+        </div>
       </div>
+
+      {/* Stock Summary Strip */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <p className="text-xs font-medium text-slate-500">{t.productCol}</p>
+          <p className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-2">
+            {stockStats.totalProducts}
+          </p>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <p className="text-xs font-medium text-slate-500">{t.totalUnitsInStockLabel}</p>
+          <p className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-2">
+            {stockStats.totalUnits}
+          </p>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <p className="text-xs font-medium text-slate-500">{t.totalStockValueLabel}</p>
+          <p className="font-mono text-2xl font-bold text-teal-800 tabular-nums mt-2">
+            {formatCurrency(stockStats.totalStockValue, lang)}
+          </p>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <p className="text-xs font-medium text-slate-500">{t.lowStockCountLabel}</p>
+          <p
+            className={`font-mono text-2xl font-bold tabular-nums mt-2 ${
+              stockStats.lowStockCount > 0 ? 'text-amber-700' : 'text-emerald-700'
+            }`}
+          >
+            {stockStats.lowStockCount}
+          </p>
+        </div>
+      </section>
 
       {/* Filter Bar */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
@@ -313,6 +457,7 @@ export function InventoryView({
                   <th className="py-3 px-4 text-end font-medium">{t.priceCol}</th>
                   <th className="py-3 px-4 text-end font-medium">{t.taxRateLabel}</th>
                   <th className="py-3 px-4 text-end font-medium">{t.stockCol}</th>
+                  <th className="py-3 px-4 text-end font-medium">{t.stockValueCol}</th>
                   <th className="py-3 px-4 text-start font-medium">{t.statusCol}</th>
                   <th className="py-3 px-5 text-end font-medium">{t.actionCol}</th>
                 </tr>
@@ -323,6 +468,7 @@ export function InventoryView({
                   const isOut = product.stock === 0;
                   const isLow = product.stock > 0 && product.stock <= 5;
                   const isConfirmingDelete = confirmDeleteId === product.id;
+                  const stockValue = product.stock * product.cost;
 
                   return (
                     <tr key={product.id} className="hover:bg-slate-50 transition-colors">
@@ -358,6 +504,9 @@ export function InventoryView({
                       </td>
                       <td className="py-3 px-4 text-end font-mono font-bold text-slate-900 tabular-nums">
                         {product.stock}
+                      </td>
+                      <td className="py-3 px-4 text-end font-mono text-xs font-semibold text-slate-700 tabular-nums whitespace-nowrap">
+                        {formatCurrency(stockValue, lang)}
                       </td>
                       <td className="py-3 px-4 whitespace-nowrap">
                         {isOut ? (
@@ -400,6 +549,15 @@ export function InventoryView({
                           </button>
                           <button
                             type="button"
+                            onClick={() => openAdjustModal(product.id)}
+                            title={t.adjustStockBtn}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-amber-900 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors cursor-pointer"
+                          >
+                            <SlidersHorizontal className="w-3 h-3 shrink-0" aria-hidden="true" />
+                            <span>{t.adjustStockBtn}</span>
+                          </button>
+                          <button
+                            type="button"
                             onClick={() =>
                               setStickerProduct({
                                 nameEn: product.nameEn,
@@ -425,37 +583,38 @@ export function InventoryView({
                             <span>{t.editBtn}</span>
                           </button>
 
-                          {isConfirmingDelete ? (
-                            <div className="inline-flex items-center gap-1">
+                          {canDelete &&
+                            (isConfirmingDelete ? (
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onDeleteProduct(product.id);
+                                    setConfirmDeleteId(null);
+                                  }}
+                                  className="px-2.5 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors cursor-pointer"
+                                >
+                                  {t.confirmDeleteBtn}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="px-2 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 rounded-md cursor-pointer"
+                                >
+                                  {t.cancelBtn}
+                                </button>
+                              </div>
+                            ) : (
                               <button
                                 type="button"
-                                onClick={() => {
-                                  onDeleteProduct(product.id);
-                                  setConfirmDeleteId(null);
-                                }}
-                                className="px-2.5 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors cursor-pointer"
+                                onClick={() => setConfirmDeleteId(product.id)}
+                                aria-label={`${t.deleteBtn} ${name}`}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 rounded-md transition-colors cursor-pointer"
                               >
-                                {t.confirmDeleteBtn}
+                                <Trash2 className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                <span>{t.deleteBtn}</span>
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(null)}
-                                className="px-2 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 rounded-md cursor-pointer"
-                              >
-                                {t.cancelBtn}
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteId(product.id)}
-                              aria-label={`${t.deleteBtn} ${name}`}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 rounded-md transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-3 h-3 shrink-0" aria-hidden="true" />
-                              <span>{t.deleteBtn}</span>
-                            </button>
-                          )}
+                            ))}
                         </div>
                       </td>
                     </tr>
@@ -465,6 +624,76 @@ export function InventoryView({
             </table>
           </div>
         )}
+      </section>
+
+      {/* Inventory Adjustments History Log */}
+      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-4">
+          <h2 className="text-base font-bold text-slate-900">
+            {t.adjustmentHistoryTitle}
+          </h2>
+          <span className="font-mono text-xs text-slate-500 tabular-nums">
+            {adjustments.length}
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+              <tr>
+                <th className="py-3 px-4 text-start font-medium">{t.entryDateCol}</th>
+                <th className="py-3 px-4 text-start font-medium">{t.productCol}</th>
+                <th className="py-3 px-4 text-start font-medium">{t.adjustmentTypeLabel}</th>
+                <th className="py-3 px-4 text-end font-medium">{t.qtyChangeLabel}</th>
+                <th className="py-3 px-4 text-end font-medium">{t.previousNewCol}</th>
+                <th className="py-3 px-4 text-start font-medium">{t.reasonCol}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {adjustments.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-10 px-4 text-center text-xs text-slate-500">
+                    {t.noAdjustmentsRecorded}
+                  </td>
+                </tr>
+              ) : (
+                adjustments.map((adj) => (
+                  <tr key={adj.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="py-3 px-4 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
+                      {formatDateTime(adj.createdAt)}
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="text-xs font-semibold text-slate-900">
+                        {adj.productName}
+                      </div>
+                      <div className="text-[11px] font-mono text-slate-400">
+                        {adj.sku}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-xs font-medium text-slate-700 whitespace-nowrap">
+                      {getAdjustmentTypeLabel(adj.adjustmentType)}
+                    </td>
+                    <td
+                      className={`py-3 px-4 text-end font-mono text-xs font-bold tabular-nums whitespace-nowrap ${
+                        adj.quantityChange >= 0 ? 'text-emerald-700' : 'text-red-700'
+                      }`}
+                    >
+                      {adj.quantityChange >= 0
+                        ? `+${adj.quantityChange}`
+                        : adj.quantityChange}
+                    </td>
+                    <td className="py-3 px-4 text-end font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
+                      {adj.previousStock} → {adj.newStock}
+                    </td>
+                    <td className="py-3 px-4 text-xs text-slate-600">
+                      {adj.reason || '—'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       {/* Add / Edit Product Modal */}
@@ -777,6 +1006,170 @@ export function InventoryView({
                   className="px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 disabled:bg-slate-300 rounded-lg min-h-[40px] cursor-pointer"
                 >
                   {t.saveProductBtn}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Adjustment Modal */}
+      {showAdjustModal && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="adjust-stock-modal-title"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md overflow-hidden shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <h2
+                id="adjust-stock-modal-title"
+                className="text-base font-bold text-slate-900"
+              >
+                {t.adjustModalTitle}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowAdjustModal(false)}
+                aria-label={t.closeBtn}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitAdjustment} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {t.productCol} *
+                </label>
+                <select
+                  required
+                  value={selectedAdjustProduct?.id ?? ''}
+                  onChange={(e) => setAdjustProductId(e.target.value)}
+                  className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                >
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {lang === 'ur' ? p.nameUr : p.nameEn} ({p.sku}) · {t.inStockLabel}:{' '}
+                      {p.stock}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {t.adjustmentTypeLabel}
+                </label>
+                <select
+                  value={adjustType}
+                  onChange={(e) => {
+                    const nextType = e.target.value as AdjustmentType;
+                    setAdjustType(nextType);
+                    if (nextType !== 'Stock Count Correction') {
+                      setAdjustDirection('remove');
+                    }
+                  }}
+                  className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                >
+                  <option value="Damaged">{t.adjTypeDamaged}</option>
+                  <option value="Expired">{t.adjTypeExpired}</option>
+                  <option value="Lost/Theft">{t.adjTypeLost}</option>
+                  <option value="Stock Count Correction">{t.adjTypeCorrection}</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {t.qtyChangeLabel} *
+                </label>
+                <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setAdjustDirection('remove')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md cursor-pointer ${
+                        adjustDirection === 'remove'
+                          ? 'bg-red-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {t.qtyDirectionRemove}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdjustDirection('add')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md cursor-pointer ${
+                        adjustDirection === 'add'
+                          ? 'bg-emerald-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {t.qtyDirectionAdd}
+                    </button>
+                  </div>
+
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    value={adjustQty}
+                    onChange={(e) => setAdjustQty(e.target.value)}
+                    className="flex-1 h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              {selectedAdjustProduct && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5 flex items-center justify-between text-xs">
+                  <span className="text-slate-600">
+                    {t.currentStockLabel}:{' '}
+                    <strong className="font-mono text-slate-900 tabular-nums">
+                      {selectedAdjustProduct.stock}
+                    </strong>
+                  </span>
+                  <span className="text-slate-600">
+                    {t.newStockPreviewLabel}:{' '}
+                    <strong
+                      className={`font-mono tabular-nums ${
+                        previewNewStock <= 5 ? 'text-amber-700' : 'text-teal-800'
+                      }`}
+                    >
+                      {previewNewStock}
+                    </strong>
+                  </span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {t.adjustmentReasonLabel}
+                </label>
+                <input
+                  type="text"
+                  value={adjustReason}
+                  onChange={(e) => setAdjustReason(e.target.value)}
+                  placeholder={t.adjustmentReasonPlaceholder}
+                  className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAdjustModal(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg min-h-[40px] cursor-pointer"
+                >
+                  {t.cancelBtn}
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg min-h-[40px] cursor-pointer"
+                >
+                  {t.saveAdjustmentBtn}
                 </button>
               </div>
             </form>

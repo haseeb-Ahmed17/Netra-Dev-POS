@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Download, Printer, X } from 'lucide-react';
 import {
   formatCurrency,
@@ -5,19 +6,36 @@ import {
   getPaymentLabel,
   type TranslationStrings,
 } from '../i18n';
-import type { Language, OrderRecord } from '../types';
+import type { Language, OrderRecord, StoreSettings } from '../types';
 
 interface ReceiptModalProps {
   order: OrderRecord | null;
+  storeSettings: StoreSettings;
+  cashierName?: string;
   onClose: () => void;
   lang: Language;
   t: TranslationStrings;
 }
 
-export function ReceiptModal({ order, onClose, lang, t }: ReceiptModalProps) {
+export function ReceiptModal({
+  order,
+  storeSettings,
+  cashierName,
+  onClose,
+  lang,
+  t,
+}: ReceiptModalProps) {
+  const [paperSize, setPaperSize] = useState<'80mm' | '58mm'>('80mm');
+
   if (!order) return null;
 
   const isUdhaar = order.paymentMethod === 'udhaar';
+  const storeName = storeSettings.storeName || t.brandName;
+  const storeAddress = storeSettings.address || t.storeAddress;
+  const storePhone = storeSettings.phone || t.storePhone;
+  const taxNumber = storeSettings.taxNumber || t.taxRegNumber;
+  const receiptFooter = storeSettings.receiptFooter || t.thankYouMsg;
+  const activeCashier = cashierName || t.cashierDefault;
 
   const handlePrint = () => {
     window.print();
@@ -37,14 +55,14 @@ export function ReceiptModal({ order, onClose, lang, t }: ReceiptModalProps) {
 
     const lines: string[] = [
       '========================================',
-      `          ${t.brandName.toUpperCase()}`,
-      `     ${t.storeAddress}`,
-      `     ${t.storePhone}`,
-      `     ${t.taxRegNumber}`,
+      `          ${storeName.toUpperCase()}`,
+      ...(storeAddress ? [`     ${storeAddress}`] : []),
+      ...(storePhone ? [`     ${storePhone}`] : []),
+      ...(taxNumber ? [`     ${taxNumber}`] : []),
       '========================================',
       `${t.receiptNoLabel}: ${order.receiptNumber}`,
       `${t.dateLabel}: ${formatDateTime(order.createdAt)}`,
-      `${t.cashierLabel}: ${t.cashierDefault}`,
+      `${t.cashierLabel}: ${activeCashier}`,
       `${t.customerLabel}: ${order.customerName || t.walkInCustomer}`,
       '----------------------------------------',
       ...order.items.map((item) => {
@@ -61,7 +79,7 @@ export function ReceiptModal({ order, onClose, lang, t }: ReceiptModalProps) {
       '----------------------------------------',
       ...paymentLines,
       '========================================',
-      `  ${t.thankYouMsg}`,
+      `  ${receiptFooter}`,
       '========================================',
     ];
 
@@ -90,33 +108,61 @@ export function ReceiptModal({ order, onClose, lang, t }: ReceiptModalProps) {
     >
       <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md overflow-hidden shadow-xl">
         {/* Modal Header */}
-        <div className="no-print flex items-center justify-between px-5 py-4 border-b border-slate-200">
+        <div className="no-print flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-200">
           <h2 id="receipt-modal-heading" className="text-base font-bold text-slate-900">
             {t.receiptModalTitle}
           </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t.closeBtn}
-            className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" aria-hidden="true" />
-          </button>
+
+          <div className="flex items-center gap-2">
+            {/* 58mm / 80mm Paper Toggle */}
+            <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg">
+              {(['58mm', '80mm'] as const).map((size) => (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => setPaperSize(size)}
+                  className={`px-2 py-1 text-[11px] font-mono font-semibold rounded-md cursor-pointer ${
+                    paperSize === size
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {size === '58mm' ? t.paper58mm : t.paper80mm}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={t.closeBtn}
+              className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
-        {/* Printable 80mm Thermal Slip */}
+        {/* Printable 58mm/80mm Thermal Slip */}
         <div className="p-5 bg-slate-50 max-h-[70vh] overflow-y-auto">
           <div
             id="printable-receipt-area"
-            className="bg-white border border-slate-200 rounded-lg p-5 font-mono text-xs text-slate-900 mx-auto max-w-[302px]"
+            data-paper-size={paperSize}
+            className={`bg-white border border-slate-200 rounded-lg font-mono text-slate-900 mx-auto transition-all ${
+              paperSize === '58mm'
+                ? 'p-3.5 text-[10px] max-w-[220px]'
+                : 'p-5 text-xs max-w-[302px]'
+            }`}
           >
             <div className="text-center border-b border-dashed border-slate-300 pb-3">
               <p className="text-base font-bold tracking-tight text-slate-900">
-                {t.brandName}
+                {storeName}
               </p>
-              <p className="text-[11px] text-slate-600 mt-0.5">{t.storeAddress}</p>
-              <p className="text-[11px] text-slate-600">{t.storePhone}</p>
-              <p className="text-[11px] text-slate-500">{t.taxRegNumber}</p>
+              {storeAddress && (
+                <p className="text-[11px] text-slate-600 mt-0.5">{storeAddress}</p>
+              )}
+              {storePhone && <p className="text-[11px] text-slate-600">{storePhone}</p>}
+              {taxNumber && <p className="text-[11px] text-slate-500">{taxNumber}</p>}
             </div>
 
             <div className="py-3 border-b border-dashed border-slate-300 space-y-1 text-[11px]">
@@ -130,7 +176,7 @@ export function ReceiptModal({ order, onClose, lang, t }: ReceiptModalProps) {
               </div>
               <div className="flex justify-between gap-2">
                 <span className="text-slate-500">{t.cashierLabel}:</span>
-                <span>{t.cashierDefault}</span>
+                <span>{activeCashier}</span>
               </div>
               <div className="flex justify-between gap-2">
                 <span className="text-slate-500">{t.customerLabel}:</span>
@@ -223,7 +269,9 @@ export function ReceiptModal({ order, onClose, lang, t }: ReceiptModalProps) {
 
             {/* Footer & Barcode */}
             <div className="mt-4 pt-3 border-t border-dashed border-slate-300 text-center space-y-2">
-              <p className="text-[11px] font-medium text-slate-700">{t.thankYouMsg}</p>
+              <p className="text-[11px] font-medium text-slate-700 whitespace-pre-line">
+                {receiptFooter}
+              </p>
               <div
                 className="flex items-center justify-center gap-[2px] h-8 pt-1"
                 aria-hidden="true"

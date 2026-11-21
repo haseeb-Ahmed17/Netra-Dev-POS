@@ -12,6 +12,7 @@ import { formatCurrency, getCategoryLabel, type TranslationStrings } from '../i1
 import type {
   CartItem,
   CategoryId,
+  Customer,
   Language,
   OrderLineItem,
   OrderRecord,
@@ -25,13 +26,16 @@ import { ProductImage } from './ProductImage';
 interface PosBillingViewProps {
   products: Product[];
   cart: CartItem[];
+  customers: Customer[];
   udhaarCustomers: UdhaarCustomer[];
   udhaarEntries: UdhaarEntry[];
+  canViewDashboard?: boolean;
   onAddToCart: (productId: string) => void;
   onUpdateQuantity: (productId: string, delta: number) => void;
   onRemoveFromCart: (productId: string) => void;
   onClearCart: () => void;
   onCompleteSale: (payload: {
+    customerId?: string;
     customerName: string;
     udhaarCustomerId?: string;
     discountPercent: number;
@@ -50,8 +54,10 @@ const DISCOUNT_OPTIONS = [0, 5, 10, 15];
 export function PosBillingView({
   products,
   cart,
+  customers,
   udhaarCustomers,
   udhaarEntries,
+  canViewDashboard = true,
   onAddToCart,
   onUpdateQuantity,
   onRemoveFromCart,
@@ -64,6 +70,7 @@ export function PosBillingView({
 }: PosBillingViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<CategoryId>('all');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
   const [selectedUdhaarId, setSelectedUdhaarId] = useState<string>('');
   const [discountPercent, setDiscountPercent] = useState<number>(0);
@@ -176,10 +183,16 @@ export function PosBillingView({
     cashTenderedInput.trim() !== '' &&
     parsedTendered < grandTotal;
 
-  const isUdhaarInvalid = paymentMethod === 'udhaar' && !selectedUdhaarId;
+  const isUdhaarInvalid =
+    paymentMethod === 'udhaar' && !selectedUdhaarId && !selectedCustomerId;
 
   const changeDue =
     paymentMethod === 'cash' ? Math.max(0, parsedTendered - grandTotal) : 0;
+
+  const selectedCrmCustomer = useMemo(
+    () => customers.find((c) => c.id === selectedCustomerId) ?? null,
+    [customers, selectedCustomerId]
+  );
 
   const handleCheckout = () => {
     if (lineItems.length === 0 || isCashInsufficient || isUdhaarInvalid) return;
@@ -189,8 +202,15 @@ export function PosBillingView({
         ? udhaarCustomers.find((c) => c.id === selectedUdhaarId)
         : undefined;
 
+    const resolvedName = selectedKhata
+      ? selectedKhata.name
+      : selectedCrmCustomer
+      ? selectedCrmCustomer.name
+      : customerName.trim();
+
     const created = onCompleteSale({
-      customerName: selectedKhata ? selectedKhata.name : customerName.trim(),
+      customerId: selectedCrmCustomer?.id,
+      customerName: resolvedName,
       udhaarCustomerId: selectedKhata?.id,
       discountPercent,
       paymentMethod,
@@ -198,6 +218,7 @@ export function PosBillingView({
     });
 
     if (created) {
+      setSelectedCustomerId('');
       setCustomerName('');
       setSelectedUdhaarId('');
       setDiscountPercent(0);
@@ -226,13 +247,15 @@ export function PosBillingView({
                 ({lastCompletedOrder.receiptNumber})
               </span>
             </span>
-            <button
-              type="button"
-              onClick={onGoToDashboard}
-              className="font-semibold text-teal-800 underline underline-offset-4 hover:text-teal-900 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              {t.viewDashboardLink}
-            </button>
+            {canViewDashboard && (
+              <button
+                type="button"
+                onClick={onGoToDashboard}
+                className="font-semibold text-teal-800 underline underline-offset-4 hover:text-teal-900 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                {t.viewDashboardLink}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -498,15 +521,41 @@ export function PosBillingView({
 
           {/* Customer & Discount Controls */}
           <div className="pt-4 border-t border-slate-200 space-y-3">
-            {paymentMethod !== 'udhaar' && (
-              <input
-                type="text"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                placeholder={t.customerOptionalPlaceholder}
-                className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-700 focus:bg-white transition-colors"
-              />
-            )}
+            <div className="space-y-2">
+              <label
+                htmlFor="pos-crm-customer-select"
+                className="block text-xs font-medium text-slate-600"
+              >
+                {t.selectSaleCustomerLabel}
+              </label>
+              <select
+                id="pos-crm-customer-select"
+                value={selectedCustomerId}
+                onChange={(e) => setSelectedCustomerId(e.target.value)}
+                className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white transition-colors"
+              >
+                <option value="">{t.walkInOption}</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                    {c.phone ? ` (${c.phone})` : ''}
+                    {c.balance > 0
+                      ? ` · ${t.posCustomerBalanceBadge} ${formatCurrency(c.balance, lang)}`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+
+              {!selectedCustomerId && paymentMethod !== 'udhaar' && (
+                <input
+                  type="text"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  placeholder={t.customerOptionalPlaceholder}
+                  className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-700 focus:bg-white transition-colors"
+                />
+              )}
+            </div>
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium text-slate-600">{t.discountLabel}</span>
@@ -573,16 +622,20 @@ export function PosBillingView({
               <span className="block text-xs font-medium text-slate-600">
                 {t.paymentMethodLabel}
               </span>
-              <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 rounded-lg">
-                {(['cash', 'card', 'mobile', 'udhaar'] as PaymentMethod[]).map((method) => {
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 p-1 bg-slate-100 rounded-lg">
+                {(
+                  ['cash', 'jazzcash', 'easypaisa', 'card', 'udhaar'] as PaymentMethod[]
+                ).map((method) => {
                   const active = paymentMethod === method;
                   const label =
                     method === 'cash'
                       ? t.paymentCash
+                      : method === 'jazzcash'
+                      ? t.paymentJazzCash
+                      : method === 'easypaisa'
+                      ? t.paymentEasyPaisa
                       : method === 'card'
                       ? t.paymentCard
-                      : method === 'mobile'
-                      ? t.paymentMobile
                       : t.paymentUdhaar;
                   return (
                     <button
@@ -682,7 +735,7 @@ export function PosBillingView({
                   })}
                 </select>
                 <p className="text-xs text-amber-800">
-                  {!selectedUdhaarId ? t.udhaarCustomerRequired : t.udhaarBalanceNotice}
+                  {isUdhaarInvalid ? t.udhaarCustomerRequired : t.udhaarBalanceNotice}
                 </p>
               </div>
             )}
