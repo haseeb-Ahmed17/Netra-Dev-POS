@@ -18,6 +18,7 @@ export interface ShopkeeperWorkspaceData {
   orders: OrderRecord[];
   udhaarCustomers: UdhaarCustomer[];
   udhaarEntries: UdhaarEntry[];
+  cloudSyncError?: string | null;
 }
 
 interface StoredLocalAccount {
@@ -143,7 +144,15 @@ export async function getActiveShopkeeper(): Promise<ShopkeeperUser | null> {
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase.auth.getSession();
     if (error || !data.session?.user) return null;
-    const u = data.session.user;
+
+    // Ensure the cached JWT is still valid against Supabase Auth
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userData.user) {
+      await supabase.auth.signOut().catch(() => undefined);
+      return null;
+    }
+
+    const u = userData.user;
     return {
       id: u.id,
       email: u.email ?? '',
@@ -278,9 +287,10 @@ function mapProductFromRow(row: Record<string, unknown>): Product {
     nameUr: String(row.name_ur),
     category: row.category as Product['category'],
     price: Number(row.price),
-    cost: Number(row.cost),
+    cost: Number(row.cost_price ?? row.cost ?? 0),
+    taxRate: Number(row.tax_rate ?? 0),
     stock: Number(row.stock),
-    image: String(row.image ?? ''),
+    image: String(row.image_url ?? row.image ?? ''),
   };
 }
 
@@ -294,10 +304,82 @@ function mapProductToRow(product: Product, userId: string) {
     name_ur: product.nameUr,
     category: product.category,
     price: product.price,
-    cost: product.cost,
+    cost_price: product.cost,
+    tax_rate: product.taxRate,
     stock: product.stock,
-    image: product.image,
+    image_url: product.image,
   };
+}
+
+async function compressImageToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file.'));
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      if (!result) {
+        reject(new Error('Invalid image file.'));
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 480;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const scale = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(result);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = () => resolve(result);
+      img.src = result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function uploadProductImage(
+  userId: string,
+  file: File
+): Promise<string> {
+  if (isSupabaseConfigured && supabase) {
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+    const safeName = file.name
+      .replace(/\.[^/.]+$/, '')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 40);
+    const objectPath = `${userId}/${Date.now()}-${safeName || 'product'}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('product-images')
+      .upload(objectPath, file, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType: file.type || 'image/jpeg',
+      });
+
+    if (uploadError) {
+      return compressImageToDataUrl(file);
+    }
+
+    const { data } = supabase.storage
+      .from('product-images')
+      .getPublicUrl(objectPath);
+
+    return data.publicUrl;
+  }
+
+  return compressImageToDataUrl(file);
 }
 
 function mapOrderFromRow(row: Record<string, unknown>): OrderRecord {
@@ -369,93 +451,128 @@ export async function fetchWorkspaceData(
   userId: string
 ): Promise<ShopkeeperWorkspaceData> {
   if (isSupabaseConfigured && supabase) {
-    const [prodRes, ordRes, custRes, entryRes] = await Promise.all([
-      supabase
-        .from('products')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('orders')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: true }),
-      supabase
-        .from('udhaar_customers')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('udhaar_entries')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: true }),
-    ]);
+    try {
+      const [prodRes, ordRes, custRes, entryRes] = await Promise.all([
+        supabase
+          .from('products')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('orders')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('udhaar_customers')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('udhaar_entries')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: true }),
+      ]);
 
-    if (prodRes.error) throw new Error(prodRes.error.message);
-    if (ordRes.error) throw new Error(ordRes.error.message);
-    if (custRes.error) throw new Error(custRes.error.message);
-    if (entryRes.error) throw new Error(entryRes.error.message);
+      const firstError =
+        prodRes.error || ordRes.error || custRes.error || entryRes.error;
 
-    let products = (prodRes.data ?? []).map(mapProductFromRow);
-    const orders = (ordRes.data ?? []).map(mapOrderFromRow);
-    const udhaarCustomers = (custRes.data ?? []).map(mapUdhaarCustomerFromRow);
-    const udhaarEntries = (entryRes.data ?? []).map(mapUdhaarEntryFromRow);
-
-    // Seed starter catalog on first login for a brand-new shopkeeper
-    if (products.length === 0 && orders.length === 0) {
-      const starter = buildStarterProducts(userId);
-      const { error: seedErr } = await supabase
-        .from('products')
-        .insert(starter.map((p) => mapProductToRow(p, userId)));
-      if (!seedErr) {
-        products = starter;
+      if (firstError) {
+        const localFallback = loadLocalWorkspace(userId);
+        return {
+          ...localFallback,
+          cloudSyncError: firstError.message,
+        };
       }
-    }
 
-    return { products, orders, udhaarCustomers, udhaarEntries };
+      let products = (prodRes.data ?? []).map(mapProductFromRow);
+      const orders = (ordRes.data ?? []).map(mapOrderFromRow);
+      const udhaarCustomers = (custRes.data ?? []).map(mapUdhaarCustomerFromRow);
+      const udhaarEntries = (entryRes.data ?? []).map(mapUdhaarEntryFromRow);
+      let seedError: string | null = null;
+
+      // Seed starter catalog on first login for a brand-new shopkeeper
+      if (products.length === 0 && orders.length === 0) {
+        const starter = buildStarterProducts(userId);
+        const { error: seedErr } = await supabase
+          .from('products')
+          .insert(starter.map((p) => mapProductToRow(p, userId)));
+        if (!seedErr) {
+          products = starter;
+        } else {
+          products = starter;
+          seedError = seedErr.message;
+        }
+      }
+
+      const workspace: ShopkeeperWorkspaceData = {
+        products,
+        orders,
+        udhaarCustomers,
+        udhaarEntries,
+        cloudSyncError: seedError,
+      };
+      saveLocalWorkspace(userId, {
+        products,
+        orders,
+        udhaarCustomers,
+        udhaarEntries,
+      });
+      return workspace;
+    } catch (err) {
+      const localFallback = loadLocalWorkspace(userId);
+      return {
+        ...localFallback,
+        cloudSyncError:
+          err instanceof Error ? err.message : 'Unable to reach Supabase.',
+      };
+    }
   }
 
-  return loadLocalWorkspace(userId);
+  return {
+    ...loadLocalWorkspace(userId),
+    cloudSyncError: null,
+  };
 }
 
 export async function upsertProductRecord(
   userId: string,
   product: Product
-): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    const { error } = await supabase
-      .from('products')
-      .upsert(mapProductToRow(product, userId));
-    if (error) throw new Error(error.message);
-    return;
-  }
-
+): Promise<string | null> {
   const ws = loadLocalWorkspace(userId);
   const exists = ws.products.some((p) => p.id === product.id);
   ws.products = exists
     ? ws.products.map((p) => (p.id === product.id ? product : p))
     : [product, ...ws.products];
   saveLocalWorkspace(userId, ws);
+
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('products')
+      .upsert(mapProductToRow(product, userId));
+    if (error) return error.message;
+  }
+  return null;
 }
 
 export async function deleteProductRecord(
   userId: string,
   productId: string
-): Promise<void> {
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.products = ws.products.filter((p) => p.id !== productId);
+  saveLocalWorkspace(userId, ws);
+
   if (isSupabaseConfigured && supabase) {
     const { error } = await supabase
       .from('products')
       .delete()
       .eq('id', productId)
       .eq('user_id', userId);
-    if (error) throw new Error(error.message);
-    return;
+    if (error) return error.message;
   }
-
-  const ws = loadLocalWorkspace(userId);
-  ws.products = ws.products.filter((p) => p.id !== productId);
-  saveLocalWorkspace(userId, ws);
+  return null;
 }
 
 export async function insertOrderRecord(
@@ -463,12 +580,20 @@ export async function insertOrderRecord(
   order: OrderRecord,
   updatedProducts: Product[],
   newUdhaarEntry?: UdhaarEntry
-): Promise<void> {
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.orders = [...ws.orders, order];
+  ws.products = updatedProducts;
+  if (newUdhaarEntry) {
+    ws.udhaarEntries = [...ws.udhaarEntries, newUdhaarEntry];
+  }
+  saveLocalWorkspace(userId, ws);
+
   if (isSupabaseConfigured && supabase) {
     const { error: ordErr } = await supabase
       .from('orders')
       .insert(mapOrderToRow(order, userId));
-    if (ordErr) throw new Error(ordErr.message);
+    if (ordErr) return ordErr.message;
 
     // Persist decremented stock counts for sold products
     const soldIds = new Set(order.items.map((i) => i.productId));
@@ -477,7 +602,7 @@ export async function insertOrderRecord(
       const { error: stockErr } = await supabase
         .from('products')
         .upsert(productsToUpdate.map((p) => mapProductToRow(p, userId)));
-      if (stockErr) throw new Error(stockErr.message);
+      if (stockErr) return stockErr.message;
     }
 
     if (newUdhaarEntry) {
@@ -491,25 +616,24 @@ export async function insertOrderRecord(
         receipt_number: newUdhaarEntry.receiptNumber ?? null,
         created_at: newUdhaarEntry.createdAt,
       });
-      if (ueErr) throw new Error(ueErr.message);
+      if (ueErr) return ueErr.message;
     }
-    return;
   }
-
-  const ws = loadLocalWorkspace(userId);
-  ws.orders = [...ws.orders, order];
-  ws.products = updatedProducts;
-  if (newUdhaarEntry) {
-    ws.udhaarEntries = [...ws.udhaarEntries, newUdhaarEntry];
-  }
-  saveLocalWorkspace(userId, ws);
+  return null;
 }
 
 export async function insertUdhaarCustomerRecord(
   userId: string,
   customer: UdhaarCustomer,
   openingEntry?: UdhaarEntry
-): Promise<void> {
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.udhaarCustomers = [customer, ...ws.udhaarCustomers];
+  if (openingEntry) {
+    ws.udhaarEntries = [...ws.udhaarEntries, openingEntry];
+  }
+  saveLocalWorkspace(userId, ws);
+
   if (isSupabaseConfigured && supabase) {
     const { error: custErr } = await supabase.from('udhaar_customers').insert({
       id: customer.id,
@@ -519,7 +643,7 @@ export async function insertUdhaarCustomerRecord(
       notes: customer.notes ?? '',
       created_at: customer.createdAt,
     });
-    if (custErr) throw new Error(custErr.message);
+    if (custErr) return custErr.message;
 
     if (openingEntry) {
       const { error: ueErr } = await supabase.from('udhaar_entries').insert({
@@ -532,23 +656,20 @@ export async function insertUdhaarCustomerRecord(
         receipt_number: openingEntry.receiptNumber ?? null,
         created_at: openingEntry.createdAt,
       });
-      if (ueErr) throw new Error(ueErr.message);
+      if (ueErr) return ueErr.message;
     }
-    return;
   }
-
-  const ws = loadLocalWorkspace(userId);
-  ws.udhaarCustomers = [customer, ...ws.udhaarCustomers];
-  if (openingEntry) {
-    ws.udhaarEntries = [...ws.udhaarEntries, openingEntry];
-  }
-  saveLocalWorkspace(userId, ws);
+  return null;
 }
 
 export async function insertUdhaarEntryRecord(
   userId: string,
   entry: UdhaarEntry
-): Promise<void> {
+): Promise<string | null> {
+  const ws = loadLocalWorkspace(userId);
+  ws.udhaarEntries = [...ws.udhaarEntries, entry];
+  saveLocalWorkspace(userId, ws);
+
   if (isSupabaseConfigured && supabase) {
     const { error } = await supabase.from('udhaar_entries').insert({
       id: entry.id,
@@ -560,33 +681,44 @@ export async function insertUdhaarEntryRecord(
       receipt_number: entry.receiptNumber ?? null,
       created_at: entry.createdAt,
     });
-    if (error) throw new Error(error.message);
-    return;
+    if (error) return error.message;
   }
-
-  const ws = loadLocalWorkspace(userId);
-  ws.udhaarEntries = [...ws.udhaarEntries, entry];
-  saveLocalWorkspace(userId, ws);
+  return null;
 }
 
 export async function resetUserDemoWorkspace(
   userId: string
 ): Promise<ShopkeeperWorkspaceData> {
   const demoData = buildStarterWorkspace(userId, true);
+  saveLocalWorkspace(userId, demoData);
 
   if (isSupabaseConfigured && supabase) {
-    await supabase.from('udhaar_entries').delete().eq('user_id', userId);
-    await supabase.from('udhaar_customers').delete().eq('user_id', userId);
-    await supabase.from('orders').delete().eq('user_id', userId);
-    await supabase.from('products').delete().eq('user_id', userId);
+    const results = await Promise.all([
+      supabase.from('udhaar_entries').delete().eq('user_id', userId),
+      supabase.from('udhaar_customers').delete().eq('user_id', userId),
+      supabase.from('orders').delete().eq('user_id', userId),
+      supabase.from('products').delete().eq('user_id', userId),
+    ]);
+    const delErr = results.find((r) => r.error)?.error;
+    if (delErr) {
+      return { ...demoData, cloudSyncError: delErr.message };
+    }
 
-    await supabase
+    const insProd = await supabase
       .from('products')
       .insert(demoData.products.map((p) => mapProductToRow(p, userId)));
-    await supabase
+    if (insProd.error) {
+      return { ...demoData, cloudSyncError: insProd.error.message };
+    }
+
+    const insOrd = await supabase
       .from('orders')
       .insert(demoData.orders.map((o) => mapOrderToRow(o, userId)));
-    await supabase.from('udhaar_customers').insert(
+    if (insOrd.error) {
+      return { ...demoData, cloudSyncError: insOrd.error.message };
+    }
+
+    const insCust = await supabase.from('udhaar_customers').insert(
       demoData.udhaarCustomers.map((c) => ({
         id: c.id,
         user_id: userId,
@@ -596,7 +728,11 @@ export async function resetUserDemoWorkspace(
         created_at: c.createdAt,
       }))
     );
-    await supabase.from('udhaar_entries').insert(
+    if (insCust.error) {
+      return { ...demoData, cloudSyncError: insCust.error.message };
+    }
+
+    const insEnt = await supabase.from('udhaar_entries').insert(
       demoData.udhaarEntries.map((e) => ({
         id: e.id,
         user_id: userId,
@@ -608,9 +744,10 @@ export async function resetUserDemoWorkspace(
         created_at: e.createdAt,
       }))
     );
-    return demoData;
+    if (insEnt.error) {
+      return { ...demoData, cloudSyncError: insEnt.error.message };
+    }
   }
 
-  saveLocalWorkspace(userId, demoData);
-  return demoData;
+  return { ...demoData, cloudSyncError: null };
 }

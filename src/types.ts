@@ -21,6 +21,7 @@ export interface Product {
   category: Exclude<CategoryId, 'all'>;
   price: number;
   cost: number;
+  taxRate: number;
   stock: number;
   image: string;
 }
@@ -38,6 +39,7 @@ export interface OrderLineItem {
   category: Exclude<CategoryId, 'all'>;
   unitPrice: number;
   unitCost: number;
+  taxRate: number;
   quantity: number;
   lineTotal: number;
 }

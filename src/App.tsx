@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AuthView } from './components/AuthView';
+import { CloudSyncBanner } from './components/CloudSyncBanner';
 import { ExecutiveDashboardView } from './components/ExecutiveDashboardView';
 import { InventoryView } from './components/InventoryView';
 import { PosBillingView } from './components/PosBillingView';
@@ -53,6 +54,8 @@ export default function App() {
   const [user, setUser] = useState<ShopkeeperUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const [retryingSync, setRetryingSync] = useState(false);
 
   const [activeTab, setActiveTab] = useState<NavTab>('pos');
   const [products, setProducts] = useState<Product[]>([]);
@@ -121,6 +124,15 @@ export default function App() {
     };
   }, []);
 
+  const loadWorkspace = useCallback(async (userId: string) => {
+    const ws = await fetchWorkspaceData(userId);
+    setProducts(ws.products);
+    setOrders(ws.orders);
+    setUdhaarCustomers(ws.udhaarCustomers);
+    setUdhaarEntries(ws.udhaarEntries);
+    setCloudSyncError(ws.cloudSyncError ?? null);
+  }, []);
+
   // Load private shopkeeper workspace data whenever user changes
   useEffect(() => {
     let active = true;
@@ -133,6 +145,7 @@ export default function App() {
       setCart([]);
       setActiveReceiptOrder(null);
       setLatestNewOrderId(null);
+      setCloudSyncError(null);
       return;
     }
 
@@ -144,9 +157,7 @@ export default function App() {
         setOrders(ws.orders);
         setUdhaarCustomers(ws.udhaarCustomers);
         setUdhaarEntries(ws.udhaarEntries);
-      })
-      .catch((err) => {
-        console.error('Failed to load workspace data:', err);
+        setCloudSyncError(ws.cloudSyncError ?? null);
       })
       .finally(() => {
         if (active) setLoadingData(false);
@@ -156,6 +167,16 @@ export default function App() {
       active = false;
     };
   }, [user]);
+
+  const handleRetrySync = async () => {
+    if (!user) return;
+    setRetryingSync(true);
+    try {
+      await loadWorkspace(user.id);
+    } finally {
+      setRetryingSync(false);
+    }
+  };
 
   const handleToggleLanguage = () => {
     setLang((prev) => (prev === 'en' ? 'ur' : 'en'));
@@ -253,6 +274,7 @@ export default function App() {
         category: product.category,
         unitPrice: product.price,
         unitCost: product.cost,
+        taxRate: product.taxRate ?? 0,
         quantity: cartItem.quantity,
         lineTotal: product.price * cartItem.quantity,
       });
@@ -263,8 +285,14 @@ export default function App() {
     const subtotal = lineItems.reduce((sum, item) => sum + item.lineTotal, 0);
     const discountAmount = Math.round(subtotal * (discountPercent / 100));
     const taxable = Math.max(0, subtotal - discountAmount);
-    const taxRate = 0.05;
-    const taxAmount = Math.round(taxable * taxRate);
+    const discountFactor = 1 - discountPercent / 100;
+    const taxAmount = Math.round(
+      lineItems.reduce((sum, item) => {
+        const discountedLine = item.lineTotal * discountFactor;
+        return sum + discountedLine * ((item.taxRate ?? 0) / 100);
+      }, 0)
+    );
+    const effectiveTaxRate = taxable > 0 ? taxAmount / taxable : 0;
     const total = taxable + taxAmount;
 
     const effectiveTendered =
@@ -288,7 +316,7 @@ export default function App() {
       subtotal,
       discountPercent,
       discountAmount,
-      taxRate,
+      taxRate: effectiveTaxRate,
       taxAmount,
       total,
       amountTendered: effectiveTendered,
@@ -327,8 +355,10 @@ export default function App() {
     setLatestNewOrderId(newOrder.id);
     setActiveReceiptOrder(newOrder);
 
-    insertOrderRecord(user.id, newOrder, updatedProducts, newUdhaarEntry).catch(
-      (err) => console.error('Failed to persist sale:', err)
+    insertOrderRecord(user.id, newOrder, updatedProducts, newUdhaarEntry).then(
+      (syncErr) => {
+        if (syncErr) setCloudSyncError(syncErr);
+      }
     );
 
     return newOrder;
@@ -346,9 +376,9 @@ export default function App() {
       })
     );
     if (updatedTarget) {
-      upsertProductRecord(user.id, updatedTarget).catch((err) =>
-        console.error('Failed to adjust stock:', err)
-      );
+      upsertProductRecord(user.id, updatedTarget).then((syncErr) => {
+        if (syncErr) setCloudSyncError(syncErr);
+      });
     }
   };
 
@@ -359,9 +389,9 @@ export default function App() {
       id: `${user.id.slice(0, 8)}-prod-${Date.now()}`,
     };
     setProducts((prev) => [created, ...prev]);
-    upsertProductRecord(user.id, created).catch((err) =>
-      console.error('Failed to add product:', err)
-    );
+    upsertProductRecord(user.id, created).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
   };
 
   const handleUpdateProduct = (updated: Product) => {
@@ -369,18 +399,18 @@ export default function App() {
     setProducts((prev) =>
       prev.map((prod) => (prod.id === updated.id ? updated : prod))
     );
-    upsertProductRecord(user.id, updated).catch((err) =>
-      console.error('Failed to update product:', err)
-    );
+    upsertProductRecord(user.id, updated).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
   };
 
   const handleDeleteProduct = (productId: string) => {
     if (!user) return;
     setProducts((prev) => prev.filter((prod) => prod.id !== productId));
     setCart((prev) => prev.filter((item) => item.productId !== productId));
-    deleteProductRecord(user.id, productId).catch((err) =>
-      console.error('Failed to delete product:', err)
-    );
+    deleteProductRecord(user.id, productId).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
   };
 
   // Udhaar / Khata Handlers
@@ -420,8 +450,10 @@ export default function App() {
     }
 
     if (user) {
-      insertUdhaarCustomerRecord(user.id, customer, openingEntry).catch((err) =>
-        console.error('Failed to save Udhaar customer:', err)
+      insertUdhaarCustomerRecord(user.id, customer, openingEntry).then(
+        (syncErr) => {
+          if (syncErr) setCloudSyncError(syncErr);
+        }
       );
     }
 
@@ -450,9 +482,9 @@ export default function App() {
     };
     setUdhaarEntries((prev) => [...prev, entry]);
     if (user) {
-      insertUdhaarEntryRecord(user.id, entry).catch((err) =>
-        console.error('Failed to save Udhaar entry:', err)
-      );
+      insertUdhaarEntryRecord(user.id, entry).then((syncErr) => {
+        if (syncErr) setCloudSyncError(syncErr);
+      });
     }
   };
 
@@ -465,11 +497,11 @@ export default function App() {
         setOrders(ws.orders);
         setUdhaarCustomers(ws.udhaarCustomers);
         setUdhaarEntries(ws.udhaarEntries);
+        setCloudSyncError(ws.cloudSyncError ?? null);
         setCart([]);
         setLatestNewOrderId(null);
         setActiveReceiptOrder(null);
       })
-      .catch((err) => console.error('Failed to reset demo data:', err))
       .finally(() => setLoadingData(false));
   };
 
@@ -507,6 +539,15 @@ export default function App() {
         onLogout={handleLogout}
         t={t}
       />
+
+      {cloudSyncError && (
+        <CloudSyncBanner
+          error={cloudSyncError}
+          retrying={retryingSync}
+          onRetry={handleRetrySync}
+          t={t}
+        />
+      )}
 
       <main className="flex-1 no-print">
         {loadingData ? (
@@ -556,6 +597,8 @@ export default function App() {
 
             {activeTab === 'inventory' && (
               <InventoryView
+                userId={user.id}
+                shopName={user.shopName}
                 products={products}
                 onAdjustStock={handleAdjustStock}
                 onAddProduct={handleAddProduct}

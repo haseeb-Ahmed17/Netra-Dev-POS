@@ -107,8 +107,20 @@ export interface TranslationStrings {
   categoryLabel: string;
   retailPriceLabel: string;
   costPriceLabel: string;
+  profitAmountLabel: string;
+  profitMarginLabel: string;
+  taxRateLabel: string;
   stockQtyLabel: string;
   barcodeInputLabel: string;
+  generateBarcodeBtn: string;
+  printBarcodeBtn: string;
+  productPhotoLabel: string;
+  uploadPhotoBtn: string;
+  uploadingPhotoLabel: string;
+  removePhotoBtn: string;
+  photoUploadHint: string;
+  barcodeModalTitle: string;
+  printStickerBtn: string;
   saveProductBtn: string;
   cancelBtn: string;
   editBtn: string;
@@ -202,6 +214,16 @@ export interface TranslationStrings {
   signingInLabel: string;
   loadingWorkspace: string;
   passwordMinLengthError: string;
+
+  // Cloud Sync Notice & SQL Modal
+  cloudSyncBannerTitle: string;
+  cloudSyncBannerFallback: string;
+  cloudSyncRetryBtn: string;
+  cloudSyncSqlBtn: string;
+  cloudSyncModalTitle: string;
+  cloudSyncModalDesc: string;
+  copySqlBtn: string;
+  copiedSqlBtn: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -238,7 +260,7 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     customerOptionalPlaceholder: 'Customer name or phone (optional)',
     discountLabel: 'Discount',
     subtotalLabel: 'Subtotal',
-    taxLabel: 'GST (5%)',
+    taxLabel: 'Tax',
     grandTotalLabel: 'Grand Total',
     paymentMethodLabel: 'Payment Method',
     paymentCash: 'Cash',
@@ -305,10 +327,22 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     productNameEnLabel: 'Product Name (English)',
     productNameUrLabel: 'Product Name (Urdu)',
     categoryLabel: 'Category',
-    retailPriceLabel: 'Selling Price (Rs.)',
-    costPriceLabel: 'Cost Price (Rs.)',
+    retailPriceLabel: 'Sale Price (Farokht) (Rs.)',
+    costPriceLabel: 'Cost Price (Kharid) (Rs.)',
+    profitAmountLabel: 'Profit Amount',
+    profitMarginLabel: 'Profit Margin',
+    taxRateLabel: 'Tax %',
     stockQtyLabel: 'Stock Quantity',
-    barcodeInputLabel: 'Barcode',
+    barcodeInputLabel: 'Barcode / UPC',
+    generateBarcodeBtn: 'Generate Barcode',
+    printBarcodeBtn: 'Print Barcode Label',
+    productPhotoLabel: 'Product Photo',
+    uploadPhotoBtn: 'Upload Photo',
+    uploadingPhotoLabel: 'Uploading...',
+    removePhotoBtn: 'Remove',
+    photoUploadHint: 'PNG, JPG or WEBP stored in product-images',
+    barcodeModalTitle: 'Printable Barcode Label',
+    printStickerBtn: 'Print Label',
     saveProductBtn: 'Save Product',
     cancelBtn: 'Cancel',
     editBtn: 'Edit',
@@ -399,6 +433,17 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     signingInLabel: 'Signing in...',
     loadingWorkspace: 'Loading your store records...',
     passwordMinLengthError: 'Password must be at least 6 characters.',
+
+    cloudSyncBannerTitle: 'Supabase Database Permissions Needed',
+    cloudSyncBannerFallback:
+      'Running with local browser storage for now. Run the setup SQL in your Supabase SQL Editor, then click Retry Sync.',
+    cloudSyncRetryBtn: 'Retry Sync',
+    cloudSyncSqlBtn: 'View SQL Fix',
+    cloudSyncModalTitle: 'Supabase SQL Setup & Permissions',
+    cloudSyncModalDesc:
+      'Copy and run this SQL in your Supabase Project → SQL Editor to grant table permissions, enable Row Level Security, and create the product-images storage bucket.',
+    copySqlBtn: 'Copy SQL',
+    copiedSqlBtn: 'Copied!',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -433,7 +478,7 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     customerOptionalPlaceholder: 'گاہک کا نام یا فون نمبر (اختیاری)',
     discountLabel: 'رعایت',
     subtotalLabel: 'ذیلی کل',
-    taxLabel: 'جی ایس ٹی (5%)',
+    taxLabel: 'ٹیکس',
     grandTotalLabel: 'کل رقم',
     paymentMethodLabel: 'ادائیگی کا طریقہ',
     paymentCash: 'نقد',
@@ -500,10 +545,22 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     productNameEnLabel: 'پروڈکٹ کا نام (انگریزی)',
     productNameUrLabel: 'پروڈکٹ کا نام (اردو)',
     categoryLabel: 'زمرہ',
-    retailPriceLabel: 'فروخت قیمت (روپے)',
-    costPriceLabel: 'لاگت قیمت (روپے)',
+    retailPriceLabel: 'قیمتِ فروخت (روپے)',
+    costPriceLabel: 'قیمتِ خرید / لاگت (روپے)',
+    profitAmountLabel: 'منافع رقم',
+    profitMarginLabel: 'منافع شرح',
+    taxRateLabel: 'ٹیکس %',
     stockQtyLabel: 'اسٹاک کی تعداد',
-    barcodeInputLabel: 'بارکوڈ',
+    barcodeInputLabel: 'بارکوڈ / یو پی سی',
+    generateBarcodeBtn: 'بارکوڈ بنائیں',
+    printBarcodeBtn: 'بارکوڈ لیبل پرنٹ کریں',
+    productPhotoLabel: 'پروڈکٹ کی تصویر',
+    uploadPhotoBtn: 'تصویر اپ لوڈ کریں',
+    uploadingPhotoLabel: 'اپ لوڈ ہو رہا ہے...',
+    removePhotoBtn: 'ہٹائیں',
+    photoUploadHint: 'پروڈکٹ کی تصویر اپ لوڈ کریں',
+    barcodeModalTitle: 'پرنٹ ایبل بارکوڈ لیبل',
+    printStickerBtn: 'لیبل پرنٹ کریں',
     saveProductBtn: 'محفوظ کریں',
     cancelBtn: 'منسوخ',
     editBtn: 'ترمیم',
@@ -594,6 +651,17 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     signingInLabel: 'لاگ ان ہو رہا ہے...',
     loadingWorkspace: 'آپ کی دکان کا ڈیٹا لوڈ ہو رہا ہے...',
     passwordMinLengthError: 'پاس ورڈ کم از کم 6 حروف کا ہونا چاہیے۔',
+
+    cloudSyncBannerTitle: 'Supabase ڈیٹا بیس پرمیشن درکار ہے',
+    cloudSyncBannerFallback:
+      'فی الحال ڈیٹا مقامی براؤزر اسٹوریج میں محفوظ ہو رہا ہے۔ اپنے Supabase SQL Editor میں سیٹ اپ SQL چلائیں اور دوبارہ کوشش کریں۔',
+    cloudSyncRetryBtn: 'دوبارہ سنک کریں',
+    cloudSyncSqlBtn: 'SQL حل دیکھیں',
+    cloudSyncModalTitle: 'Supabase SQL سیٹ اپ اور پرمیشنز',
+    cloudSyncModalDesc:
+      'ٹیبل پرمیشنز، RLS پالیسیز اور product-images اسٹوریج بکٹ بنانے کے لیے یہ SQL اپنے Supabase SQL Editor میں چلائیں۔',
+    copySqlBtn: 'SQL کاپی کریں',
+    copiedSqlBtn: 'کاپی ہو گیا!',
   },
 };
 

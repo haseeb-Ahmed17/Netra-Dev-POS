@@ -46,7 +46,6 @@ interface PosBillingViewProps {
 
 const CATEGORIES: CategoryId[] = ['all', 'beverages', 'bakery', 'pantry'];
 const DISCOUNT_OPTIONS = [0, 5, 10, 15];
-const TAX_RATE = 0.05;
 
 export function PosBillingView({
   products,
@@ -128,6 +127,7 @@ export function PosBillingView({
           category: prod.category,
           unitPrice: prod.price,
           unitCost: prod.cost,
+          taxRate: prod.taxRate ?? 0,
           quantity: item.quantity,
           lineTotal: prod.price * item.quantity,
           availableStock: prod.stock,
@@ -147,9 +147,19 @@ export function PosBillingView({
   );
 
   const discountAmount = Math.round(subtotal * (discountPercent / 100));
-  const taxableAmount = Math.max(0, subtotal - discountAmount);
-  const taxAmount = Math.round(taxableAmount * TAX_RATE);
-  const grandTotal = taxableAmount + taxAmount;
+
+  // Per-product tax calculation after proportional discount
+  const taxAmount = useMemo(() => {
+    const discountFactor = 1 - discountPercent / 100;
+    return Math.round(
+      lineItems.reduce((sum, item) => {
+        const discountedLine = item.lineTotal * discountFactor;
+        return sum + discountedLine * ((item.taxRate ?? 0) / 100);
+      }, 0)
+    );
+  }, [lineItems, discountPercent]);
+
+  const grandTotal = Math.max(0, subtotal - discountAmount) + taxAmount;
 
   const parsedTendered =
     paymentMethod === 'cash'
@@ -331,6 +341,14 @@ export function PosBillingView({
                               ? t.outOfStockLabel
                               : `${t.inStockLabel}: ${remainingStock}`}
                           </span>
+                          {(product.taxRate ?? 0) > 0 && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="tabular-nums">
+                                {t.taxCol} {product.taxRate}%
+                              </span>
+                            </>
+                          )}
                         </div>
 
                         <h2 className="text-base font-semibold text-slate-900 leading-snug">
@@ -427,6 +445,7 @@ export function PosBillingView({
                       </p>
                       <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">
                         {formatCurrency(item.unitPrice, lang)}
+                        {item.taxRate > 0 ? ` · +${item.taxRate}% ${t.taxCol}` : ''}
                       </p>
                     </div>
 
