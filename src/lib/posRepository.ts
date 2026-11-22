@@ -29,6 +29,7 @@ import type {
   UdhaarEntry,
   Vendor,
 } from '../types';
+import { deterministicDemoUuid } from './idUtils';
 import { isSupabaseConfigured, supabase } from './supabaseClient';
 
 export const SUPER_ADMIN_EMAIL = 'bc260436573mha@gmail.com';
@@ -181,7 +182,7 @@ function buildDefaultAdminEmployee(userId: string): Employee {
   };
 }
 
-function buildStarterWorkspace(
+export function buildStarterWorkspace(
   userId: string,
   includeDemoOrders: boolean,
   shopName?: string
@@ -210,8 +211,12 @@ function buildStarterWorkspace(
     orders: createInitialOrders().map((o) => ({
       ...o,
       id: `${prefix}-${o.id}`,
-      customerId: o.customerId ? `${prefix}-${o.customerId}` : undefined,
-      udhaarCustomerId: o.udhaarCustomerId ? `${prefix}-${o.udhaarCustomerId}` : undefined,
+      customerId: o.customerId
+        ? deterministicDemoUuid(userId, o.customerId)
+        : undefined,
+      udhaarCustomerId: o.udhaarCustomerId
+        ? `${prefix}-${o.udhaarCustomerId}`
+        : undefined,
       items: o.items.map((item) => ({
         ...item,
         productId: `${prefix}-${item.productId}`,
@@ -228,27 +233,30 @@ function buildStarterWorkspace(
     })),
     vendors: createInitialVendors().map((v) => ({
       ...v,
-      id: `${prefix}-${v.id}`,
+      id: deterministicDemoUuid(userId, v.id),
     })),
-    purchases: createInitialPurchases().map((p) => ({
-      ...p,
-      id: `${prefix}-${p.id}`,
-      vendorId: `${prefix}-${p.vendorId}`,
-      items: p.items.map((pi) => ({
-        ...pi,
-        id: `${prefix}-${pi.id}`,
-        purchaseId: `${prefix}-${pi.purchaseId}`,
-        productId: `${prefix}-${pi.productId}`,
-      })),
-    })),
+    purchases: createInitialPurchases().map((p) => {
+      const mappedPurchaseId = deterministicDemoUuid(userId, p.id);
+      return {
+        ...p,
+        id: mappedPurchaseId,
+        vendorId: deterministicDemoUuid(userId, p.vendorId),
+        items: p.items.map((pi) => ({
+          ...pi,
+          id: deterministicDemoUuid(userId, pi.id),
+          purchaseId: mappedPurchaseId,
+          productId: `${prefix}-${pi.productId}`,
+        })),
+      };
+    }),
     inventoryAdjustments: createInitialInventoryAdjustments().map((a) => ({
       ...a,
-      id: `${prefix}-${a.id}`,
+      id: deterministicDemoUuid(userId, a.id),
       productId: `${prefix}-${a.productId}`,
     })),
     customers: createInitialCustomers().map((c) => ({
       ...c,
-      id: `${prefix}-${c.id}`,
+      id: deterministicDemoUuid(userId, c.id),
     })),
     employees: createInitialEmployees().map((emp) => ({
       ...emp,
@@ -256,7 +264,7 @@ function buildStarterWorkspace(
     })),
     expenses: createInitialExpenses().map((exp) => ({
       ...exp,
-      id: `${prefix}-${exp.id}`,
+      id: deterministicDemoUuid(userId, exp.id),
     })),
     storeSettings: defaultSettings,
   };
@@ -277,13 +285,13 @@ function loadLocalWorkspace(userId: string, shopName?: string): ShopkeeperWorksp
       const fallbackCustomers = isDemo
         ? createInitialCustomers().map((c) => ({
             ...c,
-            id: `${userId.slice(0, 8)}-${c.id}`,
+            id: deterministicDemoUuid(userId, c.id),
           }))
         : [];
       const fallbackExpenses = isDemo
         ? createInitialExpenses().map((exp) => ({
             ...exp,
-            id: `${userId.slice(0, 8)}-${exp.id}`,
+            id: deterministicDemoUuid(userId, exp.id),
           }))
         : [];
       return {
@@ -696,44 +704,93 @@ function mapVendorToRow(vendor: Vendor, userId: string) {
   };
 }
 
-function mapPurchaseItemFromRow(row: Record<string, unknown>): PurchaseItem {
+export function mapPurchaseItemFromRow(
+  row: Record<string, unknown>,
+  productsById?: Map<string, Product>
+): PurchaseItem {
+  const productId = String(row.product_id);
+  const prod = productsById?.get(productId);
+  const quantity = Number(row.quantity ?? 0);
+  const unitCost = Number(row.unit_cost ?? row.cost_price ?? 0);
+  const rawLineTotal = row.line_total;
+  const lineTotal =
+    rawLineTotal !== undefined && rawLineTotal !== null
+      ? Number(rawLineTotal)
+      : quantity * unitCost;
+
   return {
     id: String(row.id),
     purchaseId: String(row.purchase_id),
-    productId: String(row.product_id),
-    productName: String(row.product_name),
-    sku: String(row.sku ?? ''),
-    quantity: Number(row.quantity ?? 0),
-    unitCost: Number(row.unit_cost ?? 0),
-    lineTotal: Number(row.line_total ?? 0),
+    productId,
+    productName:
+      typeof row.product_name === 'string' && row.product_name.trim()
+        ? row.product_name
+        : prod?.nameEn ?? '',
+    sku:
+      typeof row.sku === 'string' && row.sku.trim()
+        ? row.sku
+        : prod?.sku ?? '',
+    quantity,
+    unitCost,
+    lineTotal,
   };
 }
 
-function mapPurchaseFromRow(
+export function mapPurchaseFromRow(
   row: Record<string, unknown>,
-  itemsByPurchase: Map<string, PurchaseItem[]>
+  itemsByPurchase: Map<string, PurchaseItem[]>,
+  vendorsById?: Map<string, Vendor>
 ): PurchaseRecord {
   const id = String(row.id);
+  const vendorId = String(row.vendor_id);
+  const vendor = vendorsById?.get(vendorId);
+  const resolvedVendorName = vendor
+    ? vendor.company
+      ? `${vendor.name} (${vendor.company})`
+      : vendor.name
+    : '';
+  const totalAmount = Number(row.total_amount ?? 0);
+  const paidAmount = Number(row.paid_amount ?? 0);
+  const rawBalanceDue = row.balance_due;
+  const balanceDue =
+    rawBalanceDue !== undefined && rawBalanceDue !== null
+      ? Number(rawBalanceDue)
+      : Math.max(0, totalAmount - paidAmount);
+
   return {
     id,
-    vendorId: String(row.vendor_id),
-    vendorName: String(row.vendor_name ?? ''),
+    vendorId,
+    vendorName:
+      typeof row.vendor_name === 'string' && row.vendor_name.trim()
+        ? row.vendor_name
+        : resolvedVendorName,
     invoiceNumber: String(row.invoice_number ?? ''),
-    totalAmount: Number(row.total_amount ?? 0),
-    paidAmount: Number(row.paid_amount ?? 0),
-    balanceDue: Number(row.balance_due ?? 0),
-    note: String(row.note ?? ''),
+    totalAmount,
+    paidAmount,
+    balanceDue,
+    note: String(row.note ?? row.notes ?? ''),
     items: itemsByPurchase.get(id) ?? [],
     createdAt: String(row.created_at),
   };
 }
 
-function mapAdjustmentFromRow(row: Record<string, unknown>): InventoryAdjustment {
+export function mapAdjustmentFromRow(
+  row: Record<string, unknown>,
+  productsById?: Map<string, Product>
+): InventoryAdjustment {
+  const productId = String(row.product_id);
+  const prod = productsById?.get(productId);
   return {
     id: String(row.id),
-    productId: String(row.product_id),
-    productName: String(row.product_name),
-    sku: String(row.sku ?? ''),
+    productId,
+    productName:
+      typeof row.product_name === 'string' && row.product_name.trim()
+        ? row.product_name
+        : prod?.nameEn ?? '',
+    sku:
+      typeof row.sku === 'string' && row.sku.trim()
+        ? row.sku
+        : prod?.sku ?? '',
     adjustmentType: row.adjustment_type as InventoryAdjustment['adjustmentType'],
     quantityChange: Number(row.quantity_change ?? 0),
     previousStock: Number(row.previous_stock ?? 0),
@@ -984,17 +1041,29 @@ export async function fetchWorkspaceData(
       let udhaarEntries = (entryRes.data ?? []).map(mapUdhaarEntryFromRow);
       const vendors = (vendRes.data ?? []).map(mapVendorFromRow);
 
+      const productsById = new Map(products.map((p) => [p.id, p]));
+      const vendorsById = new Map(vendors.map((v) => [v.id, v]));
+
       const itemsByPurchase = new Map<string, PurchaseItem[]>();
       for (const rawItem of purItemsRes.data ?? []) {
-        const mapped = mapPurchaseItemFromRow(rawItem as Record<string, unknown>);
+        const mapped = mapPurchaseItemFromRow(
+          rawItem as Record<string, unknown>,
+          productsById
+        );
         const list = itemsByPurchase.get(mapped.purchaseId) ?? [];
         list.push(mapped);
         itemsByPurchase.set(mapped.purchaseId, list);
       }
       const purchases = (purRes.data ?? []).map((row) =>
-        mapPurchaseFromRow(row as Record<string, unknown>, itemsByPurchase)
+        mapPurchaseFromRow(
+          row as Record<string, unknown>,
+          itemsByPurchase,
+          vendorsById
+        )
       );
-      const inventoryAdjustments = (adjRes.data ?? []).map(mapAdjustmentFromRow);
+      const inventoryAdjustments = (adjRes.data ?? []).map((row) =>
+        mapAdjustmentFromRow(row as Record<string, unknown>, productsById)
+      );
       let customers = (crmCustRes.data ?? []).map(mapCustomerFromRow);
       let employees = (empRes.data ?? []).map(mapEmployeeFromRow);
       const expenses = (expRes.data ?? []).map(mapExpenseFromRow);
@@ -1010,7 +1079,9 @@ export async function fetchWorkspaceData(
         const starter = buildStarterProducts(userId);
         const { error: seedErr } = await supabase
           .from('products')
-          .insert(starter.map((p) => mapProductToRow(p, userId)));
+          .upsert(starter.map((p) => mapProductToRow(p, userId)), {
+            onConflict: 'id',
+          });
         products = starter;
         if (seedErr) {
           seedError = seedErr.message;
@@ -1022,7 +1093,9 @@ export async function fetchWorkspaceData(
         const defaultAdmin = buildDefaultAdminEmployee(userId);
         const { error: empSeedErr } = await supabase
           .from('employees')
-          .insert(mapEmployeeToRow(defaultAdmin, userId));
+          .upsert(mapEmployeeToRow(defaultAdmin, userId), {
+            onConflict: 'id',
+          });
         employees = [defaultAdmin];
         if (empSeedErr && !seedError) {
           seedError = empSeedErr.message;
@@ -1054,6 +1127,9 @@ export async function fetchWorkspaceData(
           if (qItem.updatedProducts.length > 0) {
             const qProdMap = new Map(qItem.updatedProducts.map((p) => [p.id, p]));
             products = products.map((p) => qProdMap.get(p.id) ?? p);
+          }
+          if (qItem.newUdhaarCustomer && !udhaarCustomers.some((c) => c.id === qItem.newUdhaarCustomer!.id)) {
+            udhaarCustomers.unshift(qItem.newUdhaarCustomer);
           }
           if (qItem.newUdhaarEntry && !existingEntryIds.has(qItem.newUdhaarEntry.id)) {
             udhaarEntries = [...udhaarEntries, qItem.newUdhaarEntry];
@@ -1597,6 +1673,201 @@ export async function upsertVendorRecord(
   return null;
 }
 
+let useCorePurchasesSchema = false;
+let useCorePurchaseItemsSchema = false;
+let useCoreAdjustmentsSchema = false;
+let useCoreUdhaarCustomersSchema = false;
+
+function isMissingColumnError(message: string): boolean {
+  return /Could not find the|column .* does not exist|PGRST204/i.test(message);
+}
+
+async function insertPurchasesCompat(
+  userId: string,
+  purchases: PurchaseRecord[]
+): Promise<{ error: { code?: string; message: string } | null }> {
+  if (!supabase || purchases.length === 0) return { error: null };
+
+  const buildCoreRows = () =>
+    purchases.map((p) => ({
+      id: p.id,
+      user_id: userId,
+      vendor_id: p.vendorId,
+      invoice_number: p.invoiceNumber,
+      total_amount: p.totalAmount,
+      paid_amount: p.paidAmount,
+      status: 'received',
+      notes: p.note,
+      created_at: p.createdAt,
+    }));
+
+  if (useCorePurchasesSchema) {
+    const res = await supabase.from('purchases').insert(buildCoreRows());
+    return { error: res.error };
+  }
+
+  const extendedRows = purchases.map((p) => ({
+    id: p.id,
+    user_id: userId,
+    vendor_id: p.vendorId,
+    vendor_name: p.vendorName,
+    invoice_number: p.invoiceNumber,
+    total_amount: p.totalAmount,
+    paid_amount: p.paidAmount,
+    balance_due: p.balanceDue,
+    note: p.note,
+    notes: p.note,
+    status: 'received',
+    created_at: p.createdAt,
+  }));
+
+  const first = await supabase.from('purchases').insert(extendedRows);
+  if (!first.error) return { error: null };
+
+  if (isMissingColumnError(first.error.message)) {
+    useCorePurchasesSchema = true;
+    const fallback = await supabase.from('purchases').insert(buildCoreRows());
+    return { error: fallback.error };
+  }
+
+  return { error: first.error };
+}
+
+async function insertPurchaseItemsCompat(
+  userId: string,
+  items: PurchaseItem[]
+): Promise<{ error: { code?: string; message: string } | null }> {
+  if (!supabase || items.length === 0) return { error: null };
+
+  const buildCoreRows = () =>
+    items.map((item) => ({
+      id: item.id,
+      user_id: userId,
+      purchase_id: item.purchaseId,
+      product_id: item.productId,
+      quantity: item.quantity,
+      cost_price: item.unitCost,
+    }));
+
+  if (useCorePurchaseItemsSchema) {
+    const res = await supabase.from('purchase_items').insert(buildCoreRows());
+    return { error: res.error };
+  }
+
+  const extendedRows = items.map((item) => ({
+    id: item.id,
+    user_id: userId,
+    purchase_id: item.purchaseId,
+    product_id: item.productId,
+    product_name: item.productName,
+    sku: item.sku,
+    quantity: item.quantity,
+    unit_cost: item.unitCost,
+    cost_price: item.unitCost,
+    line_total: item.lineTotal,
+  }));
+
+  const first = await supabase.from('purchase_items').insert(extendedRows);
+  if (!first.error) return { error: null };
+
+  if (isMissingColumnError(first.error.message)) {
+    useCorePurchaseItemsSchema = true;
+    const fallback = await supabase.from('purchase_items').insert(buildCoreRows());
+    return { error: fallback.error };
+  }
+
+  return { error: first.error };
+}
+
+async function insertAdjustmentsCompat(
+  userId: string,
+  adjustments: InventoryAdjustment[]
+): Promise<{ error: { code?: string; message: string } | null }> {
+  if (!supabase || adjustments.length === 0) return { error: null };
+
+  const buildCoreRows = () =>
+    adjustments.map((a) => ({
+      id: a.id,
+      user_id: userId,
+      product_id: a.productId,
+      adjustment_type: a.adjustmentType,
+      quantity_change: a.quantityChange,
+      reason: a.reason,
+      created_at: a.createdAt,
+    }));
+
+  if (useCoreAdjustmentsSchema) {
+    const res = await supabase
+      .from('inventory_adjustments')
+      .insert(buildCoreRows());
+    return { error: res.error };
+  }
+
+  const extendedRows = adjustments.map((a) => ({
+    id: a.id,
+    user_id: userId,
+    product_id: a.productId,
+    product_name: a.productName,
+    sku: a.sku,
+    adjustment_type: a.adjustmentType,
+    quantity_change: a.quantityChange,
+    previous_stock: a.previousStock,
+    new_stock: a.newStock,
+    reason: a.reason,
+    created_at: a.createdAt,
+  }));
+
+  const first = await supabase.from('inventory_adjustments').insert(extendedRows);
+  if (!first.error) return { error: null };
+
+  if (isMissingColumnError(first.error.message)) {
+    useCoreAdjustmentsSchema = true;
+    const fallback = await supabase
+      .from('inventory_adjustments')
+      .insert(buildCoreRows());
+    return { error: fallback.error };
+  }
+
+  return { error: first.error };
+}
+
+async function insertUdhaarCustomersCompat(
+  userId: string,
+  customers: UdhaarCustomer[]
+): Promise<{ error: { code?: string; message: string } | null }> {
+  if (!supabase || customers.length === 0) return { error: null };
+
+  const buildCoreRows = () =>
+    customers.map((c) => ({
+      id: c.id,
+      user_id: userId,
+      name: c.name,
+      phone: c.phone,
+      notes: c.notes ?? '',
+      created_at: c.createdAt,
+    }));
+
+  if (useCoreUdhaarCustomersSchema) {
+    const res = await supabase.from('udhaar_customers').insert(buildCoreRows());
+    return { error: res.error };
+  }
+
+  const first = await supabase
+    .from('udhaar_customers')
+    .insert(customers.map((c) => mapUdhaarCustomerToRow(c, userId)));
+  if (!first.error) return { error: null };
+
+  if (isMissingColumnError(first.error.message)) {
+    useCoreUdhaarCustomersSchema = true;
+    const fallback = await supabase
+      .from('udhaar_customers')
+      .insert(buildCoreRows());
+    return { error: fallback.error };
+  }
+
+  return { error: first.error };
+}
+
 export async function insertPurchaseRecord(
   userId: string,
   purchase: PurchaseRecord,
@@ -1612,35 +1883,29 @@ export async function insertPurchaseRecord(
   saveLocalWorkspace(userId, ws);
 
   if (isSupabaseConfigured && supabase) {
-    const { error: purErr } = await supabase.from('purchases').insert({
-      id: purchase.id,
-      user_id: userId,
-      vendor_id: purchase.vendorId,
-      vendor_name: purchase.vendorName,
-      invoice_number: purchase.invoiceNumber,
-      total_amount: purchase.totalAmount,
-      paid_amount: purchase.paidAmount,
-      balance_due: purchase.balanceDue,
-      note: purchase.note,
-      created_at: purchase.createdAt,
-    });
-    if (purErr) return purErr.message;
+    let purRes = await insertPurchasesCompat(userId, [purchase]);
+    if (
+      purRes.error &&
+      (purRes.error.code === '23503' ||
+        /foreign key constraint/i.test(purRes.error.message))
+    ) {
+      // Ensure parent vendor exists in Supabase if purchase followed vendor creation immediately
+      const prePurchaseVendor: Vendor = {
+        ...updatedVendor,
+        balance: Math.max(0, updatedVendor.balance - purchase.balanceDue),
+      };
+      const { error: ensureVendErr } = await supabase
+        .from('vendors')
+        .upsert(mapVendorToRow(prePurchaseVendor, userId));
+      if (!ensureVendErr) {
+        purRes = await insertPurchasesCompat(userId, [purchase]);
+      }
+    }
+    if (purRes.error) return purRes.error.message;
 
     if (purchase.items.length > 0) {
-      const { error: itemsErr } = await supabase.from('purchase_items').insert(
-        purchase.items.map((item) => ({
-          id: item.id,
-          user_id: userId,
-          purchase_id: purchase.id,
-          product_id: item.productId,
-          product_name: item.productName,
-          sku: item.sku,
-          quantity: item.quantity,
-          unit_cost: item.unitCost,
-          line_total: item.lineTotal,
-        }))
-      );
-      if (itemsErr) return itemsErr.message;
+      const itemsRes = await insertPurchaseItemsCompat(userId, purchase.items);
+      if (itemsRes.error) return itemsRes.error.message;
     }
 
     const receivedIds = new Set(purchase.items.map((i) => i.productId));
@@ -1678,22 +1943,8 @@ export async function insertInventoryAdjustmentRecord(
   saveLocalWorkspace(userId, ws);
 
   if (isSupabaseConfigured && supabase) {
-    const { error: adjErr } = await supabase
-      .from('inventory_adjustments')
-      .insert({
-        id: adjustment.id,
-        user_id: userId,
-        product_id: adjustment.productId,
-        product_name: adjustment.productName,
-        sku: adjustment.sku,
-        adjustment_type: adjustment.adjustmentType,
-        quantity_change: adjustment.quantityChange,
-        previous_stock: adjustment.previousStock,
-        new_stock: adjustment.newStock,
-        reason: adjustment.reason,
-        created_at: adjustment.createdAt,
-      });
-    if (adjErr) return adjErr.message;
+    const adjRes = await insertAdjustmentsCompat(userId, [adjustment]);
+    if (adjRes.error) return adjRes.error.message;
 
     const { error: prodErr } = await supabase
       .from('products')
@@ -1866,17 +2117,30 @@ export async function resetUserDemoWorkspace(
   shopName?: string
 ): Promise<ShopkeeperWorkspaceData> {
   const demoData = buildStarterWorkspace(userId, true, shopName);
-  saveLocalWorkspace(userId, demoData);
+  const browserOffline =
+    typeof navigator !== 'undefined' && navigator.onLine === false;
 
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseConfigured && supabase && !browserOffline) {
+    const failWithCurrentCloudState = async (message: string) => {
+      const currentCloud = await fetchWorkspaceData(userId, shopName).catch(
+        () => loadLocalWorkspace(userId, shopName)
+      );
+      return {
+        ...currentCloud,
+        cloudSyncError: message,
+      };
+    };
+
+    // Tier 1: Delete child tables first
     const delResults = await Promise.all([
       supabase.from('purchase_items').delete().eq('user_id', userId),
       supabase.from('inventory_adjustments').delete().eq('user_id', userId),
       supabase.from('udhaar_entries').delete().eq('user_id', userId),
     ]);
     const delErr1 = delResults.find((r) => r.error)?.error;
-    if (delErr1) return { ...demoData, cloudSyncError: delErr1.message };
+    if (delErr1) return failWithCurrentCloudState(delErr1.message);
 
+    // Tier 2: Delete intermediate parent tables
     const delResults2 = await Promise.all([
       supabase.from('purchases').delete().eq('user_id', userId),
       supabase.from('udhaar_customers').delete().eq('user_id', userId),
@@ -1884,162 +2148,95 @@ export async function resetUserDemoWorkspace(
       supabase.from('products').delete().eq('user_id', userId),
       supabase.from('customers').delete().eq('user_id', userId),
       supabase.from('employees').delete().eq('user_id', userId),
+      supabase.from('expenses').delete().eq('user_id', userId),
     ]);
     const delErr2 = delResults2.find((r) => r.error)?.error;
-    if (delErr2) return { ...demoData, cloudSyncError: delErr2.message };
+    if (delErr2) return failWithCurrentCloudState(delErr2.message);
 
+    // Tier 3: Delete vendors (parent of purchases)
     const delVend = await supabase.from('vendors').delete().eq('user_id', userId);
-    if (delVend.error) return { ...demoData, cloudSyncError: delVend.error.message };
+    if (delVend.error) return failWithCurrentCloudState(delVend.error.message);
 
-    const insProd = await supabase
-      .from('products')
-      .insert(demoData.products.map((p) => mapProductToRow(p, userId)));
-    if (insProd.error) {
-      return { ...demoData, cloudSyncError: insProd.error.message };
-    }
+    // Tier 4: Insert independent root/parent tables in parallel
+    const tier4Results = await Promise.all([
+      supabase
+        .from('products')
+        .upsert(demoData.products.map((p) => mapProductToRow(p, userId)), {
+          onConflict: 'id',
+        }),
+      supabase
+        .from('orders')
+        .insert(demoData.orders.map((o) => mapOrderToRow(o, userId))),
+      insertUdhaarCustomersCompat(userId, demoData.udhaarCustomers),
+      supabase
+        .from('vendors')
+        .insert(demoData.vendors.map((v) => mapVendorToRow(v, userId))),
+      demoData.customers.length > 0
+        ? supabase
+            .from('customers')
+            .insert(demoData.customers.map((c) => mapCustomerToRow(c, userId)))
+        : Promise.resolve({ error: null }),
+      demoData.employees.length > 0
+        ? supabase
+            .from('employees')
+            .upsert(demoData.employees.map((e) => mapEmployeeToRow(e, userId)), {
+              onConflict: 'id',
+            })
+        : Promise.resolve({ error: null }),
+      supabase
+        .from('store_settings')
+        .upsert(mapStoreSettingsToRow(demoData.storeSettings, userId)),
+      demoData.expenses.length > 0
+        ? supabase
+            .from('expenses')
+            .insert(demoData.expenses.map((e) => mapExpenseToRow(e, userId)))
+        : Promise.resolve({ error: null }),
+    ]);
+    const tier4Err = tier4Results.find((r) => r.error)?.error;
+    if (tier4Err) return failWithCurrentCloudState(tier4Err.message);
 
-    const insOrd = await supabase
-      .from('orders')
-      .insert(demoData.orders.map((o) => mapOrderToRow(o, userId)));
-    if (insOrd.error) {
-      return { ...demoData, cloudSyncError: insOrd.error.message };
-    }
+    // Tier 5: Insert child tables that reference Tier 4 parents
+    const tier5Results = await Promise.all([
+      demoData.udhaarEntries.length > 0
+        ? supabase.from('udhaar_entries').insert(
+            demoData.udhaarEntries.map((e) => ({
+              id: e.id,
+              user_id: userId,
+              customer_id: e.customerId,
+              type: e.type,
+              amount: e.amount,
+              note: e.note,
+              receipt_number: e.receiptNumber ?? null,
+              created_at: e.createdAt,
+            }))
+          )
+        : Promise.resolve({ error: null }),
+      insertPurchasesCompat(userId, demoData.purchases),
+      demoData.inventoryAdjustments.length > 0
+        ? insertAdjustmentsCompat(userId, demoData.inventoryAdjustments)
+        : Promise.resolve({ error: null }),
+    ]);
+    const tier5Err = tier5Results.find((r) => r.error)?.error;
+    if (tier5Err) return failWithCurrentCloudState(tier5Err.message);
 
-    const insCust = await supabase.from('udhaar_customers').insert(
-      demoData.udhaarCustomers.map((c) => ({
-        id: c.id,
-        user_id: userId,
-        name: c.name,
-        phone: c.phone,
-        notes: c.notes ?? '',
-        created_at: c.createdAt,
-      }))
-    );
-    if (insCust.error) {
-      return { ...demoData, cloudSyncError: insCust.error.message };
-    }
-
-    const insEnt = await supabase.from('udhaar_entries').insert(
-      demoData.udhaarEntries.map((e) => ({
-        id: e.id,
-        user_id: userId,
-        customer_id: e.customerId,
-        type: e.type,
-        amount: e.amount,
-        note: e.note,
-        receipt_number: e.receiptNumber ?? null,
-        created_at: e.createdAt,
-      }))
-    );
-    if (insEnt.error) {
-      return { ...demoData, cloudSyncError: insEnt.error.message };
-    }
-
-    const insVend = await supabase
-      .from('vendors')
-      .insert(demoData.vendors.map((v) => mapVendorToRow(v, userId)));
-    if (insVend.error) {
-      return { ...demoData, cloudSyncError: insVend.error.message };
-    }
-
-    const insPur = await supabase.from('purchases').insert(
-      demoData.purchases.map((p) => ({
-        id: p.id,
-        user_id: userId,
-        vendor_id: p.vendorId,
-        vendor_name: p.vendorName,
-        invoice_number: p.invoiceNumber,
-        total_amount: p.totalAmount,
-        paid_amount: p.paidAmount,
-        balance_due: p.balanceDue,
-        note: p.note,
-        created_at: p.createdAt,
-      }))
-    );
-    if (insPur.error) {
-      return { ...demoData, cloudSyncError: insPur.error.message };
-    }
-
-    const allPurchaseItems = demoData.purchases.flatMap((p) =>
-      p.items.map((item) => ({
-        id: item.id,
-        user_id: userId,
-        purchase_id: p.id,
-        product_id: item.productId,
-        product_name: item.productName,
-        sku: item.sku,
-        quantity: item.quantity,
-        unit_cost: item.unitCost,
-        line_total: item.lineTotal,
-      }))
-    );
+    // Tier 6: Insert grandchild purchase_items (depends on purchases)
+    const allPurchaseItems = demoData.purchases.flatMap((p) => p.items);
     if (allPurchaseItems.length > 0) {
-      const insPurItems = await supabase
-        .from('purchase_items')
-        .insert(allPurchaseItems);
-      if (insPurItems.error) {
-        return { ...demoData, cloudSyncError: insPurItems.error.message };
-      }
-    }
-
-    if (demoData.inventoryAdjustments.length > 0) {
-      const insAdj = await supabase.from('inventory_adjustments').insert(
-        demoData.inventoryAdjustments.map((a) => ({
-          id: a.id,
-          user_id: userId,
-          product_id: a.productId,
-          product_name: a.productName,
-          sku: a.sku,
-          adjustment_type: a.adjustmentType,
-          quantity_change: a.quantityChange,
-          previous_stock: a.previousStock,
-          new_stock: a.newStock,
-          reason: a.reason,
-          created_at: a.createdAt,
-        }))
+      const insPurItems = await insertPurchaseItemsCompat(
+        userId,
+        allPurchaseItems
       );
-      if (insAdj.error) {
-        return { ...demoData, cloudSyncError: insAdj.error.message };
+      if (insPurItems.error) {
+        return failWithCurrentCloudState(insPurItems.error.message);
       }
     }
 
-    if (demoData.customers.length > 0) {
-      const insCrm = await supabase
-        .from('customers')
-        .insert(demoData.customers.map((c) => mapCustomerToRow(c, userId)));
-      if (insCrm.error) {
-        return { ...demoData, cloudSyncError: insCrm.error.message };
-      }
-    }
-
-    if (demoData.employees.length > 0) {
-      const insEmp = await supabase
-        .from('employees')
-        .insert(demoData.employees.map((e) => mapEmployeeToRow(e, userId)));
-      if (insEmp.error) {
-        return { ...demoData, cloudSyncError: insEmp.error.message };
-      }
-    }
-
-    const insSet = await supabase
-      .from('store_settings')
-      .upsert(mapStoreSettingsToRow(demoData.storeSettings, userId));
-    if (insSet.error) {
-      return { ...demoData, cloudSyncError: insSet.error.message };
-    }
-
-    await supabase.from('expenses').delete().eq('user_id', userId);
-    if (demoData.expenses.length > 0) {
-      const insExp = await supabase
-        .from('expenses')
-        .insert(demoData.expenses.map((e) => mapExpenseToRow(e, userId)));
-      if (insExp.error) {
-        return { ...demoData, cloudSyncError: insExp.error.message };
-      }
-    }
+    saveLocalWorkspace(userId, demoData);
+    return { ...demoData, cloudSyncError: null, isOffline: false };
   }
 
-  return { ...demoData, cloudSyncError: null };
+  saveLocalWorkspace(userId, demoData);
+  return { ...demoData, cloudSyncError: null, isOffline: browserOffline };
 }
 
 // Phase 5: Shop Expenses Persistence

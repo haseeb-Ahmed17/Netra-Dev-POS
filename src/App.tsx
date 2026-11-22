@@ -60,6 +60,7 @@ import {
   upsertStoreSettingsRecord,
   upsertVendorRecord,
 } from './lib/posRepository';
+import { generateUuid } from './lib/idUtils';
 import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
 import type {
   AdjustmentType,
@@ -774,7 +775,7 @@ export default function App() {
           );
         } else {
           const createdCrm: Customer = {
-            id: `${prefix}-cust-${nowTs}`,
+            id: generateUuid(),
             name: inlineName,
             phone: inlinePhone,
             address: '',
@@ -846,7 +847,7 @@ export default function App() {
           );
         } else {
           const createdCrm: Customer = {
-            id: `${prefix}-cust-${nowTs}`,
+            id: generateUuid(),
             name: resolvedKhata.name,
             phone: resolvedKhata.phone,
             address: '',
@@ -1266,9 +1267,8 @@ export default function App() {
     address: string;
     balance: number;
   }): Vendor => {
-    const prefix = user?.id.slice(0, 8) ?? 'shop';
     const created: Vendor = {
-      id: `${prefix}-vend-${Date.now()}`,
+      id: generateUuid(),
       name,
       company,
       phone,
@@ -1338,11 +1338,10 @@ export default function App() {
     if (!vendor) return null;
 
     const nowIso = new Date().toISOString();
-    const prefix = user.id.slice(0, 8);
-    const purchaseId = `${prefix}-pur-${Date.now()}`;
+    const purchaseId = generateUuid();
 
-    const items: PurchaseItem[] = lines.map((line, idx) => ({
-      id: `${prefix}-pi-${Date.now()}-${idx}`,
+    const items: PurchaseItem[] = lines.map((line) => ({
+      id: generateUuid(),
       purchaseId,
       productId: line.productId,
       productName: line.productName,
@@ -1433,9 +1432,8 @@ export default function App() {
       stock: newStock,
     };
 
-    const prefix = user.id.slice(0, 8);
     const adjustment: InventoryAdjustment = {
-      id: `${prefix}-adj-${Date.now()}`,
+      id: generateUuid(),
       productId: product.id,
       productName: lang === 'ur' ? product.nameUr : product.nameEn,
       sku: product.sku,
@@ -1471,9 +1469,8 @@ export default function App() {
     address: string;
     balance: number;
   }): Customer => {
-    const prefix = user?.id.slice(0, 8) ?? 'shop';
     const created: Customer = {
-      id: `${prefix}-cust-${Date.now()}`,
+      id: generateUuid(),
       name,
       phone,
       address,
@@ -1585,10 +1582,9 @@ export default function App() {
   // Phase 5: Daily Shop Expenses & SaaS Subscription Handlers
   const handleAddExpense = (payload: Omit<ExpenseRecord, 'id' | 'createdAt'>) => {
     if (!user || activeRole === 'cashier') return;
-    const prefix = user.id.slice(0, 8);
     const created: ExpenseRecord = {
       ...payload,
-      id: `${prefix}-exp-${Date.now()}`,
+      id: generateUuid(),
       createdAt: new Date().toISOString(),
     };
     setExpenses((prev) => [created, ...prev]);
@@ -1837,7 +1833,7 @@ export default function App() {
         )}
 
         <main className="flex-1">
-        {loadingData ? (
+        {loadingData && activeTab !== 'dashboard' ? (
           <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-16 text-center text-sm text-slate-500">
             {t.loadingWorkspace}
           </div>
@@ -1872,11 +1868,17 @@ export default function App() {
                 storeName={activeStoreName}
                 orders={orders}
                 expenses={expenses}
+                products={products}
+                purchases={purchases}
                 latestNewOrderId={latestNewOrderId}
                 canResetDemo={activeRole === 'admin'}
                 suppressPrint={Boolean(activeReceiptOrder)}
+                isLoading={loadingData}
+                error={cloudSyncError}
+                onRetry={handleRetrySync}
                 onPrintReceipt={(order) => setActiveReceiptOrder(order)}
                 onGoToPos={() => setActiveTab('pos')}
+                onGoToInventory={() => setActiveTab('inventory')}
                 onResetDemo={handleResetDemo}
                 lang={lang}
                 t={t}

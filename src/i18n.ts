@@ -552,6 +552,44 @@ export interface TranslationStrings {
   transactionIdLabel: string;
   transactionIdPlaceholder: string;
   tidReceiptLabel: string;
+  timeframeWeek: string;
+  salesOverviewTitle: string;
+  salesOverviewSubtitle: string;
+  granularityDaily: string;
+  granularityWeekly: string;
+  granularityMonthly: string;
+  granularityYearly: string;
+  vsYesterdayLabel: string;
+  vsLastWeekLabel: string;
+  vsLastMonthLabel: string;
+  vsLastYearLabel: string;
+  vsPrevPeriodLabel: string;
+  newPeriodBadge: string;
+  salesGrowthLabel: string;
+  kpiTooltipRevenue: string;
+  kpiTooltipCogs: string;
+  kpiTooltipGrossProfit: string;
+  kpiTooltipExpenses: string;
+  kpiTooltipNetProfit: string;
+  kpiTooltipTax: string;
+  inventoryAlertsTitle: string;
+  inventoryAlertsSubtitle: string;
+  alertTabLowOut: string;
+  alertTabFastMoving: string;
+  alertTabSlowMoving: string;
+  manageInventoryBtn: string;
+  suggestedReorderCol: string;
+  sold30dCol: string;
+  daysCoverCol: string;
+  outOfStockBadge: string;
+  lowStockBadge: string;
+  noInventoryAlertsMsg: string;
+  rankCol: string;
+  topProductsSubtitle: string;
+  noPaymentDataMsg: string;
+  retryBtn: string;
+  emptyDashboardTitle: string;
+  emptyDashboardDesc: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -1096,6 +1134,44 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     transactionIdLabel: 'Transaction ID (TID) (Optional)',
     transactionIdPlaceholder: 'e.g., 8492019482',
     tidReceiptLabel: 'TID',
+    timeframeWeek: 'This Week',
+    salesOverviewTitle: 'Sales Overview & Trends',
+    salesOverviewSubtitle: 'Interactive sales revenue, completed orders, and profit trend',
+    granularityDaily: 'Daily',
+    granularityWeekly: 'Weekly',
+    granularityMonthly: 'Monthly',
+    granularityYearly: 'Yearly',
+    vsYesterdayLabel: 'vs yesterday',
+    vsLastWeekLabel: 'vs last week',
+    vsLastMonthLabel: 'vs last month',
+    vsLastYearLabel: 'vs last year',
+    vsPrevPeriodLabel: 'vs prev period',
+    newPeriodBadge: 'New',
+    salesGrowthLabel: 'Sales Growth',
+    kpiTooltipRevenue: 'Net sales revenue collected across completed bills after discounts, taxes, and refunds.',
+    kpiTooltipCogs: 'Cost of Goods Sold calculated from unit cost of active sold items (adjusted for returns).',
+    kpiTooltipGrossProfit: 'Net Revenue minus Cost of Goods Sold (COGS).',
+    kpiTooltipExpenses: 'Total daily shop expenses recorded in this period.',
+    kpiTooltipNetProfit: 'Gross Profit minus Total Expenses.',
+    kpiTooltipTax: 'Total sales tax collected on completed invoices after returns.',
+    inventoryAlertsTitle: 'Inventory Alerts & Velocity',
+    inventoryAlertsSubtitle: 'Monitor low/out-of-stock SKUs, 30-day movement speed, and reorder suggestions',
+    alertTabLowOut: 'Low & Out of Stock',
+    alertTabFastMoving: 'Fast Moving',
+    alertTabSlowMoving: 'Slow Moving',
+    manageInventoryBtn: 'Open Inventory',
+    suggestedReorderCol: 'Suggested Reorder',
+    sold30dCol: '30d Sold',
+    daysCoverCol: 'Cover',
+    outOfStockBadge: 'Out of Stock',
+    lowStockBadge: 'Low Stock',
+    noInventoryAlertsMsg: 'All stock levels are healthy with no alerts.',
+    rankCol: '#',
+    topProductsSubtitle: 'Ranked by revenue with units sold and gross profit',
+    noPaymentDataMsg: 'No completed sales in this period.',
+    retryBtn: 'Retry',
+    emptyDashboardTitle: 'No sales recorded yet',
+    emptyDashboardDesc: 'Complete your first sale on the POS Billing counter to populate live charts and metrics.',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -1638,6 +1714,44 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     transactionIdLabel: 'ٹرانزیکشن آئی ڈی / TID (اختیاری)',
     transactionIdPlaceholder: 'مثلاً 8492019482',
     tidReceiptLabel: 'TID',
+    timeframeWeek: 'اس ہفتے',
+    salesOverviewTitle: 'سیلز کا جائزہ اور رجحان',
+    salesOverviewSubtitle: 'فروخت کی آمدنی، مکمل آرڈرز اور منافع کا گراف',
+    granularityDaily: 'روزانہ',
+    granularityWeekly: 'ہفتہ وار',
+    granularityMonthly: 'ماہانہ',
+    granularityYearly: 'سالانہ',
+    vsYesterdayLabel: 'کل کے مقابلے میں',
+    vsLastWeekLabel: 'گزشتہ ہفتے سے',
+    vsLastMonthLabel: 'گزشتہ ماہ سے',
+    vsLastYearLabel: 'گزشتہ سال سے',
+    vsPrevPeriodLabel: 'پچھلے دورانیے سے',
+    newPeriodBadge: 'نیا',
+    salesGrowthLabel: 'سیلز میں اضافہ',
+    kpiTooltipRevenue: 'رعایت، ٹیکس اور واپسی کی کٹوتی کے بعد مکمل بلز کی خالص آمدنی۔',
+    kpiTooltipCogs: 'فروخت شدہ اشیاء کی اصل خریداری لاگت (واپسی کی ایڈجسٹمنٹ کے ساتھ)۔',
+    kpiTooltipGrossProfit: 'کل آمدنی منفی فروخت شدہ اشیاء کی لاگت۔',
+    kpiTooltipExpenses: 'اس دورانیے میں درج شدہ دکان کے روزمرہ اخراجات۔',
+    kpiTooltipNetProfit: 'مجموعی منافع منفی کل اخراجات۔',
+    kpiTooltipTax: 'مکمل رسیدوں پر جمع شدہ کل سیلز ٹیکس۔',
+    inventoryAlertsTitle: 'اسٹاک الرٹس اور رفتار',
+    inventoryAlertsSubtitle: 'کم یا ختم شدہ اسٹاک، تیز و سست اشیاء اور آرڈر کی تجاویز',
+    alertTabLowOut: 'کم اور ختم اسٹاک',
+    alertTabFastMoving: 'تیز فروخت',
+    alertTabSlowMoving: 'سست فروخت',
+    manageInventoryBtn: 'اسٹاک مینجمنٹ کھولیں',
+    suggestedReorderCol: 'تجویز کردہ آرڈر',
+    sold30dCol: '30 دن فروخت',
+    daysCoverCol: 'اسٹاک دن',
+    outOfStockBadge: 'اسٹاک ختم',
+    lowStockBadge: 'کم اسٹاک',
+    noInventoryAlertsMsg: 'تمام اشیاء کا اسٹاک مناسب مقدار میں موجود ہے۔',
+    rankCol: '#',
+    topProductsSubtitle: 'آمدنی، تعداد اور مجموعی منافع کے لحاظ سے درجہ بندی',
+    noPaymentDataMsg: 'اس دورانیے میں کوئی مکمل سیل موجود نہیں۔',
+    retryBtn: 'دوبارہ کوشش کریں',
+    emptyDashboardTitle: 'ابھی کوئی سیل ریکارڈ نہیں ہوئی',
+    emptyDashboardDesc: 'لائیو چارٹس اور تجزیات دیکھنے کے لیے بلنگ کاؤنٹر پر پہلی سیل مکمل کریں۔',
   },
 };
 

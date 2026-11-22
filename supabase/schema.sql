@@ -195,7 +195,7 @@ create policy "Shopkeepers manage own udhaar entries"
 
 -- 6. Vendors / Suppliers Table (Phase 2)
 create table if not exists public.vendors (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   company text not null default '',
@@ -222,17 +222,26 @@ create policy "Shopkeepers manage own vendors"
 
 -- 7. Purchases Table (Phase 2)
 create table if not exists public.purchases (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  vendor_id text not null references public.vendors(id) on delete cascade,
-  vendor_name text not null,
-  invoice_number text not null,
+  vendor_id uuid not null references public.vendors(id) on delete cascade,
+  vendor_name text not null default '',
+  invoice_number text not null default '',
   total_amount numeric not null default 0 check (total_amount >= 0),
   paid_amount numeric not null default 0 check (paid_amount >= 0),
   balance_due numeric not null default 0 check (balance_due >= 0),
+  status text not null default 'received',
   note text not null default '',
+  notes text not null default '',
   created_at timestamptz not null default now()
 );
+
+-- Safe additive columns if purchases existed with core schema
+alter table public.purchases add column if not exists vendor_name text not null default '';
+alter table public.purchases add column if not exists balance_due numeric not null default 0;
+alter table public.purchases add column if not exists status text not null default 'received';
+alter table public.purchases add column if not exists note text not null default '';
+alter table public.purchases add column if not exists notes text not null default '';
 
 create index if not exists idx_purchases_user_id on public.purchases(user_id);
 create index if not exists idx_purchases_vendor_id on public.purchases(vendor_id);
@@ -252,16 +261,31 @@ create policy "Shopkeepers manage own purchases"
 
 -- 8. Purchase Line Items Table (Phase 2)
 create table if not exists public.purchase_items (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  purchase_id text not null references public.purchases(id) on delete cascade,
+  purchase_id uuid not null references public.purchases(id) on delete cascade,
   product_id text not null,
-  product_name text not null,
+  product_name text not null default '',
   sku text not null default '',
   quantity integer not null check (quantity > 0),
-  unit_cost numeric not null check (unit_cost >= 0),
-  line_total numeric not null check (line_total >= 0)
+  unit_cost numeric not null default 0 check (unit_cost >= 0),
+  cost_price numeric not null default 0 check (cost_price >= 0),
+  line_total numeric not null default 0 check (line_total >= 0)
 );
+
+-- Safe additive columns & RLS backfill if purchase_items existed with core schema
+alter table public.purchase_items add column if not exists user_id uuid references auth.users(id) on delete cascade;
+alter table public.purchase_items add column if not exists product_name text not null default '';
+alter table public.purchase_items add column if not exists sku text not null default '';
+alter table public.purchase_items add column if not exists unit_cost numeric not null default 0;
+alter table public.purchase_items add column if not exists cost_price numeric not null default 0;
+alter table public.purchase_items add column if not exists line_total numeric not null default 0;
+
+update public.purchase_items pi
+set user_id = p.user_id
+from public.purchases p
+where pi.purchase_id = p.id
+  and pi.user_id is null;
 
 create index if not exists idx_purchase_items_user_id on public.purchase_items(user_id);
 create index if not exists idx_purchase_items_purchase_id on public.purchase_items(purchase_id);
@@ -281,10 +305,10 @@ create policy "Shopkeepers manage own purchase items"
 
 -- 9. Inventory Adjustments Table (Phase 2)
 create table if not exists public.inventory_adjustments (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   product_id text not null,
-  product_name text not null,
+  product_name text not null default '',
   sku text not null default '',
   adjustment_type text not null check (adjustment_type in ('Damaged', 'Expired', 'Lost/Theft', 'Stock Count Correction')),
   quantity_change integer not null,
@@ -293,6 +317,12 @@ create table if not exists public.inventory_adjustments (
   reason text not null default '',
   created_at timestamptz not null default now()
 );
+
+-- Safe additive columns if inventory_adjustments existed with core schema
+alter table public.inventory_adjustments add column if not exists product_name text not null default '';
+alter table public.inventory_adjustments add column if not exists sku text not null default '';
+alter table public.inventory_adjustments add column if not exists previous_stock integer not null default 0;
+alter table public.inventory_adjustments add column if not exists new_stock integer not null default 0;
 
 create index if not exists idx_inventory_adjustments_user_id on public.inventory_adjustments(user_id);
 create index if not exists idx_inventory_adjustments_product_id on public.inventory_adjustments(product_id);
@@ -316,7 +346,7 @@ create index if not exists idx_orders_customer_id on public.orders(customer_id);
 
 -- 11. Customers Table (Phase 3)
 create table if not exists public.customers (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   phone text not null default '',
@@ -407,7 +437,7 @@ alter table public.udhaar_customers add column if not exists due_date date;
 
 -- 15. Daily Shop Expenses Table
 create table if not exists public.expenses (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   title text not null,
   category text not null default 'Other',
