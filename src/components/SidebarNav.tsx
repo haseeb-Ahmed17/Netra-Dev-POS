@@ -2,7 +2,10 @@ import { useEffect } from 'react';
 import {
   BookOpenCheck,
   Boxes,
+  Building2,
   ClipboardList,
+  Clock,
+  FileSearch,
   LayoutDashboard,
   PackagePlus,
   ReceiptText,
@@ -18,6 +21,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { TranslationStrings } from '../i18n';
+import { canAccessTab } from '../lib/rbac';
 import type { EmployeeRole, NavTab } from '../types';
 
 interface SidebarNavProps {
@@ -32,36 +36,6 @@ interface SidebarNavProps {
   shopName?: string;
   t: TranslationStrings;
 }
-
-const ROLE_ALLOWED_TABS: Record<EmployeeRole, NavTab[]> = {
-  admin: [
-    'pos',
-    'dashboard',
-    'transactions',
-    'inventory',
-    'inventory_report',
-    'purchases',
-    'vendors',
-    'expenses',
-    'customers',
-    'udhaar',
-    'staff',
-    'settings',
-  ],
-  manager: [
-    'pos',
-    'dashboard',
-    'transactions',
-    'inventory',
-    'inventory_report',
-    'purchases',
-    'vendors',
-    'expenses',
-    'customers',
-    'udhaar',
-  ],
-  cashier: ['pos', 'transactions', 'customers'],
-};
 
 interface NavItemConfig {
   id: NavTab;
@@ -98,11 +72,6 @@ export function SidebarNav({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileOpen, onCloseMobile]);
 
-  const allowedSet = new Set(ROLE_ALLOWED_TABS[activeRole]);
-  if (isSuperAdmin) {
-    allowedSet.add('saas_admin');
-  }
-
   const navGroups: NavGroupConfig[] = [
     {
       id: 'operations',
@@ -111,6 +80,7 @@ export function SidebarNav({
         { id: 'pos', label: t.navPos, icon: ShoppingCart },
         { id: 'dashboard', label: t.navDashboard, icon: LayoutDashboard },
         { id: 'transactions', label: t.navTransactions, icon: ReceiptText },
+        { id: 'shifts', label: t.navShifts, icon: Clock },
       ],
     },
     {
@@ -121,6 +91,7 @@ export function SidebarNav({
         { id: 'inventory_report', label: t.navInventoryReport, icon: ClipboardList },
         { id: 'purchases', label: t.navPurchases, icon: PackagePlus },
         { id: 'vendors', label: t.navVendors, icon: Truck },
+        { id: 'branches', label: t.navBranches, icon: Building2 },
       ],
     },
     {
@@ -138,6 +109,7 @@ export function SidebarNav({
       items: [
         { id: 'staff', label: t.navStaff, icon: UserCog },
         { id: 'settings', label: t.navSettings, icon: Settings },
+        { id: 'audit_logs', label: t.navAuditLogs, icon: FileSearch },
         ...(isSuperAdmin
           ? [{ id: 'saas_admin' as NavTab, label: t.navSaasAdmin, icon: ShieldCheck }]
           : []),
@@ -148,7 +120,9 @@ export function SidebarNav({
   const visibleGroups = navGroups
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => allowedSet.has(item.id)),
+      items: group.items.filter((item) =>
+        canAccessTab(activeRole, item.id, isSuperAdmin)
+      ),
     }))
     .filter((group) => group.items.length > 0);
 

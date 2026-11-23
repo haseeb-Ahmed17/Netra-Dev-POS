@@ -1,31 +1,70 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
+  Barcode,
+  Camera,
   CheckCircle2,
   Minus,
+  Monitor,
+  PauseCircle,
+  PlayCircle,
   Plus,
   Printer,
+  QrCode,
   RotateCcw,
   Search,
   ShoppingBag,
   Smartphone,
+  Split,
   Trash2,
   UserPlus,
+  X,
 } from 'lucide-react';
-import { formatCurrency, getCategoryLabel, type TranslationStrings } from '../i18n';
+import {
+  formatCurrency,
+  getCategoryLabel,
+  getPaymentLabel,
+  type TranslationStrings,
+} from '../i18n';
+import {
+  createHidScanState,
+  findProductByCode,
+  processHidKeyEvent,
+  resetHidScanState,
+  type HidScanState,
+} from '../lib/barcodeScanner';
+import { broadcastCustomerDisplay } from '../lib/hardwareBridge';
+import { generateUuid } from '../lib/idUtils';
+import {
+  calculateUnitAwarePrice,
+  formatQuantity,
+  formatQuantityWithUnit,
+  getCompatibleUnits,
+  getOptionalUnitShortcuts,
+  getUnitLabel,
+  normalizeSellingUnit,
+  roundCurrency,
+  roundQuantity,
+} from '../lib/unitUtils';
 import type {
   CartItem,
   CategoryId,
   Customer,
+  HeldBill,
   Language,
   OrderLineItem,
   OrderRecord,
   PaymentMethod,
+  PaymentSplit,
   Product,
   ReminderSchedule,
+  ScannerMode,
+  SellingUnit,
   StoreSettings,
   UdhaarCustomer,
   UdhaarEntry,
 } from '../types';
+import { CameraScannerPanel } from './CameraScannerPanel';
 import { ProductImage } from './ProductImage';
 import { calculateDueDateFromSchedule } from './UdhaarView';
 
@@ -36,6 +75,22 @@ export interface InlineUdhaarCustomerPayload {
   dueDate?: string;
 }
 
+export interface PosCheckoutPayload {
+  customerId?: string;
+  customerName: string;
+  udhaarCustomerId?: string;
+  discountPercent: number;
+  discountMode?: 'percent' | 'fixed';
+  fixedDiscountAmount?: number;
+  overrideTaxRate?: number;
+  paymentMethod: PaymentMethod;
+  paymentSplits?: PaymentSplit[];
+  amountTendered: number;
+  transactionId?: string;
+  clientTxRef?: string;
+  inlineNewUdhaarCustomer?: InlineUdhaarCustomerPayload;
+}
+
 interface PosBillingViewProps {
   products: Product[];
   cart: CartItem[];
@@ -43,6 +98,8 @@ interface PosBillingViewProps {
   udhaarCustomers: UdhaarCustomer[];
   udhaarEntries: UdhaarEntry[];
   storeSettings: StoreSettings;
+  heldBills?: HeldBill[];
+  activeBranchName?: string;
   canViewDashboard?: boolean;
   onRefreshUdhaarCustomers?: () => void;
   onCreateInlineKhataCustomer?: (payload: InlineUdhaarCustomerPayload) => {
@@ -51,21 +108,35 @@ interface PosBillingViewProps {
   };
   onAddToCart: (productId: string) => void;
   onUpdateQuantity: (productId: string, delta: number, isReturn?: boolean) => void;
+  onSetQuantity: (
+    productId: string,
+    quantity: number,
+    isReturn?: boolean,
+    enteredUnit?: SellingUnit
+  ) => void;
+  onSetCartItemDiscount?: (
+    productId: string,
+    isReturn: boolean,
+    discountPercent: number
+  ) => void;
   onToggleReturn: (productId: string, currentIsReturn: boolean) => void;
   onRemoveFromCart: (productId: string, isReturn?: boolean) => void;
   onClearCart: () => void;
-  onCompleteSale: (payload: {
+  onHoldCurrentBill?: (payload: {
     customerId?: string;
     customerName: string;
-    udhaarCustomerId?: string;
     discountPercent: number;
-    paymentMethod: PaymentMethod;
-    amountTendered: number;
-    transactionId?: string;
-    inlineNewUdhaarCustomer?: InlineUdhaarCustomerPayload;
-  }) => OrderRecord | null;
+    discountMode: 'percent' | 'fixed';
+    fixedDiscountAmount: number;
+    label?: string;
+  }) => void;
+  onResumeHeldBill?: (bill: HeldBill) => void;
+  onDiscardHeldBill?: (billId: string) => void;
+  onOpenCustomerDisplay?: () => void;
+  onCompleteSale: (payload: PosCheckoutPayload) => OrderRecord | null;
   onGoToDashboard: () => void;
   lastCompletedOrder: OrderRecord | null;
+  scannerDisabled?: boolean;
   lang: Language;
   t: TranslationStrings;
 }
@@ -80,22 +151,33 @@ export function PosBillingView({
   udhaarCustomers,
   udhaarEntries,
   storeSettings,
+  heldBills = [],
+  activeBranchName,
   canViewDashboard = true,
   onRefreshUdhaarCustomers,
   onCreateInlineKhataCustomer,
   onAddToCart,
   onUpdateQuantity,
+  onSetQuantity,
+  onSetCartItemDiscount,
   onToggleReturn,
   onRemoveFromCart,
   onClearCart,
+  onHoldCurrentBill,
+  onResumeHeldBill,
+  onDiscardHeldBill,
+  onOpenCustomerDisplay,
   onCompleteSale,
   onGoToDashboard,
   lastCompletedOrder,
+  scannerDisabled = false,
   lang,
   t,
 }: PosBillingViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<CategoryId>('all');
+  const [scannerMode, setScannerMode] = useState<ScannerMode>('hid');
+
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
   const [selectedUdhaarKey, setSelectedUdhaarKey] = useState<string>('');
@@ -104,17 +186,60 @@ export function PosBillingView({
   const [quickKhataPhone, setQuickKhataPhone] = useState('');
   const [quickKhataSchedule, setQuickKhataSchedule] =
     useState<ReminderSchedule>('1_week');
+
+  const [discountMode, setDiscountMode] = useState<'percent' | 'fixed'>('percent');
   const [discountPercent, setDiscountPercent] = useState<number>(0);
+  const [fixedDiscountInput, setFixedDiscountInput] = useState<string>('0');
+
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
+  const [isSplitMode, setIsSplitMode] = useState(false);
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplit[]>([
+    { method: 'cash', amount: 0 },
+  ]);
   const [cashTenderedInput, setCashTenderedInput] = useState<string>('');
   const [transactionId, setTransactionId] = useState<string>('');
+
+  const [showHeldModal, setShowHeldModal] = useState(false);
+  const [showConfirmCheckout, setShowConfirmCheckout] = useState(false);
+  const [isSubmittingSale, setIsSubmittingSale] = useState(false);
+  const pendingTxRef = useRef<string>(generateUuid());
+
   const [showSaleBanner, setShowSaleBanner] = useState(false);
+  const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
+  const [scanFeedback, setScanFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+
+  const scanStateRef = useRef<HidScanState>(createHidScanState());
+  const staleBufferTimerRef = useRef<number | null>(null);
+  const feedbackTimerRef = useRef<number | null>(null);
+
+  const enabledMethods: PaymentMethod[] = useMemo(() => {
+    const raw = storeSettings.enabledPaymentMethods;
+    if (Array.isArray(raw) && raw.length > 0) return raw;
+    return ['cash', 'jazzcash', 'easypaisa', 'card', 'bank_transfer', 'udhaar'];
+  }, [storeSettings.enabledPaymentMethods]);
 
   useEffect(() => {
-    if (paymentMethod === 'udhaar') {
+    if (paymentMethod === 'udhaar' || paymentSplits.some((sp) => sp.method === 'udhaar')) {
       onRefreshUdhaarCustomers?.();
     }
-  }, [paymentMethod, onRefreshUdhaarCustomers]);
+  }, [paymentMethod, paymentSplits, onRefreshUdhaarCustomers]);
+
+  const showScanFeedback = useCallback(
+    (type: 'success' | 'error', message: string) => {
+      setScanFeedback({ type, message });
+      if (feedbackTimerRef.current !== null) {
+        window.clearTimeout(feedbackTimerRef.current);
+      }
+      feedbackTimerRef.current = window.setTimeout(() => {
+        setScanFeedback(null);
+        feedbackTimerRef.current = null;
+      }, type === 'error' ? 6000 : 3500);
+    },
+    []
+  );
 
   const productMap = useMemo(() => {
     const map = new Map<string, Product>();
@@ -133,6 +258,124 @@ export function PosBillingView({
     }
     return map;
   }, [cart]);
+
+  const handleBarcodeScan = useCallback(
+    (rawCode: string) => {
+      const matched = findProductByCode(products, rawCode);
+      if (!matched) {
+        showScanFeedback('error', `${t.barcodeScanNotFound}: "${rawCode}"`);
+        return;
+      }
+
+      const currentCartQty = roundQuantity(cartQtyMap.get(matched.id) ?? 0);
+      const remaining = roundQuantity(matched.stock - currentCartQty);
+      const prodName = lang === 'ur' ? matched.nameUr : matched.nameEn;
+
+      if (remaining <= 0) {
+        showScanFeedback('error', `${t.barcodeScanOutOfStock}: ${prodName}`);
+        return;
+      }
+
+      const increment = remaining < 1 ? remaining : 1;
+      const nextQty = roundQuantity(currentCartQty + increment);
+      const draftKey = `${matched.id}-sale`;
+
+      setShowSaleBanner(false);
+      setQtyDrafts((prev) => {
+        if (!(draftKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[draftKey];
+        return next;
+      });
+      onAddToCart(matched.id);
+      showScanFeedback(
+        'success',
+        `${t.barcodeScanAdded}: ${prodName} (${formatQuantityWithUnit(
+          nextQty,
+          matched.sellingUnit,
+          lang
+        )} ${t.inCartLabel})`
+      );
+    },
+    [products, cartQtyMap, lang, onAddToCart, showScanFeedback, t]
+  );
+
+  const handleBarcodeScanRef = useRef(handleBarcodeScan);
+  useEffect(() => {
+    handleBarcodeScanRef.current = handleBarcodeScan;
+  }, [handleBarcodeScan]);
+
+  useEffect(() => {
+    if (scannerDisabled || scannerMode !== 'hid') {
+      resetHidScanState(scanStateRef.current);
+      if (staleBufferTimerRef.current !== null) {
+        window.clearTimeout(staleBufferTimerRef.current);
+        staleBufferTimerRef.current = null;
+      }
+      return;
+    }
+
+    const handleWindowKeyDown = (e: KeyboardEvent) => {
+      const result = processHidKeyEvent(
+        scanStateRef.current,
+        {
+          key: e.key,
+          keyCode: e.keyCode,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          altKey: e.altKey,
+          isComposing: e.isComposing,
+          timeStamp: e.timeStamp,
+          target: e.target as unknown as Parameters<
+            typeof processHidKeyEvent
+          >[1]['target'],
+        },
+        {
+          disabled: scannerDisabled,
+          now: performance.now(),
+        }
+      );
+
+      if (staleBufferTimerRef.current !== null) {
+        window.clearTimeout(staleBufferTimerRef.current);
+        staleBufferTimerRef.current = null;
+      }
+
+      if (scanStateRef.current.chars.length > 0) {
+        staleBufferTimerRef.current = window.setTimeout(() => {
+          resetHidScanState(scanStateRef.current);
+          staleBufferTimerRef.current = null;
+        }, 200);
+      }
+
+      if (result.preventDefault) {
+        e.preventDefault();
+      }
+      if (result.clearSearchInput) {
+        setSearchQuery('');
+      }
+      if (result.scannedCode) {
+        handleBarcodeScanRef.current(result.scannedCode);
+      }
+    };
+
+    window.addEventListener('keydown', handleWindowKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleWindowKeyDown);
+      if (staleBufferTimerRef.current !== null) {
+        window.clearTimeout(staleBufferTimerRef.current);
+        staleBufferTimerRef.current = null;
+      }
+    };
+  }, [scannerDisabled, scannerMode]);
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current !== null) {
+        window.clearTimeout(feedbackTimerRef.current);
+      }
+    };
+  }, []);
 
   const customerBalanceMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -154,6 +397,7 @@ export function PosBillingView({
       name: string;
       phone: string;
       balance: number;
+      creditLimit?: number;
       udhaarCustomerId?: string;
       crmCustomerId?: string;
     }[] = [];
@@ -177,6 +421,7 @@ export function PosBillingView({
         name: kh.name,
         phone: kh.phone || matchedCrm?.phone || '',
         balance: khBal > 0 ? khBal : crmBal,
+        creditLimit: matchedCrm?.creditLimit ?? kh.creditLimit,
         udhaarCustomerId: kh.id,
         crmCustomerId: matchedCrm?.id,
       });
@@ -189,6 +434,7 @@ export function PosBillingView({
         name: c.name,
         phone: c.phone,
         balance: Math.max(0, c.balance),
+        creditLimit: c.creditLimit,
         crmCustomerId: c.id,
       });
     }
@@ -206,82 +452,158 @@ export function PosBillingView({
         p.nameEn.toLowerCase().includes(q) ||
         p.nameUr.toLowerCase().includes(q) ||
         p.sku.toLowerCase().includes(q) ||
-        p.barcode.toLowerCase().includes(q)
+        p.barcode.toLowerCase().includes(q) ||
+        (p.brand || '').toLowerCase().includes(q)
       );
     });
   }, [products, searchQuery, selectedCategory]);
 
-  const lineItems: (OrderLineItem & { isReturn: boolean; availableStock: number })[] =
-    useMemo(() => {
-      return cart
-        .map((item) => {
-          const prod = productMap.get(item.productId);
-          if (!prod) return null;
-          const isRet = Boolean(item.isReturn);
-          const rawTotal = prod.price * item.quantity;
-          return {
-            productId: prod.id,
-            sku: prod.sku,
-            nameEn: prod.nameEn,
-            nameUr: prod.nameUr,
-            category: prod.category,
-            unitPrice: prod.price,
-            unitCost: prod.cost,
-            taxRate: prod.taxRate ?? 0,
-            quantity: item.quantity,
-            lineTotal: isRet ? -rawTotal : rawTotal,
-            isReturn: isRet,
-            availableStock: prod.stock,
-          };
-        })
-        .filter(
-          (
-            x
-          ): x is OrderLineItem & { isReturn: boolean; availableStock: number } =>
-            x !== null
-        );
-    }, [cart, productMap]);
+  const lineItems: (OrderLineItem & {
+    sellingUnit: NonNullable<OrderLineItem['sellingUnit']>;
+    enteredUnit: SellingUnit;
+    itemDiscountPercent: number;
+    isReturn: boolean;
+    availableStock: number;
+  })[] = useMemo(() => {
+    return cart
+      .map((item) => {
+        const prod = productMap.get(item.productId);
+        if (!prod) return null;
+        const isRet = Boolean(item.isReturn);
+        const baseUnit = normalizeSellingUnit(prod.sellingUnit);
+        const enteredUnit = normalizeSellingUnit(item.enteredUnit || baseUnit);
+        const qtyBase = roundQuantity(item.quantity);
+        const itemDiscPct = Math.max(0, Math.min(100, item.itemDiscountPercent || 0));
+        const grossTotal = roundCurrency(prod.price * qtyBase);
+        const itemDiscAmt = roundCurrency(grossTotal * (itemDiscPct / 100));
+        const netTotal = roundCurrency(grossTotal - itemDiscAmt);
+        const effectiveTaxRate =
+          (prod.taxRate ?? 0) > 0 ? prod.taxRate : storeSettings.defaultTaxRate ?? 0;
+
+        return {
+          productId: prod.id,
+          sku: prod.sku,
+          nameEn: prod.nameEn,
+          nameUr: prod.nameUr,
+          category: prod.category,
+          sellingUnit: baseUnit,
+          enteredUnit,
+          itemDiscountPercent: itemDiscPct,
+          itemDiscountAmount: itemDiscAmt,
+          unitPrice: prod.price,
+          unitCost: prod.cost,
+          taxRate: effectiveTaxRate,
+          quantity: qtyBase,
+          lineTotal: isRet ? -netTotal : netTotal,
+          isReturn: isRet,
+          availableStock: prod.stock,
+        };
+      })
+      .filter(
+        (
+          x
+        ): x is OrderLineItem & {
+          sellingUnit: NonNullable<OrderLineItem['sellingUnit']>;
+          enteredUnit: SellingUnit;
+          itemDiscountPercent: number;
+          isReturn: boolean;
+          availableStock: number;
+        } => x !== null
+      );
+  }, [cart, productMap, storeSettings.defaultTaxRate]);
 
   const totalUnitsInCart = useMemo(
-    () => lineItems.reduce((sum, item) => sum + item.quantity, 0),
+    () => roundQuantity(lineItems.reduce((sum, item) => sum + item.quantity, 0)),
     [lineItems]
   );
 
   const subtotal = useMemo(
-    () => lineItems.reduce((sum, item) => sum + item.lineTotal, 0),
+    () => roundCurrency(lineItems.reduce((sum, item) => sum + item.lineTotal, 0)),
     [lineItems]
   );
 
-  const discountAmount =
-    subtotal > 0 ? Math.round(subtotal * (discountPercent / 100)) : 0;
+  const discountAmount = useMemo(() => {
+    if (subtotal <= 0) return 0;
+    if (discountMode === 'fixed') {
+      const raw = Math.max(0, Number(fixedDiscountInput) || 0);
+      return Math.min(subtotal, Math.round(raw));
+    }
+    return Math.round(subtotal * (discountPercent / 100));
+  }, [subtotal, discountMode, discountPercent, fixedDiscountInput]);
 
-  // Per-product tax calculation after proportional discount
+  const effectiveDiscountPercent =
+    subtotal > 0 ? (discountAmount / subtotal) * 100 : 0;
+
   const taxAmount = useMemo(() => {
-    const discountFactor = subtotal > 0 ? 1 - discountPercent / 100 : 1;
+    const discountFactor = subtotal > 0 ? 1 - effectiveDiscountPercent / 100 : 1;
     return Math.round(
       lineItems.reduce((sum, item) => {
         const discountedLine = item.lineTotal * discountFactor;
         return sum + discountedLine * ((item.taxRate ?? 0) / 100);
       }, 0)
     );
-  }, [lineItems, discountPercent, subtotal]);
+  }, [lineItems, effectiveDiscountPercent, subtotal]);
 
-  const grandTotal = subtotal - discountAmount + taxAmount;
+  const grandTotal = roundCurrency(subtotal - discountAmount + taxAmount);
 
-  const parsedTendered =
-    paymentMethod === 'cash'
-      ? cashTenderedInput.trim() === ''
-        ? grandTotal
-        : Math.max(0, Number(cashTenderedInput) || 0)
-      : paymentMethod === 'udhaar'
-      ? 0
-      : grandTotal;
+  // Sync live cart to Customer Facing Display whenever cart changes
+  useEffect(() => {
+    if (!storeSettings.showCustomerDisplay) return;
+    broadcastCustomerDisplay({
+      storeName: storeSettings.storeName || t.brandName,
+      lang,
+      items: lineItems.map((li) => ({
+        name: lang === 'ur' ? li.nameUr : li.nameEn,
+        qtyLabel: formatQuantityWithUnit(li.quantity, li.sellingUnit, lang),
+        lineTotal: li.lineTotal,
+      })),
+      subtotal,
+      discountAmount,
+      taxAmount,
+      grandTotal,
+      status: lineItems.length > 0 ? 'billing' : lastCompletedOrder ? 'completed' : 'idle',
+      lastReceiptNumber: lastCompletedOrder?.receiptNumber,
+      updatedAt: new Date().toISOString(),
+    });
+  }, [
+    storeSettings.showCustomerDisplay,
+    storeSettings.storeName,
+    t.brandName,
+    lang,
+    lineItems,
+    subtotal,
+    discountAmount,
+    taxAmount,
+    grandTotal,
+    lastCompletedOrder,
+  ]);
+
+  const splitTotal = useMemo(
+    () => roundCurrency(paymentSplits.reduce((s, sp) => s + Math.max(0, sp.amount || 0), 0)),
+    [paymentSplits]
+  );
+  const splitUsesUdhaar = paymentSplits.some((sp) => sp.method === 'udhaar' && sp.amount > 0);
+  const splitRemaining = roundCurrency(grandTotal - splitTotal);
+
+  const parsedTendered = isSplitMode
+    ? splitTotal
+    : paymentMethod === 'cash'
+    ? cashTenderedInput.trim() === ''
+      ? grandTotal
+      : Math.max(0, Number(cashTenderedInput) || 0)
+    : paymentMethod === 'udhaar'
+    ? 0
+    : grandTotal;
 
   const isCashInsufficient =
+    !isSplitMode &&
     paymentMethod === 'cash' &&
     grandTotal > 0 &&
     cashTenderedInput.trim() !== '' &&
     parsedTendered < grandTotal;
+
+  const isSplitInvalid =
+    isSplitMode && grandTotal > 0 && Math.abs(splitTotal - grandTotal) > 1;
 
   const selectedUdhaarOption = useMemo(
     () =>
@@ -289,22 +611,53 @@ export function PosBillingView({
     [unifiedUdhaarOptions, selectedUdhaarKey]
   );
 
-  const hasQuickKhataDraft =
-    showQuickKhataForm && quickKhataName.trim().length > 0;
-
-  const isUdhaarInvalid =
-    paymentMethod === 'udhaar' &&
-    !selectedUdhaarOption &&
-    !selectedCustomerId &&
-    !hasQuickKhataDraft;
-
-  const changeDue =
-    paymentMethod === 'cash' ? Math.max(0, parsedTendered - grandTotal) : 0;
-
   const selectedCrmCustomer = useMemo(
     () => customers.find((c) => c.id === selectedCustomerId) ?? null,
     [customers, selectedCustomerId]
   );
+
+  const hasQuickKhataDraft =
+    showQuickKhataForm && quickKhataName.trim().length > 0;
+
+  const needsUdhaarCustomer =
+    (!isSplitMode && paymentMethod === 'udhaar') || (isSplitMode && splitUsesUdhaar);
+
+  const isUdhaarInvalid =
+    needsUdhaarCustomer &&
+    !selectedUdhaarOption &&
+    !selectedCustomerId &&
+    !hasQuickKhataDraft;
+
+  const udhaarChargeAmount = isSplitMode
+    ? paymentSplits
+        .filter((sp) => sp.method === 'udhaar')
+        .reduce((s, sp) => s + sp.amount, 0)
+    : paymentMethod === 'udhaar'
+    ? grandTotal
+    : 0;
+
+  const activeCreditLimit =
+    selectedCrmCustomer?.creditLimit ?? selectedUdhaarOption?.creditLimit ?? 0;
+  const currentCustomerBal =
+    selectedCrmCustomer?.balance ?? selectedUdhaarOption?.balance ?? 0;
+  const isCreditLimitExceeded =
+    needsUdhaarCustomer &&
+    activeCreditLimit > 0 &&
+    currentCustomerBal + udhaarChargeAmount > activeCreditLimit;
+
+  const changeDue =
+    !isSplitMode && paymentMethod === 'cash'
+      ? Math.max(0, parsedTendered - grandTotal)
+      : 0;
+
+  const handleSelectCustomer = (nextCustomerId: string) => {
+    setSelectedCustomerId(nextCustomerId);
+    const cust = customers.find((c) => c.id === nextCustomerId);
+    if (cust && typeof cust.discountPercent === 'number' && cust.discountPercent > 0) {
+      setDiscountMode('percent');
+      setDiscountPercent(cust.discountPercent);
+    }
+  };
 
   const handleSaveAndSelectQuickKhata = () => {
     const trimmedName = quickKhataName.trim();
@@ -327,85 +680,160 @@ export function PosBillingView({
     setQuickKhataSchedule('1_week');
   };
 
-  const handleCheckout = () => {
-    if (lineItems.length === 0 || isCashInsufficient || isUdhaarInvalid) return;
+  const executeCheckout = () => {
+    if (
+      isSubmittingSale ||
+      lineItems.length === 0 ||
+      isCashInsufficient ||
+      isSplitInvalid ||
+      isUdhaarInvalid ||
+      isCreditLimitExceeded
+    ) {
+      return;
+    }
 
-    const inlineNewUdhaarCustomer: InlineUdhaarCustomerPayload | undefined =
-      paymentMethod === 'udhaar' && hasQuickKhataDraft
-        ? {
-            name: quickKhataName.trim(),
-            phone: quickKhataPhone.trim(),
-            reminderSchedule: quickKhataSchedule,
-            dueDate:
-              quickKhataSchedule === 'none'
-                ? undefined
-                : calculateDueDateFromSchedule(quickKhataSchedule) || undefined,
-          }
-        : undefined;
+    setIsSubmittingSale(true);
+    try {
+      const inlineNewUdhaarCustomer: InlineUdhaarCustomerPayload | undefined =
+        needsUdhaarCustomer && hasQuickKhataDraft
+          ? {
+              name: quickKhataName.trim(),
+              phone: quickKhataPhone.trim(),
+              reminderSchedule: quickKhataSchedule,
+              dueDate:
+                quickKhataSchedule === 'none'
+                  ? undefined
+                  : calculateDueDateFromSchedule(quickKhataSchedule) || undefined,
+            }
+          : undefined;
 
-    const resolvedUdhaarCustomerId =
-      paymentMethod === 'udhaar' && !inlineNewUdhaarCustomer
-        ? selectedUdhaarOption?.udhaarCustomerId
-        : undefined;
+      const resolvedUdhaarCustomerId =
+        needsUdhaarCustomer && !inlineNewUdhaarCustomer
+          ? selectedUdhaarOption?.udhaarCustomerId
+          : undefined;
 
-    const resolvedCrmCustomerId =
-      paymentMethod === 'udhaar' && !inlineNewUdhaarCustomer
-        ? selectedUdhaarOption?.crmCustomerId ?? (selectedCrmCustomer?.id || undefined)
-        : selectedCrmCustomer?.id;
+      const resolvedCrmCustomerId =
+        needsUdhaarCustomer && !inlineNewUdhaarCustomer
+          ? selectedUdhaarOption?.crmCustomerId ?? (selectedCrmCustomer?.id || undefined)
+          : selectedCrmCustomer?.id;
 
-    const resolvedName = inlineNewUdhaarCustomer
-      ? inlineNewUdhaarCustomer.name
-      : paymentMethod === 'udhaar' && selectedUdhaarOption
-      ? selectedUdhaarOption.name
-      : selectedCrmCustomer
-      ? selectedCrmCustomer.name
-      : customerName.trim();
+      const resolvedName = inlineNewUdhaarCustomer
+        ? inlineNewUdhaarCustomer.name
+        : needsUdhaarCustomer && selectedUdhaarOption
+        ? selectedUdhaarOption.name
+        : selectedCrmCustomer
+        ? selectedCrmCustomer.name
+        : customerName.trim();
 
-    const resolvedTid =
-      (paymentMethod === 'jazzcash' || paymentMethod === 'easypaisa') &&
-      transactionId.trim()
-        ? transactionId.trim()
-        : undefined;
+      const resolvedTid =
+        (paymentMethod === 'jazzcash' ||
+          paymentMethod === 'easypaisa' ||
+          paymentMethod === 'bank_transfer') &&
+        transactionId.trim()
+          ? transactionId.trim()
+          : undefined;
 
-    const created = onCompleteSale({
-      customerId: resolvedCrmCustomerId,
-      customerName: resolvedName,
-      udhaarCustomerId: resolvedUdhaarCustomerId,
-      discountPercent,
-      paymentMethod,
-      amountTendered: parsedTendered,
-      transactionId: resolvedTid,
-      inlineNewUdhaarCustomer,
-    });
+      const primaryMethod = isSplitMode
+        ? paymentSplits[0]?.method || 'cash'
+        : paymentMethod;
 
-    if (created) {
-      setSelectedCustomerId('');
-      setCustomerName('');
-      setSelectedUdhaarKey('');
-      setShowQuickKhataForm(false);
-      setQuickKhataName('');
-      setQuickKhataPhone('');
-      setQuickKhataSchedule('1_week');
-      setDiscountPercent(0);
-      setCashTenderedInput('');
-      setTransactionId('');
-      setShowSaleBanner(true);
+      const created = onCompleteSale({
+        customerId: resolvedCrmCustomerId,
+        customerName: resolvedName,
+        udhaarCustomerId: resolvedUdhaarCustomerId,
+        discountPercent: discountMode === 'percent' ? discountPercent : Math.round(effectiveDiscountPercent * 100) / 100,
+        discountMode,
+        fixedDiscountAmount: discountMode === 'fixed' ? discountAmount : 0,
+        paymentMethod: primaryMethod,
+        paymentSplits: isSplitMode
+          ? paymentSplits.filter((sp) => sp.amount > 0)
+          : undefined,
+        amountTendered: parsedTendered,
+        transactionId: resolvedTid,
+        clientTxRef: pendingTxRef.current,
+        inlineNewUdhaarCustomer,
+      });
+
+      if (created) {
+        pendingTxRef.current = generateUuid();
+        setShowConfirmCheckout(false);
+        setSelectedCustomerId('');
+        setCustomerName('');
+        setSelectedUdhaarKey('');
+        setShowQuickKhataForm(false);
+        setQuickKhataName('');
+        setQuickKhataPhone('');
+        setQuickKhataSchedule('1_week');
+        setDiscountMode('percent');
+        setDiscountPercent(0);
+        setFixedDiscountInput('0');
+        setCashTenderedInput('');
+        setTransactionId('');
+        setIsSplitMode(false);
+        setPaymentSplits([{ method: 'cash', amount: 0 }]);
+        setShowSaleBanner(true);
+      }
+    } finally {
+      setIsSubmittingSale(false);
     }
   };
+
+  const canCheckout =
+    lineItems.length > 0 &&
+    !isCashInsufficient &&
+    !isSplitInvalid &&
+    !isUdhaarInvalid &&
+    !isCreditLimitExceeded &&
+    !isSubmittingSale;
 
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6">
       {/* Page Heading */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            {t.posTitle}
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              {t.posTitle}
+            </h1>
+            {activeBranchName && (
+              <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                {activeBranchName}
+              </span>
+            )}
+          </div>
           <p className="text-sm text-slate-600 mt-1">{t.posSubtitle}</p>
         </div>
 
-        {showSaleBanner && lastCompletedOrder && (
-          <div className="flex items-center gap-3 px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900">
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenCustomerDisplay && (
+            <button
+              type="button"
+              onClick={onOpenCustomerDisplay}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer"
+            >
+              <Monitor className="w-3.5 h-3.5 text-teal-700" aria-hidden="true" />
+              <span>{t.openCustomerDisplayBtn}</span>
+            </button>
+          )}
+
+          {onHoldCurrentBill && (
+            <button
+              type="button"
+              onClick={() => setShowHeldModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer"
+            >
+              <PlayCircle className="w-3.5 h-3.5 text-amber-600" aria-hidden="true" />
+              <span>
+                {t.heldBillsBtn} ({heldBills.length})
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {showSaleBanner && lastCompletedOrder && (
+        <div className="mb-5 flex items-center justify-between gap-3 px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900">
+          <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
             <span>
               {t.lastSaleSuccess}{' '}
@@ -413,37 +841,65 @@ export function PosBillingView({
                 ({lastCompletedOrder.receiptNumber})
               </span>
             </span>
-            {canViewDashboard && (
-              <button
-                type="button"
-                onClick={onGoToDashboard}
-                className="font-semibold text-teal-800 underline underline-offset-4 hover:text-teal-900 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                {t.viewDashboardLink}
-              </button>
-            )}
           </div>
-        )}
-      </div>
+          {canViewDashboard && (
+            <button
+              type="button"
+              onClick={onGoToDashboard}
+              className="font-semibold text-teal-800 underline underline-offset-4 hover:text-teal-900 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {t.viewDashboardLink}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Main Split Register Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Catalog Area */}
-        <section className="lg:col-span-7 xl:col-span-8 space-y-5" aria-label="Product Catalog">
-          {/* Search + Category Filter Bar */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-            <div className="relative flex-1">
-              <Search
-                className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3 pointer-events-none"
-                aria-hidden="true"
-              />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t.searchProductsPlaceholder}
-                className="w-full h-10 ps-9 pe-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-700 focus:bg-white transition-colors"
-              />
+        <section className="lg:col-span-7 xl:col-span-8 space-y-4" aria-label="Product Catalog">
+          {/* Search, Scanner Mode Selector & Category Bar */}
+          <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+              <div className="relative flex-1">
+                <Search
+                  className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3 pointer-events-none"
+                  aria-hidden="true"
+                />
+                <input
+                  id="pos-product-search"
+                  data-barcode-search-input="true"
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={t.searchProductsPlaceholder}
+                  className="w-full h-10 ps-9 pe-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-700 focus:bg-white transition-colors"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
+                {(
+                  [
+                    ['hid', t.scannerModeHid, Barcode],
+                    ['camera_barcode', t.scannerModeCameraBarcode, Camera],
+                    ['camera_qr', t.scannerModeQr, QrCode],
+                  ] as const
+                ).map(([modeKey, label, Icon]) => (
+                  <button
+                    key={modeKey}
+                    type="button"
+                    onClick={() => setScannerMode(modeKey)}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md whitespace-nowrap cursor-pointer ${
+                      scannerMode === modeKey
+                        ? 'bg-teal-700 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div
@@ -473,6 +929,43 @@ export function PosBillingView({
             </div>
           </div>
 
+          {scannerMode !== 'hid' && (
+            <CameraScannerPanel
+              mode={scannerMode}
+              onDetected={handleBarcodeScan}
+              t={t}
+            />
+          )}
+
+          {scanFeedback && (
+            <div
+              role={scanFeedback.type === 'error' ? 'alert' : 'status'}
+              aria-live={scanFeedback.type === 'error' ? 'assertive' : 'polite'}
+              className={`flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl border text-sm ${
+                scanFeedback.type === 'error'
+                  ? 'bg-red-50 border-red-200 text-red-800'
+                  : 'bg-teal-50 border-teal-200 text-teal-900'
+              }`}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                {scanFeedback.type === 'error' ? (
+                  <AlertCircle className="w-4 h-4 text-red-700 shrink-0" aria-hidden="true" />
+                ) : (
+                  <Barcode className="w-4 h-4 text-teal-700 shrink-0" aria-hidden="true" />
+                )}
+                <span className="font-medium truncate">{scanFeedback.message}</span>
+              </div>
+              <button
+                type="button"
+                aria-label={t.dismissLabel}
+                onClick={() => setScanFeedback(null)}
+                className="p-1 rounded-md hover:bg-black/5 transition-colors shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+          )}
+
           {/* Product Grid */}
           {filteredProducts.length === 0 ? (
             <div className="bg-white border border-slate-200 rounded-xl p-12 text-center">
@@ -491,10 +984,14 @@ export function PosBillingView({
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
               {filteredProducts.map((product) => {
-                const inCartQty = cartQtyMap.get(product.id) ?? 0;
-                const remainingStock = Math.max(0, product.stock - inCartQty);
+                const inCartQty = roundQuantity(cartQtyMap.get(product.id) ?? 0);
+                const remainingStock = Math.max(
+                  0,
+                  roundQuantity(product.stock - inCartQty)
+                );
                 const isOutOfStock = remainingStock <= 0;
                 const productName = lang === 'ur' ? product.nameUr : product.nameEn;
+                const unitLabel = getUnitLabel(product.sellingUnit, lang);
 
                 return (
                   <article
@@ -511,7 +1008,6 @@ export function PosBillingView({
 
                     <div className="p-4 flex flex-col flex-1 justify-between gap-3">
                       <div>
-                        {/* Quiet unboxed metadata line */}
                         <div className="flex items-center gap-1.5 text-xs text-slate-500 mb-1 flex-wrap">
                           <span className="font-mono">{product.barcode || product.sku}</span>
                           <span aria-hidden="true">·</span>
@@ -521,33 +1017,38 @@ export function PosBillingView({
                             className={`tabular-nums ${
                               remainingStock === 0
                                 ? 'text-red-700 font-medium'
-                                : remainingStock <= 5
+                                : remainingStock <= (product.minStock ?? 5)
                                 ? 'text-amber-700 font-medium'
                                 : 'text-slate-500'
                             }`}
                           >
                             {remainingStock === 0
                               ? t.outOfStockLabel
-                              : `${t.inStockLabel}: ${remainingStock}`}
+                              : `${t.inStockLabel}: ${formatQuantityWithUnit(
+                                  remainingStock,
+                                  product.sellingUnit,
+                                  lang
+                                )}`}
                           </span>
-                          {(product.taxRate ?? 0) > 0 && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              <span className="tabular-nums">
-                                {t.taxCol} {product.taxRate}%
-                              </span>
-                            </>
-                          )}
                         </div>
 
                         <h2 className="text-base font-semibold text-slate-900 leading-snug">
                           {productName}
                         </h2>
+                        {(product.brand || product.variant) && (
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {[product.brand, product.variant].filter(Boolean).join(' · ')}
+                          </p>
+                        )}
                       </div>
 
                       <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-3">
                         <span className="font-mono text-base font-bold text-slate-900 tabular-nums whitespace-nowrap">
                           {formatCurrency(product.price, lang)}
+                          <span className="text-xs font-normal text-slate-500">
+                            {' '}
+                            / {unitLabel}
+                          </span>
                         </span>
 
                         <button
@@ -568,7 +1069,11 @@ export function PosBillingView({
                           <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                           <span>
                             {inCartQty > 0
-                              ? `${t.addedMore} (${inCartQty})`
+                              ? `${t.addedMore} (${formatQuantityWithUnit(
+                                  inCartQty,
+                                  product.sellingUnit,
+                                  lang
+                                )})`
                               : t.addToCart}
                           </span>
                         </button>
@@ -587,22 +1092,48 @@ export function PosBillingView({
           aria-label="Active Cart and Billing"
         >
           {/* Cart Header */}
-          <div className="flex items-center justify-between gap-4 pb-4 border-b border-slate-200">
+          <div className="flex items-center justify-between gap-3 pb-4 border-b border-slate-200">
             <div className="flex items-baseline gap-2">
               <h2 className="text-lg font-bold text-slate-900">{t.currentBill}</h2>
               <span className="text-xs font-mono text-slate-500 tabular-nums">
-                ({totalUnitsInCart} {t.itemsCount})
+                ({formatQuantity(totalUnitsInCart)} {t.itemsCount})
               </span>
             </div>
 
             {lineItems.length > 0 && (
-              <button
-                type="button"
-                onClick={onClearCart}
-                className="text-xs font-medium text-slate-600 hover:text-red-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                {t.clearCart}
-              </button>
+              <div className="flex items-center gap-2">
+                {onHoldCurrentBill && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onHoldCurrentBill({
+                        customerId: selectedCustomerId || undefined,
+                        customerName:
+                          selectedCrmCustomer?.name || customerName.trim(),
+                        discountPercent,
+                        discountMode,
+                        fixedDiscountAmount: Number(fixedDiscountInput) || 0,
+                      });
+                      setQtyDrafts({});
+                    }}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-md cursor-pointer"
+                  >
+                    <PauseCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{t.holdBillBtn}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQtyDrafts({});
+                    onClearCart();
+                  }}
+                  className="text-xs font-medium text-slate-600 hover:text-red-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  {t.clearCart}
+                </button>
+              </div>
             )}
           </div>
 
@@ -619,14 +1150,36 @@ export function PosBillingView({
               </p>
             </div>
           ) : (
-            <div className="divide-y divide-slate-100 max-h-[300px] overflow-y-auto my-2">
+            <div className="divide-y divide-slate-100 max-h-[360px] overflow-y-auto my-2">
               {lineItems.map((item) => {
                 const name = lang === 'ur' ? item.nameUr : item.nameEn;
                 const isRet = Boolean(item.isReturn);
                 const canIncrement = isRet || item.quantity < item.availableStock;
+                const unitLabel = getUnitLabel(item.sellingUnit, lang);
+                const compatibleUnits = getCompatibleUnits(item.sellingUnit);
+                const shortcuts = getOptionalUnitShortcuts(item.sellingUnit);
+                const draftKey = `${item.productId}-${isRet ? 'ret' : 'sale'}`;
+
+                const defaultEnteredDisplay =
+                  item.enteredUnit !== item.sellingUnit
+                    ? formatQuantity(
+                        calculateUnitAwarePrice(
+                          1,
+                          item.enteredUnit,
+                          item.quantity,
+                          item.sellingUnit
+                        ).baseQuantity
+                      )
+                    : formatQuantity(item.quantity);
+
+                const displayQtyValue =
+                  qtyDrafts[draftKey] !== undefined
+                    ? qtyDrafts[draftKey]
+                    : defaultEnteredDisplay;
+
                 return (
                   <div
-                    key={`${item.productId}-${isRet ? 'ret' : 'sale'}`}
+                    key={draftKey}
                     className={`py-3 flex flex-col gap-2 ${
                       isRet ? 'bg-red-50/60 border-s-2 border-red-500 px-2.5 rounded-lg my-1' : ''
                     }`}
@@ -644,7 +1197,7 @@ export function PosBillingView({
                           )}
                         </div>
                         <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">
-                          {formatCurrency(item.unitPrice, lang)}
+                          {formatCurrency(item.unitPrice, lang)} / {unitLabel}
                           {item.taxRate > 0 ? ` · +${item.taxRate}% ${t.taxCol}` : ''}
                         </p>
                       </div>
@@ -652,7 +1205,14 @@ export function PosBillingView({
                       <button
                         type="button"
                         aria-pressed={isRet}
-                        onClick={() => onToggleReturn(item.productId, isRet)}
+                        onClick={() => {
+                          setQtyDrafts((prev) => {
+                            const next = { ...prev };
+                            delete next[draftKey];
+                            return next;
+                          });
+                          onToggleReturn(item.productId, isRet);
+                        }}
                         className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                           isRet
                             ? 'bg-red-600 text-white border-red-600 hover:bg-red-700'
@@ -665,41 +1225,121 @@ export function PosBillingView({
                     </div>
 
                     <div className="flex items-center justify-between gap-2">
-                      {/* Quantity Stepper */}
-                      <div className="flex items-center border border-slate-200 rounded-lg bg-white shrink-0">
-                        <button
-                          type="button"
-                          aria-label={`Decrease quantity of ${name}`}
-                          onClick={() => onUpdateQuantity(item.productId, -1, isRet)}
-                          className="w-8 h-8 flex items-center justify-center text-slate-700 hover:bg-slate-100 rounded-s-lg transition-colors cursor-pointer"
-                        >
-                          <Minus className="w-3.5 h-3.5" aria-hidden="true" />
-                        </button>
-                        <span
-                          className={`w-9 text-center font-mono text-xs font-semibold tabular-nums ${
-                            isRet ? 'text-red-700' : 'text-slate-900'
-                          }`}
-                        >
-                          {isRet ? `-${item.quantity}` : item.quantity}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label={`Increase quantity of ${name}`}
-                          disabled={!canIncrement}
-                          onClick={() => onUpdateQuantity(item.productId, 1, isRet)}
-                          className={`w-8 h-8 flex items-center justify-center rounded-e-lg transition-colors ${
-                            canIncrement
-                              ? 'text-slate-700 hover:bg-slate-100 cursor-pointer'
-                              : 'text-slate-300 cursor-not-allowed'
-                          }`}
-                        >
-                          <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                        </button>
+                      {/* Free-Entry Numeric/Decimal Quantity Input + Unit Switcher */}
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="flex items-center border border-slate-200 rounded-lg bg-white shrink-0">
+                          <button
+                            type="button"
+                            aria-label={`Decrease quantity of ${name}`}
+                            onClick={() => {
+                              setQtyDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[draftKey];
+                                return next;
+                              });
+                              onUpdateQuantity(item.productId, -1, isRet);
+                            }}
+                            className="w-7 h-8 flex items-center justify-center text-slate-700 hover:bg-slate-100 rounded-s-lg transition-colors cursor-pointer"
+                          >
+                            <Minus className="w-3.5 h-3.5" aria-hidden="true" />
+                          </button>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            step="any"
+                            min="0.001"
+                            aria-label={`${t.qtyCol} (${unitLabel}) - ${name}`}
+                            title={t.customQtyHint}
+                            value={displayQtyValue}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setQtyDrafts((prev) => ({ ...prev, [draftKey]: raw }));
+                              const parsed = Number(raw);
+                              if (Number.isFinite(parsed) && parsed > 0) {
+                                onSetQuantity(
+                                  item.productId,
+                                  parsed,
+                                  isRet,
+                                  item.enteredUnit
+                                );
+                              }
+                            }}
+                            onBlur={() => {
+                              setQtyDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[draftKey];
+                                return next;
+                              });
+                            }}
+                            className={`w-16 h-8 px-1 text-center font-mono text-xs font-semibold bg-transparent focus:outline-none focus:bg-slate-50 tabular-nums ${
+                              isRet ? 'text-red-700' : 'text-slate-900'
+                            }`}
+                          />
+                          <button
+                            type="button"
+                            aria-label={`Increase quantity of ${name}`}
+                            disabled={!canIncrement}
+                            onClick={() => {
+                              setQtyDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[draftKey];
+                                return next;
+                              });
+                              onUpdateQuantity(item.productId, 1, isRet);
+                            }}
+                            className={`w-7 h-8 flex items-center justify-center rounded-e-lg transition-colors ${
+                              canIncrement
+                                ? 'text-slate-700 hover:bg-slate-100 cursor-pointer'
+                                : 'text-slate-300 cursor-not-allowed'
+                            }`}
+                          >
+                            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
+
+                        {compatibleUnits.length > 1 ? (
+                          <select
+                            aria-label="Unit"
+                            value={item.enteredUnit}
+                            onChange={(e) => {
+                              const nextUnit = e.target.value as SellingUnit;
+                              setQtyDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[draftKey];
+                                return next;
+                              });
+                              const currentInBase = item.quantity;
+                              const convertedVal = calculateUnitAwarePrice(
+                                1,
+                                nextUnit,
+                                currentInBase,
+                                item.sellingUnit
+                              ).baseQuantity;
+                              onSetQuantity(
+                                item.productId,
+                                convertedVal > 0 ? convertedVal : 1,
+                                isRet,
+                                nextUnit
+                              );
+                            }}
+                            className="h-8 px-1.5 text-[11px] font-medium bg-slate-100 border border-slate-200 rounded-md text-slate-700"
+                          >
+                            {compatibleUnits.map((u) => (
+                              <option key={u} value={u}>
+                                {getUnitLabel(u, lang)}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-[11px] font-medium text-slate-600 px-1.5 py-0.5 rounded bg-slate-100 shrink-0">
+                            {unitLabel}
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2 shrink-0">
                         <span
-                          className={`font-mono text-sm font-semibold tabular-nums min-w-[76px] text-end ${
+                          className={`font-mono text-sm font-semibold tabular-nums min-w-[70px] text-end ${
                             isRet ? 'text-red-700' : 'text-slate-900'
                           }`}
                         >
@@ -708,13 +1348,71 @@ export function PosBillingView({
                         <button
                           type="button"
                           aria-label={`Remove ${name}`}
-                          onClick={() => onRemoveFromCart(item.productId, isRet)}
-                          className="p-1.5 text-slate-400 hover:text-red-700 transition-colors cursor-pointer"
+                          onClick={() => {
+                            setQtyDrafts((prev) => {
+                              const next = { ...prev };
+                              delete next[draftKey];
+                              return next;
+                            });
+                            onRemoveFromCart(item.productId, isRet);
+                          }}
+                          className="p-1 text-slate-400 hover:text-red-700 transition-colors cursor-pointer"
                         >
                           <Trash2 className="w-4 h-4" aria-hidden="true" />
                         </button>
                       </div>
                     </div>
+
+                    {/* Optional non-forced convenience chips & item discount */}
+                    {(shortcuts.length > 0 || onSetCartItemDiscount) && (
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 pt-0.5">
+                        {shortcuts.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            {shortcuts.map((sc) => (
+                              <button
+                                key={sc.label}
+                                type="button"
+                                onClick={() => {
+                                  setQtyDrafts((prev) => {
+                                    const next = { ...prev };
+                                    delete next[draftKey];
+                                    return next;
+                                  });
+                                  onSetQuantity(
+                                    item.productId,
+                                    sc.quantity,
+                                    isRet,
+                                    sc.unit
+                                  );
+                                }}
+                                className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-100 hover:bg-teal-50 text-slate-600 hover:text-teal-800 border border-slate-200 cursor-pointer"
+                              >
+                                {sc.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {onSetCartItemDiscount && (
+                          <label className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                            <span>Disc%</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={item.itemDiscountPercent || 0}
+                              onChange={(e) =>
+                                onSetCartItemDiscount(
+                                  item.productId,
+                                  isRet,
+                                  Math.max(0, Math.min(100, Number(e.target.value) || 0))
+                                )
+                              }
+                              className="w-11 h-6 px-1 text-center font-mono border border-slate-200 rounded bg-slate-50 text-slate-800"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -733,7 +1431,7 @@ export function PosBillingView({
               <select
                 id="pos-crm-customer-select"
                 value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(e.target.value)}
+                onChange={(e) => handleSelectCustomer(e.target.value)}
                 className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white transition-colors"
               >
                 <option value="">{t.walkInOption}</option>
@@ -748,7 +1446,7 @@ export function PosBillingView({
                 ))}
               </select>
 
-              {!selectedCustomerId && paymentMethod !== 'udhaar' && (
+              {!selectedCustomerId && !needsUdhaarCustomer && (
                 <input
                   type="text"
                   value={customerName}
@@ -759,27 +1457,62 @@ export function PosBillingView({
               )}
             </div>
 
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-slate-600">{t.discountLabel}</span>
-              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                {DISCOUNT_OPTIONS.map((pct) => {
-                  const active = discountPercent === pct;
-                  return (
-                    <button
-                      key={pct}
-                      type="button"
-                      onClick={() => setDiscountPercent(pct)}
-                      className={`px-2.5 py-1 text-xs font-mono font-medium rounded-md tabular-nums transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {pct}%
-                    </button>
-                  );
-                })}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-slate-600">{t.discountLabel}</span>
+                <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setDiscountMode('percent')}
+                    className={`px-2 py-1 rounded font-semibold cursor-pointer ${
+                      discountMode === 'percent' ? 'bg-white text-slate-900' : 'text-slate-600'
+                    }`}
+                  >
+                    {t.discountPercentMode}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDiscountMode('fixed')}
+                    className={`px-2 py-1 rounded font-semibold cursor-pointer ${
+                      discountMode === 'fixed' ? 'bg-white text-slate-900' : 'text-slate-600'
+                    }`}
+                  >
+                    {t.discountFixedMode}
+                  </button>
+                </div>
               </div>
+
+              {discountMode === 'percent' ? (
+                <div className="flex items-center justify-end gap-1 p-1 bg-slate-100 rounded-lg">
+                  {DISCOUNT_OPTIONS.map((pct) => {
+                    const active = discountPercent === pct;
+                    return (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setDiscountPercent(pct)}
+                        className={`flex-1 px-2.5 py-1 text-xs font-mono font-medium rounded-md tabular-nums transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {pct}%
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={fixedDiscountInput}
+                  onChange={(e) => setFixedDiscountInput(e.target.value)}
+                  className="w-full h-9 px-3 text-end font-mono text-xs bg-slate-50 border border-slate-200 rounded-lg"
+                  placeholder="Rs."
+                />
+              )}
             </div>
           </div>
 
@@ -795,7 +1528,8 @@ export function PosBillingView({
             {discountAmount > 0 && (
               <div className="flex items-center justify-between text-emerald-700">
                 <span>
-                  {t.discountLabel} ({discountPercent}%)
+                  {t.discountLabel}
+                  {discountMode === 'percent' ? ` (${discountPercent}%)` : ''}
                 </span>
                 <span className="font-mono tabular-nums">
                   -{formatCurrency(discountAmount, lang)}
@@ -828,27 +1562,38 @@ export function PosBillingView({
             </div>
           </div>
 
-          {/* Payment Method & Tendered / Udhaar Controls */}
+          {/* Payment Method & Split / Tendered / Udhaar Controls */}
           <div className="mt-4 pt-4 border-t border-slate-200 space-y-3">
-            <div className="space-y-2">
-              <span className="block text-xs font-medium text-slate-600">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-slate-600">
                 {t.paymentMethodLabel}
               </span>
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 p-1 bg-slate-100 rounded-lg">
-                {(
-                  ['cash', 'jazzcash', 'easypaisa', 'card', 'udhaar'] as PaymentMethod[]
-                ).map((method) => {
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !isSplitMode;
+                  setIsSplitMode(next);
+                  if (next) {
+                    setPaymentSplits([
+                      { method: 'cash', amount: Math.max(0, grandTotal) },
+                    ]);
+                  }
+                }}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
+                  isSplitMode
+                    ? 'bg-teal-700 text-white border-teal-700'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <Split className="w-3 h-3" aria-hidden="true" />
+                <span>{t.splitPaymentBtn}</span>
+              </button>
+            </div>
+
+            {!isSplitMode ? (
+              <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-lg">
+                {enabledMethods.map((method) => {
                   const active = paymentMethod === method;
-                  const label =
-                    method === 'cash'
-                      ? t.paymentCash
-                      : method === 'jazzcash'
-                      ? t.paymentJazzCash
-                      : method === 'easypaisa'
-                      ? t.paymentEasyPaisa
-                      : method === 'card'
-                      ? t.paymentCard
-                      : t.paymentUdhaar;
                   return (
                     <button
                       key={method}
@@ -862,14 +1607,87 @@ export function PosBillingView({
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      {label}
+                      {getPaymentLabel(method, t)}
                     </button>
                   );
                 })}
               </div>
-            </div>
+            ) : (
+              <div className="space-y-2 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                {paymentSplits.map((sp, idx) => (
+                  <div key={idx} className="flex items-center gap-1.5">
+                    <select
+                      value={sp.method}
+                      onChange={(e) => {
+                        const nextMethod = e.target.value as PaymentMethod;
+                        setPaymentSplits((prev) =>
+                          prev.map((row, i) =>
+                            i === idx ? { ...row, method: nextMethod } : row
+                          )
+                        );
+                      }}
+                      className="flex-1 h-8 px-2 text-xs bg-white border border-slate-200 rounded-md"
+                    >
+                      {enabledMethods.map((m) => (
+                        <option key={m} value={m}>
+                          {getPaymentLabel(m, t)}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={sp.amount}
+                      onChange={(e) => {
+                        const amt = Math.max(0, Number(e.target.value) || 0);
+                        setPaymentSplits((prev) =>
+                          prev.map((row, i) => (i === idx ? { ...row, amount: amt } : row))
+                        );
+                      }}
+                      className="w-24 h-8 px-2 text-end font-mono text-xs bg-white border border-slate-200 rounded-md tabular-nums"
+                    />
+                    {paymentSplits.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPaymentSplits((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        className="p-1 text-slate-400 hover:text-rose-700 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <div className="flex items-center justify-between pt-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPaymentSplits((prev) => [
+                        ...prev,
+                        {
+                          method: 'jazzcash',
+                          amount: Math.max(0, splitRemaining),
+                        },
+                      ])
+                    }
+                    className="text-teal-700 font-semibold hover:underline cursor-pointer"
+                  >
+                    + {t.addPaymentSplitBtn}
+                  </button>
+                  <span
+                    className={`font-mono font-semibold tabular-nums ${
+                      Math.abs(splitRemaining) > 1 ? 'text-rose-700' : 'text-emerald-700'
+                    }`}
+                  >
+                    {t.remainingToPayLabel}: {formatCurrency(splitRemaining, lang)}
+                  </span>
+                </div>
+              </div>
+            )}
 
-            {paymentMethod === 'cash' && grandTotal > 0 && (
+            {!isSplitMode && paymentMethod === 'cash' && grandTotal > 0 && (
               <div className="space-y-2 bg-slate-50 border border-slate-200 rounded-lg p-3">
                 <div className="flex items-center justify-between gap-2">
                   <label
@@ -922,75 +1740,80 @@ export function PosBillingView({
               </div>
             )}
 
-            {(paymentMethod === 'jazzcash' || paymentMethod === 'easypaisa') && (
-              <div className="space-y-2.5 bg-slate-50 border border-slate-200 rounded-lg p-3">
-                <div className="flex items-start gap-2">
-                  <Smartphone
-                    className="w-4 h-4 text-teal-700 shrink-0 mt-0.5"
-                    aria-hidden="true"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold text-slate-800">
-                      {t.transferToAccountLabel} (
-                      {paymentMethod === 'jazzcash'
-                        ? t.paymentJazzCash
-                        : t.paymentEasyPaisa}
-                      )
-                    </p>
-                    {(() => {
-                      const title =
-                        paymentMethod === 'jazzcash'
-                          ? storeSettings.jazzcashAccountTitle
-                          : storeSettings.easypaisaAccountTitle;
-                      const number =
-                        paymentMethod === 'jazzcash'
-                          ? storeSettings.jazzcashAccountNumber
-                          : storeSettings.easypaisaAccountNumber;
-                      if (!title && !number) {
+            {!isSplitMode &&
+              (paymentMethod === 'jazzcash' ||
+                paymentMethod === 'easypaisa' ||
+                paymentMethod === 'bank_transfer') && (
+                <div className="space-y-2.5 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <div className="flex items-start gap-2">
+                    <Smartphone
+                      className="w-4 h-4 text-teal-700 shrink-0 mt-0.5"
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-slate-800">
+                        {t.transferToAccountLabel} ({getPaymentLabel(paymentMethod, t)})
+                      </p>
+                      {(() => {
+                        const title =
+                          paymentMethod === 'jazzcash'
+                            ? storeSettings.jazzcashAccountTitle
+                            : paymentMethod === 'easypaisa'
+                            ? storeSettings.easypaisaAccountTitle
+                            : [storeSettings.bankName, storeSettings.bankAccountTitle]
+                                .filter(Boolean)
+                                .join(' · ');
+                        const number =
+                          paymentMethod === 'jazzcash'
+                            ? storeSettings.jazzcashAccountNumber
+                            : paymentMethod === 'easypaisa'
+                            ? storeSettings.easypaisaAccountNumber
+                            : storeSettings.bankAccountNumber;
+                        if (!title && !number) {
+                          return (
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              {t.walletNotConfiguredMsg}
+                            </p>
+                          );
+                        }
                         return (
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            {t.walletNotConfiguredMsg}
-                          </p>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                            {title && (
+                              <span className="font-semibold text-slate-900">
+                                {title}
+                              </span>
+                            )}
+                            {number && (
+                              <span className="font-mono font-bold text-teal-800 tabular-nums">
+                                {number}
+                              </span>
+                            )}
+                          </div>
                         );
-                      }
-                      return (
-                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-                          {title && (
-                            <span className="font-semibold text-slate-900">
-                              {title}
-                            </span>
-                          )}
-                          {number && (
-                            <span className="font-mono font-bold text-teal-800 tabular-nums">
-                              {number}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })()}
+                      })()}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="pos-wallet-tid"
+                      className="block text-xs font-medium text-slate-700 mb-1"
+                    >
+                      {t.transactionIdLabel}
+                    </label>
+                    <input
+                      id="pos-wallet-tid"
+                      type="text"
+                      value={transactionId}
+                      onChange={(e) => setTransactionId(e.target.value)}
+                      placeholder={t.transactionIdPlaceholder}
+                      className="w-full h-9 px-2.5 text-xs font-mono bg-white border border-slate-300 rounded-md text-slate-900 placeholder:text-slate-400 tabular-nums focus:outline-none focus:border-teal-700"
+                    />
                   </div>
                 </div>
+              )}
 
-                <div>
-                  <label
-                    htmlFor="pos-wallet-tid"
-                    className="block text-xs font-medium text-slate-700 mb-1"
-                  >
-                    {t.transactionIdLabel}
-                  </label>
-                  <input
-                    id="pos-wallet-tid"
-                    type="text"
-                    value={transactionId}
-                    onChange={(e) => setTransactionId(e.target.value)}
-                    placeholder={t.transactionIdPlaceholder}
-                    className="w-full h-9 px-2.5 text-xs font-mono bg-white border border-slate-300 rounded-md text-slate-900 placeholder:text-slate-400 tabular-nums focus:outline-none focus:border-teal-700"
-                  />
-                </div>
-              </div>
-            )}
-
-            {paymentMethod === 'udhaar' && (
+            {needsUdhaarCustomer && (
               <div className="space-y-2.5 bg-amber-50/70 border border-amber-200 rounded-lg p-3">
                 <div className="flex items-center justify-between gap-2">
                   <label
@@ -1118,18 +1941,24 @@ export function PosBillingView({
                   </div>
                 )}
 
-                <p className="text-xs text-amber-800">
-                  {isUdhaarInvalid ? t.udhaarCustomerRequired : t.udhaarBalanceNotice}
-                </p>
+                {isCreditLimitExceeded ? (
+                  <p className="text-xs font-semibold text-rose-700">
+                    {t.creditLimitExceededMsg} ({formatCurrency(activeCreditLimit, lang)})
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-800">
+                    {isUdhaarInvalid ? t.udhaarCustomerRequired : t.udhaarBalanceNotice}
+                  </p>
+                )}
               </div>
             )}
 
             <button
               type="button"
-              disabled={lineItems.length === 0 || isCashInsufficient || isUdhaarInvalid}
-              onClick={handleCheckout}
+              disabled={!canCheckout}
+              onClick={() => setShowConfirmCheckout(true)}
               className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold rounded-lg transition-colors min-h-[44px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 ${
-                lineItems.length === 0 || isCashInsufficient || isUdhaarInvalid
+                !canCheckout
                   ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
                   : 'bg-teal-700 hover:bg-teal-800 text-white cursor-pointer'
               }`}
@@ -1140,6 +1969,120 @@ export function PosBillingView({
           </div>
         </aside>
       </div>
+
+      {/* Checkout Confirmation Modal (Prevents accidental clicks & duplicate charges) */}
+      {showConfirmCheckout && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white rounded-xl border border-slate-200 max-w-sm w-full p-6 space-y-4 shadow-xl">
+            <h2 className="text-base font-bold text-slate-900">{t.completeSalePrint}</h2>
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-600">{t.itemsCol}</span>
+                <span className="font-mono font-semibold">{formatQuantity(totalUnitsInCart)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-600">{t.grandTotalLabel}</span>
+                <span className="font-mono font-bold text-slate-900 text-sm tabular-nums">
+                  {formatCurrency(grandTotal, lang)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-600">{t.methodCol}</span>
+                <span className="font-semibold">
+                  {isSplitMode ? t.splitPaymentBtn : getPaymentLabel(paymentMethod, t)}
+                </span>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowConfirmCheckout(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+              >
+                {t.cancelBtn}
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingSale}
+                onClick={executeCheckout}
+                className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg cursor-pointer"
+              >
+                {t.completeSalePrint}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Held Bills Drawer Modal */}
+      {showHeldModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white rounded-xl border border-slate-200 max-w-lg w-full overflow-hidden shadow-xl">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-900">
+                {t.heldBillsBtn} ({heldBills.length})
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowHeldModal(false)}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="p-5 max-h-[65vh] overflow-y-auto space-y-3">
+              {heldBills.length === 0 ? (
+                <p className="text-sm text-slate-500 text-center py-6">—</p>
+              ) : (
+                heldBills.map((hb) => (
+                  <div
+                    key={hb.id}
+                    className="border border-slate-200 rounded-lg p-3.5 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900 truncate">{hb.label}</p>
+                      <p className="text-xs text-slate-500">
+                        {hb.cart.length} {t.itemsCount} · {hb.cashierName}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {onResumeHeldBill && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onResumeHeldBill(hb);
+                            setShowHeldModal(false);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer"
+                        >
+                          {t.resumeBillBtn}
+                        </button>
+                      )}
+                      {onDiscardHeldBill && (
+                        <button
+                          type="button"
+                          onClick={() => onDiscardHeldBill(hb.id)}
+                          className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold cursor-pointer"
+                        >
+                          {t.discardBillBtn}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

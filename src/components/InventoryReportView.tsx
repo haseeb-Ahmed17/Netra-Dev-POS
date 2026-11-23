@@ -6,6 +6,12 @@ import {
   getCategoryLabel,
   type TranslationStrings,
 } from '../i18n';
+import {
+  formatQuantity,
+  formatQuantityWithUnit,
+  getUnitLabel,
+  roundQuantity,
+} from '../lib/unitUtils';
 import type {
   AdjustmentType,
   InventoryAdjustment,
@@ -58,6 +64,8 @@ function getAdjustmentTypeLabel(
       return t.adjTypeLost;
     case 'Stock Count Correction':
       return t.adjTypeCorrection;
+    default:
+      return type;
   }
 }
 
@@ -98,10 +106,25 @@ export function InventoryReportView({
         : 0;
 
     const lowStockItems = [...products]
-      .filter((p) => p.stock <= 5)
+      .filter((p) => p.stock <= (p.minStock ?? 5))
       .sort((a, b) => a.stock - b.stock);
 
-    const adjustmentCounts: Record<AdjustmentType, { count: number; netQty: number }> = {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const soonDate = new Date();
+    soonDate.setDate(soonDate.getDate() + 30);
+    const soonStr = soonDate.toISOString().slice(0, 10);
+
+    const expiryAlerts = [...products]
+      .filter((p) => Boolean(p.expiryDate && p.expiryDate <= soonStr))
+      .map((p) => ({
+        product: p,
+        isExpired: Boolean(p.expiryDate && p.expiryDate < todayStr),
+      }))
+      .sort((a, b) =>
+        (a.product.expiryDate ?? '').localeCompare(b.product.expiryDate ?? '')
+      );
+
+    const adjustmentCounts: Record<string, { count: number; netQty: number }> = {
       Damaged: { count: 0, netQty: 0 },
       Expired: { count: 0, netQty: 0 },
       'Lost/Theft': { count: 0, netQty: 0 },
@@ -121,13 +144,14 @@ export function InventoryReportView({
     );
 
     return {
-      totalUnits,
+      totalUnits: roundQuantity(totalUnits),
       totalCostValue,
       totalRetailValue,
       potentialProfit,
       potentialMarginPct,
       valuationRows,
       lowStockItems,
+      expiryAlerts,
       adjustmentCounts,
       recentAdjustments,
     };
@@ -148,6 +172,7 @@ export function InventoryReportView({
         t.skuLabel,
         t.barcodeLabel,
         t.categoryLabel,
+        t.sellingUnitLabel,
         t.stockCol,
         t.costCol,
         t.priceCol,
@@ -160,7 +185,8 @@ export function InventoryReportView({
         row.product.sku,
         row.product.barcode || '',
         getCategoryLabel(row.product.category, t),
-        row.product.stock,
+        getUnitLabel(row.product.sellingUnit, lang),
+        formatQuantity(row.product.stock),
         row.product.cost,
         row.product.price,
         Math.round(row.costValue),
@@ -252,7 +278,7 @@ export function InventoryReportView({
         <div className="bg-white border border-slate-200 rounded-xl p-5">
           <p className="text-xs font-medium text-slate-500">{t.totalUnitsInStockLabel}</p>
           <p className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-2">
-            {report.totalUnits.toLocaleString('en-PK')}
+            {formatQuantity(report.totalUnits)}
           </p>
           <p className="text-xs text-slate-500 mt-2 tabular-nums">
             {products.length} {t.productCol}
@@ -328,8 +354,8 @@ export function InventoryReportView({
                       <td className="py-2.5 px-4 text-xs text-slate-600">
                         {getCategoryLabel(p.category, t)}
                       </td>
-                      <td className="py-2.5 px-4 text-end font-mono font-bold text-slate-900 tabular-nums">
-                        {p.stock}
+                      <td className="py-2.5 px-4 text-end font-mono font-bold text-slate-900 tabular-nums whitespace-nowrap">
+                        {formatQuantityWithUnit(p.stock, p.sellingUnit, lang)}
                       </td>
                       <td className="py-2.5 px-5 text-end">
                         <span
@@ -437,6 +463,62 @@ export function InventoryReportView({
         </section>
       </div>
 
+      {/* Expired & Near-Expiry Products */}
+      {report.expiryAlerts.length > 0 && (
+        <section className="bg-white border border-amber-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 bg-amber-50/60 border-b border-amber-200 flex items-center justify-between gap-3">
+            <h2 className="text-base font-bold text-amber-950">
+              {t.expiryDateLabel} ({t.expiredBadge} / {t.expiringSoonBadge})
+            </h2>
+            <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-amber-700 text-white tabular-nums">
+              {report.expiryAlerts.length}
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="py-2.5 px-5 text-start font-medium">{t.productCol}</th>
+                  <th className="py-2.5 px-4 text-start font-medium">{t.batchNumberLabel}</th>
+                  <th className="py-2.5 px-4 text-start font-medium">{t.expiryDateLabel}</th>
+                  <th className="py-2.5 px-4 text-end font-medium">{t.stockCol}</th>
+                  <th className="py-2.5 px-5 text-end font-medium">{t.statusCol}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {report.expiryAlerts.map(({ product: p, isExpired }) => (
+                  <tr key={p.id} className="hover:bg-slate-50">
+                    <td className="py-2.5 px-5 font-medium text-slate-900">
+                      {lang === 'ur' ? p.nameUr : p.nameEn}
+                    </td>
+                    <td className="py-2.5 px-4 font-mono text-xs text-slate-600">
+                      {p.batchNumber || '—'}
+                    </td>
+                    <td className="py-2.5 px-4 font-mono text-xs text-slate-700 tabular-nums">
+                      {p.expiryDate}
+                    </td>
+                    <td className="py-2.5 px-4 text-end font-mono tabular-nums">
+                      {formatQuantityWithUnit(p.stock, p.sellingUnit, lang)}
+                    </td>
+                    <td className="py-2.5 px-5 text-end">
+                      <span
+                        className={`inline-block text-xs font-semibold px-2 py-0.5 rounded ${
+                          isExpired
+                            ? 'bg-red-50 text-red-700 border border-red-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        {isExpired ? t.expiredBadge : t.expiringSoonBadge}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {/* Full Stock Valuation Table */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200">
@@ -471,8 +553,8 @@ export function InventoryReportView({
                   <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
                     {getCategoryLabel(row.product.category, t)}
                   </td>
-                  <td className="py-3 px-4 text-end font-mono font-semibold text-slate-900 tabular-nums">
-                    {row.product.stock}
+                  <td className="py-3 px-4 text-end font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
+                    {formatQuantityWithUnit(row.product.stock, row.product.sellingUnit, lang)}
                   </td>
                   <td className="py-3 px-4 text-end font-mono text-slate-700 tabular-nums whitespace-nowrap">
                     {formatCurrency(row.product.cost, lang)}

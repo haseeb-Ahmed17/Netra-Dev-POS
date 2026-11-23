@@ -590,6 +590,121 @@ export interface TranslationStrings {
   retryBtn: string;
   emptyDashboardTitle: string;
   emptyDashboardDesc: string;
+  sellingUnitLabel: string;
+  selectUnitPlaceholder: string;
+  sellingUnitRequiredError: string;
+  customQtyHint: string;
+  pinEncryptedBadge: string;
+  pinOptionalEditHint: string;
+  switchRequiresPinNote: string;
+  rbacUnauthorizedError: string;
+  barcodeScanNotFound: string;
+  barcodeScanOutOfStock: string;
+  barcodeScanAdded: string;
+  inCartLabel: string;
+  dismissLabel: string;
+
+  // Commercial Suite Navigation & Shared Labels (Phases 1-15)
+  navShifts: string;
+  navBranches: string;
+  navAuditLogs: string;
+  paymentBankTransfer: string;
+
+  // Phase 1: Camera Barcode & QR Scanner
+  scannerModeHid: string;
+  scannerModeCameraBarcode: string;
+  scannerModeQr: string;
+  startCameraBtn: string;
+  stopCameraBtn: string;
+  switchCameraBtn: string;
+  cameraPermissionDenied: string;
+  cameraUnavailableMsg: string;
+  cameraScanningHint: string;
+  qrLabelTitle: string;
+  labelFormatBarcode: string;
+  labelFormatQr: string;
+  labelFormatBoth: string;
+
+  // Phase 2: Cash Drawer & Shifts
+  shiftsTitle: string;
+  shiftsSubtitle: string;
+  openShiftBtn: string;
+  closeShiftBtn: string;
+  openingCashLabel: string;
+  expectedCashLabel: string;
+  actualCashCountLabel: string;
+  cashShortageOverLabel: string;
+  cashInBtn: string;
+  cashOutBtn: string;
+  shiftOpenStatus: string;
+  shiftClosedStatus: string;
+  shiftCloseAdminRequired: string;
+  shiftHistoryTitle: string;
+  cashDrawerMovementsTitle: string;
+  noActiveShiftMsg: string;
+  printShiftSlipBtn: string;
+
+  // Phase 3: Advanced Inventory, Batch/Expiry, CSV & Bulk Edit
+  brandLabel: string;
+  variantLabel: string;
+  wholesalePriceLabel: string;
+  minStockLabel: string;
+  reorderLevelLabel: string;
+  batchNumberLabel: string;
+  expiryDateLabel: string;
+  expiredBadge: string;
+  expiringSoonBadge: string;
+  bulkEditBtn: string;
+  importCsvBtn: string;
+  poStatusLabel: string;
+  supplierReturnBtn: string;
+  supplierPaymentBtn: string;
+  supplierStatementBtn: string;
+
+  // Phase 5: Held Bills, Split Payment, Discounts, Cancel, Customer Display
+  holdBillBtn: string;
+  heldBillsBtn: string;
+  resumeBillBtn: string;
+  discardBillBtn: string;
+  splitPaymentBtn: string;
+  addPaymentSplitBtn: string;
+  remainingToPayLabel: string;
+  discountPercentMode: string;
+  discountFixedMode: string;
+  cancelOrderBtn: string;
+  cancelOrderReasonLabel: string;
+  statusCancelledLabel: string;
+  reprintBadge: string;
+  openCustomerDisplayBtn: string;
+  customerDisplayTitle: string;
+
+  // Phase 6-7: Credit Limit & WhatsApp
+  creditLimitLabel: string;
+  creditLimitExceededMsg: string;
+  customerDiscountLabel: string;
+  whatsappOptInLabel: string;
+  printStatementBtn: string;
+  sendWhatsappReceiptBtn: string;
+  whatsappManualFallbackNotice: string;
+  whatsappLogsTitle: string;
+  timeframeYesterday: string;
+
+  // Phase 9-12 & 14-15: Recurring Expenses, Branches, Offline History, Audit & Backup
+  recurringExpenseLabel: string;
+  deductFromDrawerLabel: string;
+  approvalStatusLabel: string;
+  branchesTitle: string;
+  branchesSubtitle: string;
+  addBranchBtn: string;
+  stockTransferBtn: string;
+  auditLogsTitle: string;
+  auditLogsSubtitle: string;
+  downloadBackupBtn: string;
+  restoreBackupBtn: string;
+  syncHistoryTitle: string;
+  employeeActivityTitle: string;
+  branchLimitReachedMsg: string;
+  employeeLimitReachedMsg: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -1172,6 +1287,114 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     retryBtn: 'Retry',
     emptyDashboardTitle: 'No sales recorded yet',
     emptyDashboardDesc: 'Complete your first sale on the POS Billing counter to populate live charts and metrics.',
+    sellingUnitLabel: 'Selling Unit',
+    selectUnitPlaceholder: 'Select unit (kg, litre, piece...)',
+    sellingUnitRequiredError: 'Please select a selling unit for this product.',
+    customQtyHint: 'Enter any exact or decimal quantity (e.g. 0.25, 1.5, 3.75)',
+    pinEncryptedBadge: 'PIN Encrypted (PBKDF2/Bcrypt)',
+    pinOptionalEditHint: 'Leave blank to keep existing PIN',
+    switchRequiresPinNote: 'Switching staff requires verifying their 4-digit PIN.',
+    rbacUnauthorizedError: 'Your current staff role is not permitted to perform this action.',
+    barcodeScanNotFound: 'No product found for barcode',
+    barcodeScanOutOfStock: 'Out of stock for scanned product',
+    barcodeScanAdded: 'Scanned',
+    inCartLabel: 'in cart',
+    dismissLabel: 'Dismiss',
+
+    navShifts: 'Cash & Shifts',
+    navBranches: 'Branches & Transfers',
+    navAuditLogs: 'Audit & Backups',
+    paymentBankTransfer: 'Bank Transfer',
+
+    scannerModeHid: 'HID Scanner',
+    scannerModeCameraBarcode: 'Camera Barcode',
+    scannerModeQr: 'QR Scanner',
+    startCameraBtn: 'Start Camera',
+    stopCameraBtn: 'Stop Camera',
+    switchCameraBtn: 'Switch Camera',
+    cameraPermissionDenied: 'Camera permission was denied. Allow camera access in browser settings and retry.',
+    cameraUnavailableMsg: 'No camera device detected or camera is in use by another app.',
+    cameraScanningHint: 'Hold barcode or product QR code steady inside the frame.',
+    qrLabelTitle: 'Barcode & QR Label',
+    labelFormatBarcode: 'Barcode Only',
+    labelFormatQr: 'QR Code Only',
+    labelFormatBoth: 'Barcode + QR',
+
+    shiftsTitle: 'Cash Drawer & Cashier Shifts',
+    shiftsSubtitle: 'Open registers with starting float, track drawer cash in/out, and reconcile shift closing totals',
+    openShiftBtn: 'Open Shift',
+    closeShiftBtn: 'Close Shift',
+    openingCashLabel: 'Opening Cash Float (Rs.)',
+    expectedCashLabel: 'Expected Drawer Cash',
+    actualCashCountLabel: 'Actual Counted Cash (Rs.)',
+    cashShortageOverLabel: 'Shortage / Overage',
+    cashInBtn: 'Cash In (+)',
+    cashOutBtn: 'Cash Out (-)',
+    shiftOpenStatus: 'Shift Open',
+    shiftClosedStatus: 'Closed',
+    shiftCloseAdminRequired: 'Only an Admin or Manager can finalize and close a register shift.',
+    shiftHistoryTitle: 'Shift History & Cashier Performance',
+    cashDrawerMovementsTitle: 'Drawer Movements Ledger',
+    noActiveShiftMsg: 'No active register shift is open. Open a shift to track drawer movements.',
+    printShiftSlipBtn: 'Print Shift Slip',
+
+    brandLabel: 'Brand',
+    variantLabel: 'Variant / Size',
+    wholesalePriceLabel: 'Wholesale Price (Rs.)',
+    minStockLabel: 'Min Stock Alert',
+    reorderLevelLabel: 'Reorder Level',
+    batchNumberLabel: 'Batch #',
+    expiryDateLabel: 'Expiry Date',
+    expiredBadge: 'Expired',
+    expiringSoonBadge: 'Near Expiry',
+    bulkEditBtn: 'Bulk Edit',
+    importCsvBtn: 'Import CSV',
+    poStatusLabel: 'PO Status',
+    supplierReturnBtn: 'Purchase Return',
+    supplierPaymentBtn: 'Supplier Payment',
+    supplierStatementBtn: 'Statement',
+
+    holdBillBtn: 'Hold Bill',
+    heldBillsBtn: 'Held Bills',
+    resumeBillBtn: 'Resume',
+    discardBillBtn: 'Discard',
+    splitPaymentBtn: 'Split Payment',
+    addPaymentSplitBtn: 'Add Payment Part',
+    remainingToPayLabel: 'Remaining Balance',
+    discountPercentMode: '% Percent',
+    discountFixedMode: 'Rs. Fixed',
+    cancelOrderBtn: 'Cancel Order',
+    cancelOrderReasonLabel: 'Cancellation Reason',
+    statusCancelledLabel: 'Cancelled',
+    reprintBadge: 'REPRINT',
+    openCustomerDisplayBtn: 'Customer Display',
+    customerDisplayTitle: 'Customer Facing Display',
+
+    creditLimitLabel: 'Credit Limit (Rs.)',
+    creditLimitExceededMsg: 'This credit sale exceeds the customer credit limit.',
+    customerDiscountLabel: 'Customer Discount %',
+    whatsappOptInLabel: 'Customer opted in for WhatsApp receipts & reminders',
+    printStatementBtn: 'Print Statement',
+    sendWhatsappReceiptBtn: 'Send via WhatsApp',
+    whatsappManualFallbackNotice: 'WhatsApp Cloud API credentials are not configured on the server; opening manual WhatsApp share fallback.',
+    whatsappLogsTitle: 'WhatsApp Delivery Log',
+    timeframeYesterday: 'Yesterday',
+
+    recurringExpenseLabel: 'Recurring Expense',
+    deductFromDrawerLabel: 'Deduct from active cash drawer',
+    approvalStatusLabel: 'Approval',
+    branchesTitle: 'Multi-Branch & Stock Transfers',
+    branchesSubtitle: 'Manage shop locations, branch-wise stock, and inter-branch transfer approvals',
+    addBranchBtn: 'Add Branch',
+    stockTransferBtn: 'New Stock Transfer',
+    auditLogsTitle: 'Audit Logs, Sync & Backups',
+    auditLogsSubtitle: 'Inspect security & price/stock audit trails, employee activity, offline sync history, and workspace backups',
+    downloadBackupBtn: 'Download Full JSON Backup',
+    restoreBackupBtn: 'Restore From Backup',
+    syncHistoryTitle: 'Offline Sync History',
+    employeeActivityTitle: 'Employee Login & Switch Activity',
+    branchLimitReachedMsg: 'Branch limit reached for your current SaaS subscription plan.',
+    employeeLimitReachedMsg: 'Employee limit reached for your current SaaS subscription plan.',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -1752,6 +1975,114 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     retryBtn: 'دوبارہ کوشش کریں',
     emptyDashboardTitle: 'ابھی کوئی سیل ریکارڈ نہیں ہوئی',
     emptyDashboardDesc: 'لائیو چارٹس اور تجزیات دیکھنے کے لیے بلنگ کاؤنٹر پر پہلی سیل مکمل کریں۔',
+    sellingUnitLabel: 'فروخت کی اکائی (یونٹ)',
+    selectUnitPlaceholder: 'اکائی منتخب کریں (کلو، لیٹر، پیس...)',
+    sellingUnitRequiredError: 'براہ کرم اس پروڈکٹ کی فروخت کی اکائی منتخب کریں۔',
+    customQtyHint: 'درست یا اعشاری مقدار درج کریں (مثلاً 0.25، 1.5، 3.75)',
+    pinEncryptedBadge: 'خفیہ پن محفوظ (ہیشڈ)',
+    pinOptionalEditHint: 'موجودہ پن برقرار رکھنے کے لیے خالی چھوڑ دیں',
+    switchRequiresPinNote: 'اسٹاف تبدیل کرنے کے لیے 4 ہندسوں کا پن درج کرنا لازمی ہے۔',
+    rbacUnauthorizedError: 'آپ کے موجودہ اسٹاف رول کو اس عمل کی اجازت نہیں ہے۔',
+    barcodeScanNotFound: 'اس بارکوڈ کی کوئی پروڈکٹ نہیں ملی',
+    barcodeScanOutOfStock: 'اسکین شدہ پروڈکٹ کا اسٹاک ختم ہو چکا ہے',
+    barcodeScanAdded: 'اسکین شدہ',
+    inCartLabel: 'کارٹ میں',
+    dismissLabel: 'بند کریں',
+
+    navShifts: 'کیش ڈراور و شفٹس',
+    navBranches: 'برانچز و ٹرانسفر',
+    navAuditLogs: 'آڈٹ و بیک اپ',
+    paymentBankTransfer: 'بینک ٹرانسفر',
+
+    scannerModeHid: 'HID اسکینر',
+    scannerModeCameraBarcode: 'کیمرہ بارکوڈ',
+    scannerModeQr: 'QR اسکینر',
+    startCameraBtn: 'کیمرہ شروع کریں',
+    stopCameraBtn: 'کیمرہ بند کریں',
+    switchCameraBtn: 'کیمرہ تبدیل کریں',
+    cameraPermissionDenied: 'کیمرہ کی اجازت نہیں ملی۔ براؤزر سیٹنگز میں اجازت دے کر دوبارہ کوشش کریں۔',
+    cameraUnavailableMsg: 'کوئی کیمرہ دستیاب نہیں یا کسی اور ایپ میں استعمال ہو رہا ہے۔',
+    cameraScanningHint: 'بارکوڈ یا QR کوڈ کو فریم کے اندر سیدھا رکھیں۔',
+    qrLabelTitle: 'بارکوڈ اور QR لیبل',
+    labelFormatBarcode: 'صرف بارکوڈ',
+    labelFormatQr: 'صرف QR کوڈ',
+    labelFormatBoth: 'بارکوڈ + QR',
+
+    shiftsTitle: 'کیش ڈراور اور کیشیئر شفٹس',
+    shiftsSubtitle: 'ابتدائی کیش کے ساتھ شفٹ کھولیں، کیش ان/آؤٹ درج کریں اور شفٹ کلوزنگ کا حساب کریں',
+    openShiftBtn: 'شفٹ کھولیں',
+    closeShiftBtn: 'شفٹ بند کریں',
+    openingCashLabel: 'ابتدائی کیش (روپے)',
+    expectedCashLabel: 'متوقع ڈراور کیش',
+    actualCashCountLabel: 'گن کر موجودہ کیش (روپے)',
+    cashShortageOverLabel: 'کمی / بیشی',
+    cashInBtn: 'کیش جمع (+)',
+    cashOutBtn: 'کیش نکلوائی (-)',
+    shiftOpenStatus: 'شفٹ کھلی ہے',
+    shiftClosedStatus: 'بند',
+    shiftCloseAdminRequired: 'شفٹ بند کرنے کے لیے ایڈمن یا مینیجر کا اختیار ضروری ہے۔',
+    shiftHistoryTitle: 'شفٹ ہسٹری اور کیشیئر کارکردگی',
+    cashDrawerMovementsTitle: 'کیش ڈراور موومنٹ ریکارڈ',
+    noActiveShiftMsg: 'کوئی فعال شفٹ کھلی نہیں ہے۔ کیش ڈراور ٹریک کرنے کے لیے شفٹ کھولیں۔',
+    printShiftSlipBtn: 'شفٹ سلپ پرنٹ کریں',
+
+    brandLabel: 'برانڈ',
+    variantLabel: 'قسم / سائز',
+    wholesalePriceLabel: 'ہول سیل قیمت (روپے)',
+    minStockLabel: 'کم از کم اسٹاک الرٹ',
+    reorderLevelLabel: 'ری آرڈر لیول',
+    batchNumberLabel: 'بیچ نمبر',
+    expiryDateLabel: 'ایکسپائری تاریخ',
+    expiredBadge: 'میعاد ختم',
+    expiringSoonBadge: 'جلد ختم',
+    bulkEditBtn: 'بلک ایڈٹ',
+    importCsvBtn: 'CSV امپورٹ',
+    poStatusLabel: 'آرڈر اسٹیٹس',
+    supplierReturnBtn: 'خریداری واپسی',
+    supplierPaymentBtn: 'سپلائر ادائیگی',
+    supplierStatementBtn: 'اسٹیٹمنٹ',
+
+    holdBillBtn: 'بل ہولڈ کریں',
+    heldBillsBtn: 'ہولڈ بلز',
+    resumeBillBtn: 'جاری رکھیں',
+    discardBillBtn: 'ختم کریں',
+    splitPaymentBtn: 'مخلوط ادائیگی',
+    addPaymentSplitBtn: 'ادائیگی حصہ شامل کریں',
+    remainingToPayLabel: 'باقی رقم',
+    discountPercentMode: '% فیصد',
+    discountFixedMode: 'روپے مقررہ',
+    cancelOrderBtn: 'آرڈر منسوخ کریں',
+    cancelOrderReasonLabel: 'منسوخی کی وجہ',
+    statusCancelledLabel: 'منسوخ شدہ',
+    reprintBadge: 'دوبارہ پرنٹ',
+    openCustomerDisplayBtn: 'کسٹمر ڈسپلے',
+    customerDisplayTitle: 'کسٹمر اسکرین',
+
+    creditLimitLabel: 'ادھار کی حد (روپے)',
+    creditLimitExceededMsg: 'یہ بل گاہک کی مقرر کردہ ادھار کی حد سے تجاوز کر رہا ہے۔',
+    customerDiscountLabel: 'گاہک رعایت %',
+    whatsappOptInLabel: 'گاہک نے واٹس ایپ رسید اور یاد دہانی کی اجازت دی ہے',
+    printStatementBtn: 'اسٹیٹمنٹ پرنٹ کریں',
+    sendWhatsappReceiptBtn: 'واٹس ایپ پر بھیجیں',
+    whatsappManualFallbackNotice: 'سرور پر واٹس ایپ Cloud API کی تفصیلات موجود نہیں؛ دستی واٹس ایپ شیئر لنک کھولا جا رہا ہے۔',
+    whatsappLogsTitle: 'واٹس ایپ پیغامات کا ریکارڈ',
+    timeframeYesterday: 'کل',
+
+    recurringExpenseLabel: 'باقاعدہ خرچہ (Recurring)',
+    deductFromDrawerLabel: 'فعال کیش ڈراور سے منہا کریں',
+    approvalStatusLabel: 'منظوری',
+    branchesTitle: 'ملٹی برانچ اور اسٹاک ٹرانسفر',
+    branchesSubtitle: 'مختلف شاخوں، برانچ اسٹاک اور اسٹاک ٹرانسفر کی منظوریوں کا انتظام کریں',
+    addBranchBtn: 'نئی برانچ شامل کریں',
+    stockTransferBtn: 'نیا اسٹاک ٹرانسفر',
+    auditLogsTitle: 'آڈٹ لاگز، سنک اور بیک اپ',
+    auditLogsSubtitle: 'قیمت و اسٹاک تبدیلیوں، اسٹاف سرگرمی، آف لائن سنک اور مکمل بیک اپ کا ریکارڈ',
+    downloadBackupBtn: 'مکمل JSON بیک اپ ڈاؤن لوڈ',
+    restoreBackupBtn: 'بیک اپ سے بحال کریں',
+    syncHistoryTitle: 'آف لائن سنک ہسٹری',
+    employeeActivityTitle: 'اسٹاف لاگ ان اور تبدیلی ریکارڈ',
+    branchLimitReachedMsg: 'آپ کے موجودہ پلان میں برانچز کی حد مکمل ہو چکی ہے۔',
+    employeeLimitReachedMsg: 'آپ کے موجودہ پلان میں اسٹاف ممبران کی حد مکمل ہو چکی ہے۔',
   },
 };
 
@@ -1786,6 +2117,8 @@ export function getPaymentLabel(method: PaymentMethod, t: TranslationStrings): s
       return t.paymentEasyPaisa;
     case 'card':
       return t.paymentCard;
+    case 'bank_transfer':
+      return t.paymentBankTransfer;
     case 'mobile':
       return t.paymentMobile;
     case 'udhaar':

@@ -6,6 +6,7 @@ import {
   Calendar,
   MessageCircle,
   Phone,
+  Printer,
   Search,
   UserPlus,
   X,
@@ -30,6 +31,9 @@ interface UdhaarViewProps {
     openingBalance: number;
     reminderSchedule: ReminderSchedule;
     dueDate?: string;
+    creditLimit?: number;
+    discountPercent?: number;
+    whatsappOptIn?: boolean;
   }) => UdhaarCustomer;
   onUpdateCustomer: (updated: UdhaarCustomer) => void;
   onAddEntry: (payload: {
@@ -38,6 +42,10 @@ interface UdhaarViewProps {
     amount: number;
     note: string;
   }) => void;
+  onSendWhatsAppReminder?: (
+    customer: UdhaarCustomer,
+    balance: number
+  ) => Promise<{ manualUrl?: string; statusText?: string }>;
   lang: Language;
   t: TranslationStrings;
 }
@@ -124,6 +132,7 @@ export function UdhaarView({
   onAddCustomer,
   onUpdateCustomer,
   onAddEntry,
+  onSendWhatsAppReminder,
   lang,
   t,
 }: UdhaarViewProps) {
@@ -138,6 +147,9 @@ export function UdhaarView({
   const [newPhone, setNewPhone] = useState('');
   const [newNotes, setNewNotes] = useState('');
   const [newOpeningBalance, setNewOpeningBalance] = useState('');
+  const [newCreditLimit, setNewCreditLimit] = useState('');
+  const [newDiscountPercent, setNewDiscountPercent] = useState('');
+  const [newWhatsappOptIn, setNewWhatsappOptIn] = useState(true);
   const [newSchedule, setNewSchedule] = useState<ReminderSchedule>('1_week');
   const [newDueDate, setNewDueDate] = useState<string>(() =>
     calculateDueDateFromSchedule('1_week')
@@ -147,8 +159,19 @@ export function UdhaarView({
   const [editingReminderCustomer, setEditingReminderCustomer] =
     useState<UdhaarCustomer | null>(null);
   const [editPhone, setEditPhone] = useState('');
+  const [editCreditLimit, setEditCreditLimit] = useState('');
+  const [editDiscountPercent, setEditDiscountPercent] = useState('');
+  const [editWhatsappOptIn, setEditWhatsappOptIn] = useState(true);
   const [editSchedule, setEditSchedule] = useState<ReminderSchedule>('none');
   const [editDueDate, setEditDueDate] = useState('');
+
+  // WhatsApp feedback & Printable Statement modal
+  const [waNotice, setWaNotice] = useState<{
+    text: string;
+    manualUrl?: string;
+  } | null>(null);
+  const [sendingWaId, setSendingWaId] = useState<string | null>(null);
+  const [showStatementModal, setShowStatementModal] = useState(false);
 
   // Quick Entry Form state (credit or payment)
   const [entryFormType, setEntryFormType] = useState<UdhaarEntryType | null>(null);
@@ -283,6 +306,9 @@ export function UdhaarView({
       openingBalance: Math.max(0, Number(newOpeningBalance) || 0),
       reminderSchedule: newSchedule,
       dueDate: newSchedule === 'none' ? undefined : newDueDate || undefined,
+      creditLimit: Math.max(0, Number(newCreditLimit) || 0) || undefined,
+      discountPercent: Math.min(100, Math.max(0, Number(newDiscountPercent) || 0)) || undefined,
+      whatsappOptIn: newWhatsappOptIn,
     });
 
     setSelectedCustomerId(created.id);
@@ -290,6 +316,9 @@ export function UdhaarView({
     setNewPhone('');
     setNewNotes('');
     setNewOpeningBalance('');
+    setNewCreditLimit('');
+    setNewDiscountPercent('');
+    setNewWhatsappOptIn(true);
     setNewSchedule('1_week');
     setNewDueDate(calculateDueDateFromSchedule('1_week'));
     setShowAddCustomerModal(false);
@@ -298,6 +327,11 @@ export function UdhaarView({
   const openEditReminder = (customer: UdhaarCustomer) => {
     setEditingReminderCustomer(customer);
     setEditPhone(customer.phone);
+    setEditCreditLimit(customer.creditLimit ? String(customer.creditLimit) : '');
+    setEditDiscountPercent(
+      customer.discountPercent ? String(customer.discountPercent) : ''
+    );
+    setEditWhatsappOptIn(customer.whatsappOptIn !== false);
     const sched = customer.reminderSchedule ?? (customer.dueDate ? 'custom' : 'none');
     setEditSchedule(sched);
     setEditDueDate(customer.dueDate || '');
@@ -309,10 +343,38 @@ export function UdhaarView({
     onUpdateCustomer({
       ...editingReminderCustomer,
       phone: editPhone.trim(),
+      creditLimit: Math.max(0, Number(editCreditLimit) || 0) || undefined,
+      discountPercent:
+        Math.min(100, Math.max(0, Number(editDiscountPercent) || 0)) || undefined,
+      whatsappOptIn: editWhatsappOptIn,
       reminderSchedule: editSchedule,
       dueDate: editSchedule === 'none' ? undefined : editDueDate || undefined,
     });
     setEditingReminderCustomer(null);
+  };
+
+  const handleSendReminder = async (customer: UdhaarCustomer, amount: number) => {
+    const fallbackUrl = buildUdhaarWhatsAppUrl({
+      storeName,
+      customerName: customer.name,
+      phone: customer.phone,
+      amount,
+      dueDate: customer.dueDate,
+    });
+    if (!onSendWhatsAppReminder) {
+      setWaNotice({ text: t.whatsappManualFallbackNotice, manualUrl: fallbackUrl });
+      return;
+    }
+    setSendingWaId(customer.id);
+    try {
+      const result = await onSendWhatsAppReminder(customer, amount);
+      setWaNotice({
+        text: result.statusText || t.whatsappManualFallbackNotice,
+        manualUrl: result.manualUrl,
+      });
+    } finally {
+      setSendingWaId(null);
+    }
   };
 
   const handleSubmitEntry = (e: React.FormEvent) => {
@@ -365,6 +427,32 @@ export function UdhaarView({
           <span>{t.addCustomerBtn}</span>
         </button>
       </div>
+
+      {waNotice && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-emerald-950">
+          <span>{waNotice.text}</span>
+          <div className="flex items-center gap-2 shrink-0">
+            {waNotice.manualUrl && (
+              <a
+                href={waNotice.manualUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap"
+              >
+                <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>{t.sendWhatsappBtn}</span>
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => setWaNotice(null)}
+              className="p-1 text-emerald-800 hover:text-emerald-950 cursor-pointer"
+            >
+              <X className="w-4 h-4" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 4-Column Summary Strip */}
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -460,15 +548,27 @@ export function UdhaarView({
                       {formatCurrency(balance, lang)}
                     </span>
 
-                    <a
-                      href={waUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap transition-colors min-h-[36px]"
-                    >
-                      <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      <span>{t.sendWhatsappBtn}</span>
-                    </a>
+                    {onSendWhatsAppReminder ? (
+                      <button
+                        type="button"
+                        disabled={sendingWaId === customer.id}
+                        onClick={() => void handleSendReminder(customer, balance)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg whitespace-nowrap transition-colors min-h-[36px] cursor-pointer"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>{t.sendWhatsappBtn}</span>
+                      </button>
+                    ) : (
+                      <a
+                        href={waUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap transition-colors min-h-[36px]"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>{t.sendWhatsappBtn}</span>
+                      </a>
+                    )}
                   </div>
                 </div>
               );
@@ -550,6 +650,17 @@ export function UdhaarView({
                           >
                             {customer.name}
                           </p>
+                          {(customer.creditLimit ?? 0) > 0 &&
+                            cleanBalance > (customer.creditLimit ?? 0) && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                                {t.creditLimitExceededMsg.split(' ')[0]} Limit
+                              </span>
+                            )}
+                          {(customer.discountPercent ?? 0) > 0 && (
+                            <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-teal-100 text-teal-800">
+                              -{customer.discountPercent}%
+                            </span>
+                          )}
                           {isDueOrOverdue && (
                             <span
                               className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
@@ -663,21 +774,47 @@ export function UdhaarView({
                     <span>{t.editReminderBtn}</span>
                   </button>
 
-                  <a
-                    href={buildUdhaarWhatsAppUrl({
-                      storeName,
-                      customerName: activeCustomer.name,
-                      phone: activeCustomer.phone,
-                      amount: Math.max(0, activeSummary.balance),
-                      dueDate: activeCustomer.dueDate,
-                    })}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap min-h-[40px] transition-colors"
+                  <button
+                    type="button"
+                    onClick={() => setShowStatementModal(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap min-h-[40px] transition-colors cursor-pointer"
                   >
-                    <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                    <span>{t.sendWhatsappBtn}</span>
-                  </a>
+                    <Printer className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{t.printStatementBtn}</span>
+                  </button>
+
+                  {onSendWhatsAppReminder ? (
+                    <button
+                      type="button"
+                      disabled={sendingWaId === activeCustomer.id}
+                      onClick={() =>
+                        void handleSendReminder(
+                          activeCustomer,
+                          Math.max(0, activeSummary.balance)
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg whitespace-nowrap min-h-[40px] transition-colors cursor-pointer"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      <span>{t.sendWhatsappBtn}</span>
+                    </button>
+                  ) : (
+                    <a
+                      href={buildUdhaarWhatsAppUrl({
+                        storeName,
+                        customerName: activeCustomer.name,
+                        phone: activeCustomer.phone,
+                        amount: Math.max(0, activeSummary.balance),
+                        dueDate: activeCustomer.dueDate,
+                      })}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap min-h-[40px] transition-colors"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      <span>{t.sendWhatsappBtn}</span>
+                    </a>
+                  )}
 
                   <button
                     type="button"
@@ -1111,6 +1248,55 @@ export function UdhaarView({
                 />
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="khata-cust-credit-limit"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.creditLimitLabel}
+                  </label>
+                  <input
+                    id="khata-cust-credit-limit"
+                    type="number"
+                    min={0}
+                    value={newCreditLimit}
+                    onChange={(e) => setNewCreditLimit(e.target.value)}
+                    placeholder="0"
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="khata-cust-discount"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.customerDiscountLabel}
+                  </label>
+                  <input
+                    id="khata-cust-discount"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="any"
+                    value={newDiscountPercent}
+                    onChange={(e) => setNewDiscountPercent(e.target.value)}
+                    placeholder="0"
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={newWhatsappOptIn}
+                  onChange={(e) => setNewWhatsappOptIn(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                />
+                <span>{t.whatsappOptInLabel}</span>
+              </label>
+
               <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -1226,6 +1412,55 @@ export function UdhaarView({
                 </div>
               )}
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="edit-khata-credit-limit"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.creditLimitLabel}
+                  </label>
+                  <input
+                    id="edit-khata-credit-limit"
+                    type="number"
+                    min={0}
+                    value={editCreditLimit}
+                    onChange={(e) => setEditCreditLimit(e.target.value)}
+                    placeholder="0"
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="edit-khata-discount"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.customerDiscountLabel}
+                  </label>
+                  <input
+                    id="edit-khata-discount"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="any"
+                    value={editDiscountPercent}
+                    onChange={(e) => setEditDiscountPercent(e.target.value)}
+                    placeholder="0"
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editWhatsappOptIn}
+                  onChange={(e) => setEditWhatsappOptIn(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                />
+                <span>{t.whatsappOptInLabel}</span>
+              </label>
+
               <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -1242,6 +1477,123 @@ export function UdhaarView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Printable Khata Statement Modal */}
+      {showStatementModal && activeCustomer && activeSummary && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="khata-statement-title"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-2xl overflow-hidden shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 no-print">
+              <h2 id="khata-statement-title" className="text-base font-bold text-slate-900">
+                {t.printStatementBtn} — {activeCustomer.name}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowStatementModal(false)}
+                aria-label={t.closeBtn}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+                <div>
+                  <p className="text-lg font-bold text-slate-900">{storeName}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{t.udhaarTitle}</p>
+                </div>
+                <div className="text-end text-xs">
+                  <p className="font-bold text-slate-900">{activeCustomer.name}</p>
+                  <p className="font-mono text-slate-600">{activeCustomer.phone || '—'}</p>
+                  {(activeCustomer.creditLimit ?? 0) > 0 && (
+                    <p className="font-mono text-slate-500">
+                      {t.creditLimitLabel}: {formatCurrency(activeCustomer.creditLimit ?? 0, lang)}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 text-xs">
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <p className="text-slate-500">{t.totalCreditGivenLabel}</p>
+                  <p className="font-mono font-bold text-slate-900 tabular-nums mt-1">
+                    {formatCurrency(activeSummary.totalCredit, lang)}
+                  </p>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <p className="text-slate-500">{t.totalPaymentsReceivedLabel}</p>
+                  <p className="font-mono font-bold text-emerald-700 tabular-nums mt-1">
+                    {formatCurrency(activeSummary.totalPayment, lang)}
+                  </p>
+                </div>
+                <div className="p-3 bg-amber-50 rounded-lg">
+                  <p className="text-amber-800">{t.remainingBalanceLabel}</p>
+                  <p className="font-mono font-bold text-amber-900 tabular-nums mt-1">
+                    {formatCurrency(Math.max(0, activeSummary.balance), lang)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                    <tr>
+                      <th className="py-2 px-3 text-start">{t.entryDateCol}</th>
+                      <th className="py-2 px-3 text-start">{t.entryTypeCol}</th>
+                      <th className="py-2 px-3 text-start">{t.entryNoteCol}</th>
+                      <th className="py-2 px-3 text-end">{t.amountCol}</th>
+                      <th className="py-2 px-3 text-end">{t.balanceCol}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {activeLedgerRows.slice(0, 30).map((row) => (
+                      <tr key={row.id}>
+                        <td className="py-2 px-3 font-mono text-slate-600 whitespace-nowrap">
+                          {formatDateTime(row.createdAt)}
+                        </td>
+                        <td className="py-2 px-3">
+                          {row.type === 'credit' ? t.typeCredit : t.typePayment}
+                        </td>
+                        <td className="py-2 px-3 text-slate-700">{row.note}</td>
+                        <td className="py-2 px-3 text-end font-mono tabular-nums font-semibold">
+                          {row.type === 'credit' ? '+' : '-'}
+                          {formatCurrency(row.amount, lang)}
+                        </td>
+                        <td className="py-2 px-3 text-end font-mono tabular-nums">
+                          {formatCurrency(Math.max(0, row.runningBalance), lang)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 no-print">
+                <button
+                  type="button"
+                  onClick={() => setShowStatementModal(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg cursor-pointer"
+                >
+                  {t.closeBtn}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>{t.printStatementBtn}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

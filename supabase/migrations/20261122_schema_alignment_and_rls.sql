@@ -2,19 +2,23 @@
 -- Khaas Retail POS — Production-Safe Schema Alignment & RLS Hardening Migration
 -- Target: Supabase PostgreSQL (review & run manually in Supabase SQL Editor)
 --
--- Safety guarantees:
---   * Idempotent & additive: safe to run multiple times; never drops tables,
---     never drops columns, and never deletes or resets business records.
---   * Preserves all existing valid tenant-scoped RLS policies (`auth.uid()` +
---     `user_id` ownership checks), RESTRICTIVE policies, and service_role policies.
---   * Preserves and warns on any unclassified/custom policies instead of
---     dropping them; only drops unambiguously open-access wildcard policies
---     (e.g., `USING (true)`, `1 = 1`, `auth.role() = 'authenticated'`,
---     `auth.uid() IS NOT NULL` with no `user_id` ownership check).
---   * Does not broaden `anon` or `authenticated` grants unnecessarily; revokes
---     `anon` privileges on tenant tables and ensures `purchase_items` grants.
---   * Preserves UUID PKs/FKs and upgrades `purchase_items.user_id` FK to
---     `ON DELETE RESTRICT` so deleting an auth user cannot wipe audit history.
+-- Security & Safety Guarantees:
+--   * Idempotent & additive: wrapped in an explicit transaction (`begin; ... commit;`),
+--     never drops tables, never drops columns, never deletes or resets rows.
+--   * Strict ownership verification: classifies a policy as VALID_TENANT_OWNERSHIP
+--     ONLY when its normalized expression matches an exact `auth.uid() = user_id`
+--     (or `user_id = auth.uid()`) ownership equality check — never via loose
+--     keyword matching.
+--   * Fail-closed on unclassified PERMISSIVE policies: preserves any unclassified
+--     PERMISSIVE policy and aborts with `RAISE EXCEPTION` before committing so
+--     no hidden OR-combined RLS bypass can remain after migration.
+--   * Independent per-command RLS verification: verifies `SELECT` (`USING`),
+--     `INSERT` (`WITH CHECK`), `UPDATE` (`USING` + `WITH CHECK`), and `DELETE`
+--     (`USING`) independently, confirming `user_id` exists on every target table.
+--   * Foreign key integrity: validates all non-NULL `purchase_items.user_id`
+--     values against `auth.users(id)` BEFORE adding/updating any FK, preserves
+--     existing valid `RESTRICT` / `NO ACTION` constraints, and safely upgrades
+--     `CASCADE` / `SET NULL` / `SET DEFAULT` constraints to `ON DELETE RESTRICT`.
 -- ============================================================================
 
 begin;
@@ -50,7 +54,7 @@ where p.vendor_id = v.id
   );
 
 -- ----------------------------------------------------------------------------
--- 2. Purchase Items: additive columns, safe FK (ON DELETE RESTRICT), & backfill
+-- 2. Purchase Items: additive columns, verified user_id backfill, & safe FK
 --    Verified live columns referenced: pi.id, pi.purchase_id, pi.quantity,
 --    pi.cost_price, pi.user_id, p.id, p.user_id.
 -- ----------------------------------------------------------------------------
@@ -61,40 +65,8 @@ alter table public.purchase_items add column if not exists unit_cost numeric not
 alter table public.purchase_items add column if not exists cost_price numeric not null default 0;
 alter table public.purchase_items add column if not exists line_total numeric not null default 0;
 
-do $$
-declare
-  v_fk_name text;
-  v_del_type "char";
-begin
-  select c.conname, c.confdeltype
-  into v_fk_name, v_del_type
-  from pg_constraint c
-  join pg_class t on t.oid = c.conrelid
-  join pg_namespace n on n.oid = t.relnamespace
-  join pg_attribute a on a.attrelid = t.oid and a.attnum = any(c.conkey)
-  where n.nspname = 'public'
-    and t.relname = 'purchase_items'
-    and c.contype = 'f'
-    and c.confrelid = 'auth.users'::regclass
-    and array_length(c.conkey, 1) = 1
-    and a.attname = 'user_id'
-  limit 1;
-
-  if v_fk_name is null then
-    alter table public.purchase_items
-      add constraint purchase_items_user_id_fkey
-      foreign key (user_id) references auth.users(id) on delete restrict;
-  elsif v_del_type = 'c' then
-    -- Upgrade CASCADE to RESTRICT to prevent accidental business audit loss
-    execute format('alter table public.purchase_items drop constraint %I', v_fk_name);
-    alter table public.purchase_items
-      add constraint purchase_items_user_id_fkey
-      foreign key (user_id) references auth.users(id) on delete restrict;
-  end if;
-end $$;
-
--- Backfill user_id strictly from matching parent purchase when pi.user_id is NULL
--- and parent p.user_id is populated. Never overwrites existing user_id values.
+-- Step 2a: Backfill user_id strictly from matching parent purchase when
+-- pi.user_id is NULL and p.user_id is populated. Never overwrites existing values.
 update public.purchase_items pi
 set user_id = p.user_id
 from public.purchases p
@@ -102,15 +74,27 @@ where pi.purchase_id = p.id
   and pi.user_id is null
   and p.user_id is not null;
 
--- Non-destructive integrity audit on purchase_items.user_id:
--- Reports any orphaned rows, remaining NULL user_id rows, or cross-tenant
--- mismatches against parent purchases without modifying or deleting rows.
+-- Step 2b: Validate existing non-NULL purchase_items.user_id references auth.users(id)
+-- and audit orphans/mismatches BEFORE adding or modifying the foreign key.
 do $$
 declare
+  v_invalid_auth_user_count bigint;
   v_null_user_count bigint;
   v_orphan_count bigint;
   v_mismatch_count bigint;
 begin
+  select count(*) into v_invalid_auth_user_count
+  from public.purchase_items pi
+  left join auth.users u on u.id = pi.user_id
+  where pi.user_id is not null
+    and u.id is null;
+
+  if v_invalid_auth_user_count > 0 then
+    raise exception
+      'Aborting migration: % row(s) in public.purchase_items have non-NULL user_id values that do not exist in auth.users(id). No records were deleted or modified. Inspect with: SELECT pi.id, pi.purchase_id, pi.user_id FROM public.purchase_items pi LEFT JOIN auth.users u ON u.id = pi.user_id WHERE pi.user_id IS NOT NULL AND u.id IS NULL;',
+      v_invalid_auth_user_count;
+  end if;
+
   select count(*) into v_null_user_count
   from public.purchase_items
   where user_id is null;
@@ -127,18 +111,80 @@ begin
     and p.user_id is not null
     and pi.user_id <> p.user_id;
 
-  if v_null_user_count > 0 or v_orphan_count > 0 then
-    raise notice 'purchase_items post-backfill audit: % row(s) have NULL user_id, % row(s) have no matching parent purchase. Preserved intact; isolated from tenant API access by RLS.',
-      v_null_user_count, v_orphan_count;
+  if v_mismatch_count > 0 then
+    raise exception
+      'Aborting migration: % row(s) in public.purchase_items have pi.user_id <> purchases.user_id. No records were deleted or modified. Resolve ownership mismatch manually before enforcing RLS.',
+      v_mismatch_count;
   end if;
 
-  if v_mismatch_count > 0 then
-    raise warning 'purchase_items integrity warning: % row(s) have pi.user_id <> purchases.user_id. Preserved intact for manual administrator review.',
-      v_mismatch_count;
+  if v_null_user_count > 0 or v_orphan_count > 0 then
+    raise notice 'purchase_items post-backfill audit: % row(s) have NULL user_id, % row(s) have no matching parent purchase. Preserved intact and isolated from tenant API access by RLS.',
+      v_null_user_count, v_orphan_count;
   end if;
 end $$;
 
--- Idempotent backfill for unit_cost, cost_price, and line_total
+-- Step 2c: Inspect existing purchase_items.user_id -> auth.users(id) FKs.
+-- Preserve valid RESTRICT ('r') / NO ACTION ('a') constraints.
+-- Safely replace CASCADE ('c'), SET NULL ('n'), or SET DEFAULT ('d') with RESTRICT.
+do $$
+declare
+  fk record;
+  v_has_valid_fk boolean := false;
+  v_new_fk_name text := 'purchase_items_user_id_fkey';
+begin
+  for fk in
+    select
+      c.conname,
+      c.confdeltype
+    from pg_constraint c
+    join pg_class t on t.oid = c.conrelid
+    join pg_namespace n on n.oid = t.relnamespace
+    join pg_attribute a on a.attrelid = t.oid and a.attnum = any(c.conkey)
+    where n.nspname = 'public'
+      and t.relname = 'purchase_items'
+      and c.contype = 'f'
+      and c.confrelid = 'auth.users'::regclass
+      and array_length(c.conkey, 1) = 1
+      and a.attname = 'user_id'
+    order by c.conname
+  loop
+    if fk.confdeltype in ('r', 'a') then
+      v_has_valid_fk := true;
+      raise notice 'Preserving valid FK "%" on public.purchase_items(user_id) with ON DELETE %',
+        fk.conname,
+        case fk.confdeltype when 'r' then 'RESTRICT' else 'NO ACTION' end;
+    elsif fk.confdeltype in ('c', 'n', 'd') then
+      raise notice 'Replacing unsafe FK "%" (ON DELETE %) on public.purchase_items(user_id) with ON DELETE RESTRICT',
+        fk.conname,
+        case fk.confdeltype
+          when 'c' then 'CASCADE'
+          when 'n' then 'SET NULL'
+          else 'SET DEFAULT'
+        end;
+      execute format('alter table public.purchase_items drop constraint %I', fk.conname);
+    end if;
+  end loop;
+
+  if not v_has_valid_fk then
+    if exists (
+      select 1 from pg_constraint c
+      join pg_class t on t.oid = c.conrelid
+      join pg_namespace n on n.oid = t.relnamespace
+      where n.nspname = 'public' and t.relname = 'purchase_items' and c.conname = v_new_fk_name
+    ) then
+      v_new_fk_name := 'purchase_items_user_id_restrict_fkey';
+    end if;
+
+    execute format(
+      'alter table public.purchase_items add constraint %I foreign key (user_id) references auth.users(id) on delete restrict',
+      v_new_fk_name
+    );
+    raise notice 'Added FK "%" on public.purchase_items(user_id) REFERENCES auth.users(id) ON DELETE RESTRICT',
+      v_new_fk_name;
+  end if;
+end $$;
+
+-- Step 2d: Idempotent backfill for unit_cost, cost_price, and line_total
 update public.purchase_items
 set
   unit_cost = case when unit_cost = 0 and coalesce(cost_price, 0) > 0 then cost_price else unit_cost end,
@@ -164,18 +210,23 @@ alter table public.inventory_adjustments add column if not exists previous_stock
 alter table public.inventory_adjustments add column if not exists new_stock integer not null default 0;
 
 -- ----------------------------------------------------------------------------
--- 4. RLS Policy Classification, Open-Bypass Cleanup & Tenant Enforcement
+-- 4. Strict RLS Policy Verification, Safe Enforcement & Fail-Closed Guard
 --    Covers: purchase_items, vendors, purchases, inventory_adjustments,
 --            customers, and expenses.
 --
---    Classification rules for PERMISSIVE non-service_role policies:
---      1. VALID_TENANT_OWNERSHIP: contains `auth.uid()` AND word `user_id`,
---         with no `OR` clauses, `IS NULL`, or `!=`/`<>` on `user_id` -> PRESERVED.
---      2. UNSAFE_OPEN_WILDCARD: explicitly `true`, `1 = 1`,
---         `auth.role() = 'authenticated'`, or `auth.uid() IS NOT NULL` with
---         no tenant check -> DROPPED and logged.
---      3. UNCLASSIFIED: any other expression (e.g. `OR`, `auth.jwt()`, custom
---         functions) -> PRESERVED and logged via RAISE WARNING for review.
+--    Performs:
+--      a) Verifies `user_id` column exists (type `uuid`) on every target table.
+--      b) Revokes `anon` table privileges without broadening `authenticated`.
+--      c) Enables RLS (`ENABLE ROW LEVEL SECURITY`).
+--      d) Classifies EVERY existing policy strictly using normalized exact
+--         ownership equality (`auth.uid() = user_id` / `user_id = auth.uid()`).
+--         - VALID_TENANT_OWNERSHIP / RESTRICTIVE / service_role -> PRESERVED.
+--         - UNSAFE_OPEN_WILDCARD (`true`, `1=1`, `auth.role()='authenticated'`,
+--           `auth.uid() is not null`) -> DROPPED and logged.
+--         - UNCLASSIFIED PERMISSIVE -> PRESERVED, recorded, and aborts via
+--           RAISE EXCEPTION before commit so no hidden OR-bypass remains.
+--      e) Verifies SELECT (USING), INSERT (WITH CHECK), UPDATE (USING + WITH CHECK),
+--         and DELETE (USING) independently and adds any missing per-command policies.
 -- ----------------------------------------------------------------------------
 do $$
 declare
@@ -188,34 +239,56 @@ declare
     'customers',
     'expenses'
   ];
+  v_user_id_type text;
   pol record;
-  v_qual text;
-  v_check text;
   v_qual_compact text;
   v_check_compact text;
+  v_uid_expr constant text := '\(*(\(selectauth\.uid\(\)(asuid)?\)|auth\.uid\(\))\)*';
+  v_col_expr constant text := '\(*([a-z_]+\.)?user_id(::uuid)?\)*';
+  v_eq_all text;
+  v_nn_expr constant text := '\(*([a-z_]+\.)?user_idisnotnull\)*';
+  v_owner_re text;
+  v_wildcard_re constant text := '^(\(*true(::boolean)?\)*|\(*1=1\)*|\(*\(?(auth\.)?role\(\)\)*=''authenticated''(::text)?\)*|\(*\(?auth\.uid\(\)\)*isnotnull\)*)$';
   v_qual_is_valid boolean;
   v_check_is_valid boolean;
   v_qual_is_wildcard boolean;
   v_check_is_wildcard boolean;
   v_classification text;
+  v_unclassified_list text := '';
   v_has_select boolean;
   v_has_insert boolean;
   v_has_update boolean;
   v_has_delete boolean;
   v_policy_name text;
 begin
-  foreach v_table in array v_tables loop
-    -- Remove anonymous privileges on all tenant tables without broadening peer table grants
-    execute format('revoke all on table public.%I from anon', v_table);
+  v_eq_all := '(' || v_uid_expr || '=' || v_col_expr || '|' || v_col_expr || '=' || v_uid_expr || ')';
+  v_owner_re := '^\(*(' || v_eq_all || '|\(*' || v_eq_all || '\)*and' || v_nn_expr || '|' || v_nn_expr || 'and\(*' || v_eq_all || '\)*)\)*$';
 
-    -- Ensure authenticated CRUD grants on purchase_items (required for POS sync)
+  foreach v_table in array v_tables loop
+    -- (a) Confirm target table has required `user_id` uuid column
+    select c.data_type
+    into v_user_id_type
+    from information_schema.columns c
+    where c.table_schema = 'public'
+      and c.table_name = v_table
+      and c.column_name = 'user_id';
+
+    if v_user_id_type is null then
+      raise exception 'Aborting migration: target table public.% is missing required column user_id.', v_table;
+    elsif v_user_id_type <> 'uuid' then
+      raise exception 'Aborting migration: target table public.% has user_id type %, expected uuid.', v_table, v_user_id_type;
+    end if;
+
+    -- (b) Revoke anonymous grants without broadening authenticated grants on peer tables
+    execute format('revoke all on table public.%I from anon', v_table);
     if v_table = 'purchase_items' then
       execute 'grant select, insert, update, delete on table public.purchase_items to authenticated';
     end if;
 
+    -- (c) Enable RLS
     execute format('alter table public.%I enable row level security', v_table);
 
-    -- Classify every existing policy on the table
+    -- (d) Inspect and classify every existing policy on the table
     for pol in
       select
         policyname,
@@ -236,42 +309,14 @@ begin
         continue;
       end if;
 
-      v_qual := pol.qual_expr;
-      v_check := pol.check_expr;
-      v_qual_compact := regexp_replace(lower(v_qual), '\s+', '', 'g');
-      v_check_compact := regexp_replace(lower(v_check), '\s+', '', 'g');
+      v_qual_compact := regexp_replace(lower(pol.qual_expr), '\s+', '', 'g');
+      v_check_compact := regexp_replace(lower(pol.check_expr), '\s+', '', 'g');
 
-      v_qual_is_valid := (
-        v_qual <> ''
-        and v_qual ~* 'auth\.uid\(\)'
-        and v_qual ~* '\muser_id\M'
-        and v_qual !~* '\mor\M'
-        and v_qual !~* '\mis\s+null\M'
-        and v_qual !~* 'user_id\s*(!=|<>)|(!=|<>)\s*user_id'
-      );
+      v_qual_is_valid := (v_qual_compact <> '' and v_qual_compact ~ v_owner_re);
+      v_check_is_valid := (v_check_compact <> '' and v_check_compact ~ v_owner_re);
 
-      v_check_is_valid := (
-        v_check <> ''
-        and v_check ~* 'auth\.uid\(\)'
-        and v_check ~* '\muser_id\M'
-        and v_check !~* '\mor\M'
-        and v_check !~* '\mis\s+null\M'
-        and v_check !~* 'user_id\s*(!=|<>)|(!=|<>)\s*user_id'
-      );
-
-      v_qual_is_wildcard := (
-        v_qual_compact ~ '^\(*true(::boolean)?\)*$'
-        or v_qual_compact ~ '^\(*1=1\)*$'
-        or v_qual_compact ~ '^\(*\(?(auth\.)?role\(\)\)*=''authenticated''(::text)?\)*$'
-        or v_qual_compact ~ '^\(*\(?auth\.uid\(\)\)*isnotnull\)*$'
-      );
-
-      v_check_is_wildcard := (
-        v_check_compact ~ '^\(*true(::boolean)?\)*$'
-        or v_check_compact ~ '^\(*1=1\)*$'
-        or v_check_compact ~ '^\(*\(?(auth\.)?role\(\)\)*=''authenticated''(::text)?\)*$'
-        or v_check_compact ~ '^\(*\(?auth\.uid\(\)\)*isnotnull\)*$'
-      );
+      v_qual_is_wildcard := (v_qual_compact <> '' and v_qual_compact ~ v_wildcard_re);
+      v_check_is_wildcard := (v_check_compact <> '' and v_check_compact ~ v_wildcard_re);
 
       v_classification := 'UNCLASSIFIED';
 
@@ -288,29 +333,34 @@ begin
           v_classification := 'UNSAFE_OPEN_WILDCARD';
         end if;
       elsif pol.cmd in ('UPDATE', 'ALL') then
-        if v_qual_is_valid and (v_check = '' or v_check_is_valid) then
+        if v_qual_is_valid and (v_check_compact = '' or v_check_is_valid) then
           v_classification := 'VALID_TENANT_OWNERSHIP';
-        elsif (v_qual_is_wildcard and (v_check = '' or v_check_is_wildcard))
-           or (v_qual = '' and v_check_is_wildcard) then
+        elsif (v_qual_is_wildcard and (v_check_compact = '' or v_check_is_wildcard))
+           or (v_qual_compact = '' and v_check_is_wildcard) then
           v_classification := 'UNSAFE_OPEN_WILDCARD';
         end if;
       end if;
 
       if v_classification = 'VALID_TENANT_OWNERSHIP' then
-        raise notice 'Preserving valid tenant-scoped policy "%" on public.% (cmd=%, roles=%)',
+        raise notice 'Preserving verified tenant ownership policy "%" on public.% (cmd=%, roles=%)',
           pol.policyname, v_table, pol.cmd, pol.role_list;
       elsif v_classification = 'UNSAFE_OPEN_WILDCARD' then
         raise notice 'Dropping unambiguously open wildcard policy "%" on public.% (cmd=%, roles=%, qual=[%], with_check=[%])',
-          pol.policyname, v_table, pol.cmd, pol.role_list, v_qual, v_check;
+          pol.policyname, v_table, pol.cmd, pol.role_list, pol.qual_expr, pol.check_expr;
         execute format('drop policy %I on public.%I', pol.policyname, v_table);
       else
-        -- Per safety policy: preserve unclassified policies and report for manual review
-        raise warning 'Preserving UNCLASSIFIED policy "%" on public.% for manual review (cmd=%, roles=%, qual=[%], with_check=[%])',
-          pol.policyname, v_table, pol.cmd, pol.role_list, v_qual, v_check;
+        -- Preserve unclassified permissive policy, record it, and fail closed before commit
+        raise warning 'Preserving UNCLASSIFIED permissive policy "%" on public.% (cmd=%, roles=%, qual=[%], with_check=[%])',
+          pol.policyname, v_table, pol.cmd, pol.role_list, pol.qual_expr, pol.check_expr;
+        v_unclassified_list := v_unclassified_list || format(
+          E'\n  - public.%s | policy="%s" | cmd=%s | roles=%s | qual=[%s] | with_check=[%s]',
+          v_table, pol.policyname, pol.cmd, pol.role_list::text, pol.qual_expr, pol.check_expr
+        );
       end if;
     end loop;
 
-    -- Verify whether authenticated CRUD coverage already exists via valid user_id policies
+    -- (e) Verify SELECT, INSERT, UPDATE, and DELETE independently for authenticated
+    --     using strict ownership equality checks on USING and WITH CHECK.
     select
       exists (
         select 1 from pg_policies p
@@ -318,10 +368,7 @@ begin
           and p.permissive = 'PERMISSIVE'
           and ('authenticated' = any(p.roles::text[]) or 'public' = any(p.roles::text[]))
           and p.cmd in ('ALL', 'SELECT')
-          and coalesce(p.qual, '') ~* 'auth\.uid\(\)'
-          and coalesce(p.qual, '') ~* '\muser_id\M'
-          and coalesce(p.qual, '') !~* '\mor\M'
-          and coalesce(p.qual, '') !~* '\mis\s+null\M'
+          and regexp_replace(lower(coalesce(p.qual, '')), '\s+', '', 'g') ~ v_owner_re
       ),
       exists (
         select 1 from pg_policies p
@@ -331,15 +378,9 @@ begin
           and p.cmd in ('ALL', 'INSERT')
           and (
             (p.cmd = 'INSERT'
-              and coalesce(p.with_check, '') ~* 'auth\.uid\(\)'
-              and coalesce(p.with_check, '') ~* '\muser_id\M'
-              and coalesce(p.with_check, '') !~* '\mor\M'
-              and coalesce(p.with_check, '') !~* '\mis\s+null\M')
+              and regexp_replace(lower(coalesce(p.with_check, '')), '\s+', '', 'g') ~ v_owner_re)
             or (p.cmd = 'ALL'
-              and coalesce(nullif(p.with_check, ''), p.qual, '') ~* 'auth\.uid\(\)'
-              and coalesce(nullif(p.with_check, ''), p.qual, '') ~* '\muser_id\M'
-              and coalesce(nullif(p.with_check, ''), p.qual, '') !~* '\mor\M'
-              and coalesce(nullif(p.with_check, ''), p.qual, '') !~* '\mis\s+null\M')
+              and regexp_replace(lower(coalesce(nullif(p.with_check, ''), p.qual, '')), '\s+', '', 'g') ~ v_owner_re)
           )
       ),
       exists (
@@ -348,14 +389,8 @@ begin
           and p.permissive = 'PERMISSIVE'
           and ('authenticated' = any(p.roles::text[]) or 'public' = any(p.roles::text[]))
           and p.cmd in ('ALL', 'UPDATE')
-          and coalesce(p.qual, '') ~* 'auth\.uid\(\)'
-          and coalesce(p.qual, '') ~* '\muser_id\M'
-          and coalesce(p.qual, '') !~* '\mor\M'
-          and coalesce(p.qual, '') !~* '\mis\s+null\M'
-          and coalesce(nullif(p.with_check, ''), p.qual, '') ~* 'auth\.uid\(\)'
-          and coalesce(nullif(p.with_check, ''), p.qual, '') ~* '\muser_id\M'
-          and coalesce(nullif(p.with_check, ''), p.qual, '') !~* '\mor\M'
-          and coalesce(nullif(p.with_check, ''), p.qual, '') !~* '\mis\s+null\M'
+          and regexp_replace(lower(coalesce(p.qual, '')), '\s+', '', 'g') ~ v_owner_re
+          and regexp_replace(lower(coalesce(nullif(p.with_check, ''), p.qual, '')), '\s+', '', 'g') ~ v_owner_re
       ),
       exists (
         select 1 from pg_policies p
@@ -363,31 +398,54 @@ begin
           and p.permissive = 'PERMISSIVE'
           and ('authenticated' = any(p.roles::text[]) or 'public' = any(p.roles::text[]))
           and p.cmd in ('ALL', 'DELETE')
-          and coalesce(p.qual, '') ~* 'auth\.uid\(\)'
-          and coalesce(p.qual, '') ~* '\muser_id\M'
-          and coalesce(p.qual, '') !~* '\mor\M'
-          and coalesce(p.qual, '') !~* '\mis\s+null\M'
+          and regexp_replace(lower(coalesce(p.qual, '')), '\s+', '', 'g') ~ v_owner_re
       )
     into v_has_select, v_has_insert, v_has_update, v_has_delete;
 
-    if not (v_has_select and v_has_insert and v_has_update and v_has_delete) then
-      v_policy_name := format('Shopkeepers manage own %s', replace(v_table, '_', ' '));
-      -- Avoid colliding with an existing policy name without dropping valid policies
-      if exists (
-        select 1 from pg_policies
-        where schemaname = 'public' and tablename = v_table and policyname = v_policy_name
-      ) then
-        v_policy_name := v_policy_name || ' (tenant enforcement)';
-      end if;
-
+    -- Create only missing per-command policies so existing valid command policies remain untouched
+    if not v_has_select then
+      v_policy_name := format('Shopkeepers select own %s', replace(v_table, '_', ' '));
       execute format(
-        'create policy %I on public.%I for all to authenticated using (auth.uid() = user_id and user_id is not null) with check (auth.uid() = user_id and user_id is not null)',
-        v_policy_name,
-        v_table
+        'create policy %I on public.%I for select to authenticated using (auth.uid() = user_id and user_id is not null)',
+        v_policy_name, v_table
       );
-      raise notice 'Created missing tenant-scoped policy "%" on public.%', v_policy_name, v_table;
+      raise notice 'Created SELECT tenant policy "%" on public.%', v_policy_name, v_table;
+    end if;
+
+    if not v_has_insert then
+      v_policy_name := format('Shopkeepers insert own %s', replace(v_table, '_', ' '));
+      execute format(
+        'create policy %I on public.%I for insert to authenticated with check (auth.uid() = user_id and user_id is not null)',
+        v_policy_name, v_table
+      );
+      raise notice 'Created INSERT tenant policy "%" on public.%', v_policy_name, v_table;
+    end if;
+
+    if not v_has_update then
+      v_policy_name := format('Shopkeepers update own %s', replace(v_table, '_', ' '));
+      execute format(
+        'create policy %I on public.%I for update to authenticated using (auth.uid() = user_id and user_id is not null) with check (auth.uid() = user_id and user_id is not null)',
+        v_policy_name, v_table
+      );
+      raise notice 'Created UPDATE tenant policy "%" on public.%', v_policy_name, v_table;
+    end if;
+
+    if not v_has_delete then
+      v_policy_name := format('Shopkeepers delete own %s', replace(v_table, '_', ' '));
+      execute format(
+        'create policy %I on public.%I for delete to authenticated using (auth.uid() = user_id and user_id is not null)',
+        v_policy_name, v_table
+      );
+      raise notice 'Created DELETE tenant policy "%" on public.%', v_policy_name, v_table;
     end if;
   end loop;
+
+  -- Fail closed before commit if any unclassified PERMISSIVE policy was found
+  if v_unclassified_list <> '' then
+    raise exception
+      'Aborting migration safely (all changes rolled back): unclassified PERMISSIVE RLS policies remain and could bypass tenant isolation via OR combination:%',
+      v_unclassified_list;
+  end if;
 end $$;
 
 commit;

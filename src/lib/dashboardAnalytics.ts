@@ -5,16 +5,25 @@ import type {
   OrderRecord,
   Product,
   PurchaseRecord,
+  SellingUnit,
 } from '../types';
+import { normalizeSellingUnit, roundQuantity } from './unitUtils';
 
-export type DashboardTimeframe = 'today' | 'week' | 'month' | 'year' | 'custom';
+export type DashboardTimeframe =
+  | 'today'
+  | 'yesterday'
+  | 'week'
+  | 'month'
+  | 'year'
+  | 'custom';
 export type SalesGranularity = 'daily' | 'weekly' | 'monthly' | 'yearly';
-export type TopProductTimeframe = 'today' | 'week' | 'month' | 'year';
+export type TopProductTimeframe = 'today' | 'yesterday' | 'week' | 'month' | 'year';
 export type PaymentBreakdownMethod =
   | 'cash'
   | 'jazzcash'
   | 'easypaisa'
   | 'card'
+  | 'bank_transfer'
   | 'udhaar';
 
 export interface PeriodWindow {
@@ -74,6 +83,7 @@ export interface TopProductRow {
   nameEn: string;
   nameUr: string;
   image: string;
+  sellingUnit: SellingUnit;
   units: number;
   revenue: number;
   profit: number;
@@ -140,6 +150,23 @@ export function resolvePeriodWindow(
       prevEndMs: endOfDayMs(yesterday),
       prevStartYmd: toLocalYmd(yesterday),
       prevEndYmd: toLocalYmd(yesterday),
+    };
+  }
+
+  if (timeframe === 'yesterday') {
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    const dayBefore = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2);
+    const yestYmd = toLocalYmd(yesterday);
+    const prevYmd = toLocalYmd(dayBefore);
+    return {
+      startMs: startOfDayMs(yesterday),
+      endMs: endOfDayMs(yesterday),
+      startYmd: yestYmd,
+      endYmd: yestYmd,
+      prevStartMs: startOfDayMs(dayBefore),
+      prevEndMs: endOfDayMs(dayBefore),
+      prevStartYmd: prevYmd,
+      prevEndYmd: prevYmd,
     };
   }
 
@@ -287,6 +314,9 @@ export function summarizeFinancials(
   let refundedOrderCount = 0;
 
   for (const order of ordersInPeriod) {
+    if (order.returnStatus === 'cancelled') {
+      continue;
+    }
     if (order.returnStatus === 'refunded') {
       refundedOrderCount += 1;
     } else {
@@ -330,7 +360,7 @@ export function summarizeFinancials(
     totalTax,
     completedOrderCount,
     refundedOrderCount,
-    totalUnits,
+    totalUnits: roundQuantity(totalUnits),
     avgOrderValue,
     marginPct,
     purchasesTotal,
@@ -388,6 +418,7 @@ export function computePeriodBreakdown(
     jazzcash: { count: 0, total: 0 },
     easypaisa: { count: 0, total: 0 },
     card: { count: 0, total: 0 },
+    bank_transfer: { count: 0, total: 0 },
     udhaar: { count: 0, total: 0 },
   };
 
@@ -399,14 +430,30 @@ export function computePeriodBreakdown(
   const productCategoryMap = new Map(products.map((p) => [p.id, p.category]));
 
   for (const order of ordersInPeriod) {
+    if (order.returnStatus === 'cancelled') {
+      continue;
+    }
     if (order.returnStatus === 'refunded' && order.total === 0) {
       continue;
     }
 
-    const breakdownKey: PaymentBreakdownMethod =
-      order.paymentMethod === 'mobile' ? 'jazzcash' : order.paymentMethod;
-    paymentMap[breakdownKey].count += 1;
-    paymentMap[breakdownKey].total += order.total;
+    if (Array.isArray(order.paymentSplits) && order.paymentSplits.length > 0) {
+      for (const split of order.paymentSplits) {
+        const splitKey: PaymentBreakdownMethod =
+          split.method === 'mobile' ? 'jazzcash' : split.method;
+        if (paymentMap[splitKey]) {
+          paymentMap[splitKey].count += 1;
+          paymentMap[splitKey].total += split.amount;
+        }
+      }
+    } else {
+      const breakdownKey: PaymentBreakdownMethod =
+        order.paymentMethod === 'mobile' ? 'jazzcash' : order.paymentMethod;
+      if (paymentMap[breakdownKey]) {
+        paymentMap[breakdownKey].count += 1;
+        paymentMap[breakdownKey].total += order.total;
+      }
+    }
 
     const orderHour = new Date(order.createdAt).getHours();
     if (orderHour >= 0 && orderHour <= 23) {
@@ -432,13 +479,20 @@ export function computePeriodBreakdown(
     }
   }
 
-  const positivePaymentVolume = (
-    ['cash', 'jazzcash', 'easypaisa', 'card', 'udhaar'] as PaymentBreakdownMethod[]
-  ).reduce((sum, method) => sum + Math.max(0, paymentMap[method].total), 0);
+  const methodOrder: PaymentBreakdownMethod[] = [
+    'cash',
+    'jazzcash',
+    'easypaisa',
+    'card',
+    'bank_transfer',
+    'udhaar',
+  ];
+  const positivePaymentVolume = methodOrder.reduce(
+    (sum, method) => sum + Math.max(0, paymentMap[method].total),
+    0
+  );
 
-  const paymentBreakdown = (
-    ['cash', 'jazzcash', 'easypaisa', 'card', 'udhaar'] as PaymentBreakdownMethod[]
-  ).map((method) => {
+  const paymentBreakdown = methodOrder.map((method) => {
     const row = paymentMap[method];
     const positiveTotal = Math.max(0, row.total);
     const sharePct =
@@ -468,7 +522,7 @@ export function computePeriodBreakdown(
       return {
         category: cat,
         revenue: data.revenue,
-        units: data.units,
+        units: roundQuantity(data.units),
         sharePct,
       };
     }
@@ -543,6 +597,7 @@ export function buildSalesTrendSeries(
     }
 
     for (const order of orders) {
+      if (order.returnStatus === 'cancelled') continue;
       const d = new Date(order.createdAt);
       if (Number.isNaN(d.getTime())) continue;
       const ymd = toLocalYmd(d);
@@ -589,6 +644,7 @@ export function buildSalesTrendSeries(
       let gp = 0;
       let cnt = 0;
       for (const order of orders) {
+        if (order.returnStatus === 'cancelled') continue;
         const ts = new Date(order.createdAt).getTime();
         if (!Number.isNaN(ts) && ts >= def.startMs && ts <= def.endMs) {
           rev += order.total;
@@ -623,6 +679,7 @@ export function buildSalesTrendSeries(
     }
 
     for (const order of orders) {
+      if (order.returnStatus === 'cancelled') continue;
       const d = new Date(order.createdAt);
       if (Number.isNaN(d.getTime()) || d.getFullYear() !== year) continue;
       const b = monthBuckets[d.getMonth()];
@@ -657,6 +714,7 @@ export function buildSalesTrendSeries(
     }
 
     for (const order of orders) {
+      if (order.returnStatus === 'cancelled') continue;
       const d = new Date(order.createdAt);
       if (Number.isNaN(d.getTime())) continue;
       const b = yearMap.get(d.getFullYear());
@@ -722,6 +780,7 @@ export function summarizeTopProductsFromOrders(
   const stats = new Map<string, TopProductRow>();
 
   for (const order of ordersInRange) {
+    if (order.returnStatus === 'cancelled') continue;
     for (const item of order.items) {
       const isPosReturnItem = Boolean(item.isReturn) || item.quantity < 0;
       const activeQty = isPosReturnItem
@@ -739,12 +798,13 @@ export function summarizeTopProductsFromOrders(
         nameEn: prod?.nameEn ?? item.nameEn,
         nameUr: prod?.nameUr ?? item.nameUr,
         image: prod?.image ?? '',
+        sellingUnit: normalizeSellingUnit(prod?.sellingUnit ?? item.sellingUnit),
         units: 0,
         revenue: 0,
         profit: 0,
-        currentStock: prod?.stock ?? 0,
+        currentStock: roundQuantity(prod?.stock ?? 0),
       };
-      existing.units += activeQty;
+      existing.units = roundQuantity(existing.units + activeQty);
       existing.revenue += activeLineTotal;
       existing.profit += activeLineTotal - itemCost;
       stats.set(item.productId, existing);
@@ -787,6 +847,7 @@ export function computeInventoryAlerts(
 
   const units30dByProduct = new Map<string, number>();
   for (const order of orders) {
+    if (order.returnStatus === 'cancelled') continue;
     const ts = new Date(order.createdAt).getTime();
     if (Number.isNaN(ts) || ts < startMs || ts > endMs) continue;
     for (const item of order.items) {
@@ -804,15 +865,16 @@ export function computeInventoryAlerts(
   }
 
   const enriched: InventoryAlertItem[] = products.map((product) => {
-    const safeStock = Math.max(0, product.stock);
-    const unitsSold30d = Math.max(0, units30dByProduct.get(product.id) ?? 0);
+    const safeStock = Math.max(0, roundQuantity(product.stock));
+    const minAlert = product.minStock ?? 5;
+    const unitsSold30d = Math.max(0, roundQuantity(units30dByProduct.get(product.id) ?? 0));
     const dailyVelocity = unitsSold30d / 30;
     const daysOfCover =
       dailyVelocity > 0 ? Math.round(safeStock / dailyVelocity) : null;
     const target14Days = Math.ceil(dailyVelocity * 14);
     const desiredStock =
-      safeStock <= 5 ? Math.max(10, target14Days) : target14Days;
-    const suggestedReorderQty = Math.max(0, desiredStock - safeStock);
+      safeStock <= minAlert ? Math.max(minAlert * 2, target14Days) : target14Days;
+    const suggestedReorderQty = Math.max(0, roundQuantity(desiredStock - safeStock));
 
     return {
       product,
@@ -828,7 +890,7 @@ export function computeInventoryAlerts(
     .sort((a, b) => b.unitsSold30d - a.unitsSold30d);
 
   const lowStock = enriched
-    .filter((item) => item.product.stock > 0 && item.product.stock <= 5)
+    .filter((item) => item.product.stock > 0 && item.product.stock <= (item.product.minStock ?? 5))
     .sort((a, b) => a.product.stock - b.product.stock);
 
   const fastMoving = enriched

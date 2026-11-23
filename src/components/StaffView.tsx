@@ -1,8 +1,6 @@
 import { useState } from 'react';
 import {
   CheckCircle2,
-  Eye,
-  EyeOff,
   KeyRound,
   Pencil,
   Plus,
@@ -12,21 +10,39 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { TranslationStrings } from '../i18n';
-import type { Employee, EmployeeRole } from '../types';
+import { ALL_ROLE_ACTIONS, type RoleAction } from '../lib/rbac';
+import type { Branch, Employee, EmployeeRole } from '../types';
+
+const CUSTOMIZABLE_ACTIONS: RoleAction[] = ALL_ROLE_ACTIONS.filter(
+  (a) =>
+    ![
+      'staff.manage',
+      'backup.manage',
+      'workspace.reset',
+      'settings.write',
+      'customers.delete',
+      'branches.manage',
+    ].includes(a)
+);
 
 interface StaffViewProps {
   employees: Employee[];
   activeEmployeeId: string | null;
-  onAddEmployee: (payload: {
+  branches?: Branch[];
+  maxEmployees?: number;
+  onSaveEmployee: (payload: {
+    id?: string;
     name: string;
     phone: string;
     role: EmployeeRole;
-    pinCode: string;
+    pin?: string;
     isActive: boolean;
-  }) => void;
-  onUpdateEmployee: (employee: Employee) => void;
-  onDeleteEmployee: (employeeId: string) => void;
-  onSwitchActiveEmployee: (employeeId: string) => void;
+    branchId?: string;
+    shiftAssignment?: string;
+    customPermissions?: string[];
+  }) => Promise<string | null>;
+  onDeleteEmployee: (employeeId: string) => Promise<string | null>;
+  onRequestSwitchEmployee: (employeeId: string) => void;
   t: TranslationStrings;
 }
 
@@ -36,6 +52,9 @@ interface EmployeeFormState {
   role: EmployeeRole;
   pinCode: string;
   isActive: boolean;
+  branchId: string;
+  shiftAssignment: string;
+  customPermissions: string[];
 }
 
 const EMPTY_FORM: EmployeeFormState = {
@@ -44,28 +63,36 @@ const EMPTY_FORM: EmployeeFormState = {
   role: 'cashier',
   pinCode: '',
   isActive: true,
+  branchId: '',
+  shiftAssignment: '',
+  customPermissions: [],
 };
 
 export function StaffView({
   employees,
   activeEmployeeId,
-  onAddEmployee,
-  onUpdateEmployee,
+  branches = [],
+  maxEmployees,
+  onSaveEmployee,
   onDeleteEmployee,
-  onSwitchActiveEmployee,
+  onRequestSwitchEmployee,
   t,
 }: StaffViewProps) {
   const [modalMode, setModalMode] = useState<'closed' | 'add' | 'edit'>('closed');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<EmployeeFormState>(EMPTY_FORM);
   const [formError, setFormError] = useState<string | null>(null);
-  const [showPins, setShowPins] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [actionWarning, setActionWarning] = useState<string | null>(null);
 
   const activeAdminsCount = employees.filter(
     (e) => e.role === 'admin' && e.isActive
   ).length;
+  const atEmployeeLimit =
+    typeof maxEmployees === 'number' &&
+    maxEmployees > 0 &&
+    employees.length >= maxEmployees;
 
   const getRoleLabel = (role: EmployeeRole) => {
     switch (role) {
@@ -79,9 +106,16 @@ export function StaffView({
   };
 
   const openAdd = () => {
+    if (atEmployeeLimit) {
+      setActionWarning(t.employeeLimitReachedMsg);
+      return;
+    }
     setEditingId(null);
     setFormError(null);
-    setForm(EMPTY_FORM);
+    setForm({
+      ...EMPTY_FORM,
+      branchId: branches[0]?.id ?? '',
+    });
     setModalMode('add');
   };
 
@@ -92,29 +126,30 @@ export function StaffView({
       name: emp.name,
       phone: emp.phone,
       role: emp.role,
-      pinCode: emp.pinCode,
+      pinCode: '',
       isActive: emp.isActive,
+      branchId: emp.branchId ?? '',
+      shiftAssignment: emp.shiftAssignment ?? '',
+      customPermissions: emp.customPermissions ?? [],
     });
     setModalMode('edit');
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
     setFormError(null);
     const cleanName = form.name.trim();
     const cleanPin = form.pinCode.trim();
     if (!cleanName) return;
 
-    if (!/^\d{4}$/.test(cleanPin)) {
+    if (modalMode === 'add' && !/^\d{4}$/.test(cleanPin)) {
       setFormError(t.employeePinError);
       return;
     }
 
-    const duplicatePin = employees.some(
-      (emp) => emp.pinCode === cleanPin && emp.id !== editingId
-    );
-    if (duplicatePin) {
-      setFormError(t.pinTakenError);
+    if (modalMode === 'edit' && cleanPin.length > 0 && !/^\d{4}$/.test(cleanPin)) {
+      setFormError(t.employeePinError);
       return;
     }
 
@@ -131,46 +166,59 @@ export function StaffView({
           setFormError(t.lastAdminNotice);
           return;
         }
-
-        onUpdateEmployee({
-          ...existing,
-          name: cleanName,
-          phone: form.phone.trim(),
-          role: form.role,
-          pinCode: cleanPin,
-          isActive: form.isActive,
-        });
       }
-    } else {
-      onAddEmployee({
+    }
+
+    setSaving(true);
+    try {
+      const err = await onSaveEmployee({
+        id: modalMode === 'edit' && editingId ? editingId : undefined,
         name: cleanName,
         phone: form.phone.trim(),
         role: form.role,
-        pinCode: cleanPin,
+        pin: cleanPin || undefined,
         isActive: form.isActive,
+        branchId: form.branchId || undefined,
+        shiftAssignment: form.shiftAssignment.trim() || undefined,
+        customPermissions: form.customPermissions,
       });
-    }
 
-    setModalMode('closed');
+      if (err) {
+        setFormError(err);
+        return;
+      }
+
+      setModalMode('closed');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleToggleActive = (emp: Employee) => {
+  const handleToggleActive = async (emp: Employee) => {
     setActionWarning(null);
     if (emp.role === 'admin' && emp.isActive && activeAdminsCount <= 1) {
       setActionWarning(t.lastAdminNotice);
       return;
     }
-    onUpdateEmployee({ ...emp, isActive: !emp.isActive });
+    const err = await onSaveEmployee({
+      id: emp.id,
+      name: emp.name,
+      phone: emp.phone,
+      role: emp.role,
+      isActive: !emp.isActive,
+    });
+    if (err) setActionWarning(err);
   };
 
-  const handleDelete = (emp: Employee) => {
+  const handleDelete = async (emp: Employee) => {
     setActionWarning(null);
     if (emp.role === 'admin' && emp.isActive && activeAdminsCount <= 1) {
       setActionWarning(t.lastAdminNotice);
       setConfirmDeleteId(null);
       return;
     }
-    onDeleteEmployee(emp.id);
+    const err = await onDeleteEmployee(emp.id);
+    if (err) setActionWarning(err);
     setConfirmDeleteId(null);
   };
 
@@ -186,19 +234,6 @@ export function StaffView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => setShowPins((prev) => !prev)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs sm:text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg min-h-[44px] cursor-pointer"
-          >
-            {showPins ? (
-              <EyeOff className="w-4 h-4 shrink-0" aria-hidden="true" />
-            ) : (
-              <Eye className="w-4 h-4 shrink-0" aria-hidden="true" />
-            )}
-            <span>{showPins ? 'Hide PINs' : 'Show PINs'}</span>
-          </button>
-
           <button
             type="button"
             onClick={openAdd}
@@ -295,17 +330,30 @@ export function StaffView({
                       >
                         {getRoleLabel(emp.role)}
                       </span>
+                      {emp.shiftAssignment && (
+                        <div className="text-[11px] text-slate-500">
+                          {emp.shiftAssignment}
+                        </div>
+                      )}
+                      {emp.customPermissions && emp.customPermissions.length > 0 && (
+                        <div className="text-[10px] font-mono text-teal-700">
+                          +{emp.customPermissions.length} custom
+                        </div>
+                      )}
                     </td>
-                    <td className="py-3.5 px-4 font-mono text-xs font-bold text-slate-800 tabular-nums whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1.5">
-                        <KeyRound className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-                        <span>{showPins ? emp.pinCode : '••••'}</span>
+                    <td className="py-3.5 px-4 text-xs whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1.5 text-slate-700">
+                        <KeyRound className="w-3.5 h-3.5 text-teal-700 shrink-0" aria-hidden="true" />
+                        <span className="font-mono font-bold">••••</span>
+                        <span className="px-1.5 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-600 rounded">
+                          {t.pinEncryptedBadge}
+                        </span>
                       </span>
                     </td>
                     <td className="py-3.5 px-4 whitespace-nowrap">
                       <button
                         type="button"
-                        onClick={() => handleToggleActive(emp)}
+                        onClick={() => void handleToggleActive(emp)}
                         className="inline-flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
                       >
                         {emp.isActive ? (
@@ -326,10 +374,10 @@ export function StaffView({
                         {emp.isActive && !isCurrent && (
                           <button
                             type="button"
-                            onClick={() => onSwitchActiveEmployee(emp.id)}
+                            onClick={() => onRequestSwitchEmployee(emp.id)}
                             className="px-2.5 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 rounded-md transition-colors cursor-pointer"
                           >
-                            {t.activeStaffLabel}
+                            {t.switchStaffBtn}
                           </button>
                         )}
                         <button
@@ -345,7 +393,7 @@ export function StaffView({
                           <div className="inline-flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => handleDelete(emp)}
+                              onClick={() => void handleDelete(emp)}
                               className="px-2.5 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-md cursor-pointer"
                             >
                               {t.confirmDeleteBtn}
@@ -401,7 +449,7 @@ export function StaffView({
               </button>
             </div>
 
-            <form onSubmit={handleSave} className="p-5 space-y-4">
+            <form onSubmit={(e) => void handleSave(e)} className="p-5 space-y-4">
               {formError && (
                 <div className="bg-red-50 border border-red-200 text-red-800 text-xs font-medium rounded-lg px-3.5 py-2.5">
                   {formError}
@@ -455,13 +503,13 @@ export function StaffView({
 
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    {t.employeePinLabel} *
+                    {t.employeePinLabel} {modalMode === 'add' ? '*' : ''}
                   </label>
                   <input
-                    type="text"
+                    type="password"
                     inputMode="numeric"
                     maxLength={4}
-                    required
+                    required={modalMode === 'add'}
                     value={form.pinCode}
                     onChange={(e) =>
                       setForm((f) => ({
@@ -469,12 +517,87 @@ export function StaffView({
                         pinCode: e.target.value.replace(/\D/g, '').slice(0, 4),
                       }))
                     }
-                    placeholder="1234"
+                    placeholder="••••"
                     className="w-full h-10 px-3 text-sm font-mono tracking-widest tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
                   />
                 </div>
               </div>
-              <p className="text-[11px] text-slate-500 -mt-2">{t.employeePinHint}</p>
+              <p className="text-[11px] text-slate-500 -mt-2">
+                {modalMode === 'edit' ? t.pinOptionalEditHint : t.employeePinHint}
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {branches.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      {t.navBranches}
+                    </label>
+                    <select
+                      value={form.branchId}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, branchId: e.target.value }))
+                      }
+                      className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                    >
+                      <option value="">All / Default</option>
+                      {branches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name} ({b.code})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div className={branches.length > 0 ? '' : 'sm:col-span-2'}>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.navShifts}
+                  </label>
+                  <input
+                    type="text"
+                    value={form.shiftAssignment}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, shiftAssignment: e.target.value }))
+                    }
+                    placeholder="Morning (09:00–17:00)"
+                    className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              {form.role !== 'admin' && (
+                <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/70 space-y-2">
+                  <p className="text-xs font-semibold text-slate-800">
+                    {t.permissionsGuideTitle}
+                  </p>
+                  <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto">
+                    {CUSTOMIZABLE_ACTIONS.map((act) => {
+                      const checked = form.customPermissions.includes(act);
+                      return (
+                        <label
+                          key={act}
+                          className="flex items-center gap-1.5 text-[11px] font-mono text-slate-700 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) =>
+                              setForm((f) => ({
+                                ...f,
+                                customPermissions: e.target.checked
+                                  ? [...f.customPermissions, act]
+                                  : f.customPermissions.filter((c) => c !== act),
+                              }))
+                            }
+                            className="w-3.5 h-3.5 rounded border-slate-300 text-teal-700"
+                          />
+                          <span className="truncate">{act}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <label className="flex items-center gap-2.5 text-xs font-medium text-slate-700 cursor-pointer pt-1">
                 <input
@@ -498,9 +621,10 @@ export function StaffView({
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg min-h-[40px] cursor-pointer"
+                  disabled={saving}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 disabled:bg-slate-300 rounded-lg min-h-[40px] cursor-pointer"
                 >
-                  {t.saveEmployeeBtn}
+                  {saving ? t.loadingWorkspace : t.saveEmployeeBtn}
                 </button>
               </div>
             </form>

@@ -1,4 +1,6 @@
+import { DEMO_PIN_HASHES } from '../lib/pinSecurity';
 import type {
+  Branch,
   Customer,
   Employee,
   ExpenseRecord,
@@ -23,6 +25,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     price: 680,
     cost: 290,
     taxRate: 0,
+    sellingUnit: 'piece',
     stock: 42,
     image: '/src/assets/images/pos_spanish_latte_1795187449452.jpg',
   },
@@ -36,6 +39,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     price: 420,
     cost: 150,
     taxRate: 0,
+    sellingUnit: 'piece',
     stock: 60,
     image: '/src/assets/images/pos_cardamom_chai_1795187451326.jpg',
   },
@@ -49,6 +53,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     price: 540,
     cost: 220,
     taxRate: 0,
+    sellingUnit: 'piece',
     stock: 24,
     image: '/src/assets/images/pos_butter_croissant_1795187451068.jpg',
   },
@@ -62,6 +67,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     price: 1450,
     cost: 680,
     taxRate: 0,
+    sellingUnit: 'box',
     stock: 16,
     image: '/src/assets/images/pos_pistachio_baklava_1795187450996.jpg',
   },
@@ -75,6 +81,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     price: 3200,
     cost: 1950,
     taxRate: 0,
+    sellingUnit: 'bottle',
     stock: 14,
     image: '/src/assets/images/pos_sidr_honey_1795187451502.jpg',
   },
@@ -88,6 +95,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     price: 1650,
     cost: 920,
     taxRate: 0,
+    sellingUnit: 'packet',
     stock: 19,
     image: '/src/assets/images/pos_saffron_almonds_1795187451775.jpg',
   },
@@ -696,7 +704,8 @@ export function createInitialEmployees(): Employee[] {
       name: 'Muhammad Hamza (Owner)',
       phone: '0300-0001234',
       role: 'admin',
-      pinCode: '1234',
+      pinHash: DEMO_PIN_HASHES['1234'],
+      hasPin: true,
       isActive: true,
       createdAt: daysAgo(30, 9),
     },
@@ -705,7 +714,8 @@ export function createInitialEmployees(): Employee[] {
       name: 'Usman Tariq',
       phone: '0322-4451900',
       role: 'manager',
-      pinCode: '2222',
+      pinHash: DEMO_PIN_HASHES['2222'],
+      hasPin: true,
       isActive: true,
       createdAt: daysAgo(15, 10),
     },
@@ -714,9 +724,25 @@ export function createInitialEmployees(): Employee[] {
       name: 'Ali Raza',
       phone: '0311-9083321',
       role: 'cashier',
-      pinCode: '1111',
+      pinHash: DEMO_PIN_HASHES['1111'],
+      hasPin: true,
       isActive: true,
       createdAt: daysAgo(10, 11),
+    },
+  ];
+}
+
+export function createInitialBranches(shopName = 'Khaas Retail'): Branch[] {
+  return [
+    {
+      id: 'branch-main',
+      name: `${shopName || 'Khaas Retail'} — Main Branch`,
+      code: 'BR-01',
+      address: 'Plot 14-B, Gulberg III, Lahore',
+      phone: '+92 42 3578 9021',
+      isMain: true,
+      isActive: true,
+      createdAt: daysAgo(30, 9),
     },
   ];
 }
@@ -728,10 +754,23 @@ export function createDefaultStoreSettings(shopName = 'Khaas Retail'): StoreSett
     address: 'Plot 14-B, Gulberg III, Lahore',
     taxNumber: 'STRN: 32-08-9410-221-4',
     receiptFooter: 'Thank you for shopping at Khaas Retail!',
+    defaultTaxRate: 0,
+    thermalPaperWidth: '80mm',
+    enabledPaymentMethods: ['cash', 'jazzcash', 'easypaisa', 'card', 'bank_transfer', 'udhaar'],
+    bankName: '',
+    bankAccountTitle: '',
+    bankAccountNumber: '',
     jazzcashAccountTitle: '',
     jazzcashAccountNumber: '',
     easypaisaAccountTitle: '',
     easypaisaAccountNumber: '',
+    autoKickDrawer: true,
+    showCustomerDisplay: true,
+    whatsappAutoReceipts: false,
+    whatsappTemplateReceipt:
+      '*{shopName}*\nCustomer: {customerName}\nBill: {receiptNumber} | {dateTime}\n\n{itemsList}\n\nTotal: Rs. {total}\nPaid: Rs. {paid}\nOutstanding Balance: Rs. {balance}\nThank you!',
+    whatsappTemplateReminder:
+      '*{shopName} — Payment Reminder*\nDear {customerName},\nCurrent Outstanding Balance: Rs. {balance}\nDue Date: {dueDate}\nPlease contact {shopPhone} if you need assistance.',
   };
 }
 

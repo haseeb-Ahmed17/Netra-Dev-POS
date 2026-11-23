@@ -1,14 +1,19 @@
+import { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import { Printer, X } from 'lucide-react';
 import { formatCurrency, type TranslationStrings } from '../i18n';
+import { buildProductQrPayload } from '../lib/barcodeScanner';
 import type { Language, Product } from '../types';
 
 interface BarcodeStickerModalProps {
-  product: Pick<Product, 'nameEn' | 'nameUr' | 'barcode' | 'sku' | 'price'> | null;
+  product: Pick<Product, 'id' | 'nameEn' | 'nameUr' | 'barcode' | 'qrCode' | 'sku' | 'price'> | null;
   shopName: string;
   onClose: () => void;
   lang: Language;
   t: TranslationStrings;
 }
+
+type LabelFormat = 'barcode' | 'qr' | 'both';
 
 export function BarcodeStickerModal({
   product,
@@ -17,15 +22,40 @@ export function BarcodeStickerModal({
   lang,
   t,
 }: BarcodeStickerModalProps) {
+  const [format, setFormat] = useState<LabelFormat>('both');
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+
+  const barcodeValue = (product?.barcode || product?.sku || '000000000000').trim();
+  const qrPayload = product ? buildProductQrPayload(product) : '';
+
+  useEffect(() => {
+    let active = true;
+    if (!qrPayload) {
+      setQrDataUrl('');
+      return;
+    }
+    QRCode.toDataURL(qrPayload, {
+      width: 140,
+      margin: 1,
+      color: { dark: '#0F172A', light: '#FFFFFF' },
+    })
+      .then((url) => {
+        if (active) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (active) setQrDataUrl('');
+      });
+    return () => {
+      active = false;
+    };
+  }, [qrPayload]);
+
   if (!product) return null;
 
-  const barcodeValue = (product.barcode || product.sku || '000000000000').trim();
   const displayName = lang === 'ur' ? product.nameUr : product.nameEn;
 
-  // Deterministic lightweight SVG barcode pattern from digits/characters
   const bars: { x: number; width: number }[] = [];
   let cursorX = 6;
-  // Left guard bars
   bars.push({ x: cursorX, width: 2 }, { x: cursorX + 4, width: 2 });
   cursorX += 9;
 
@@ -43,7 +73,6 @@ export function BarcodeStickerModal({
     cursorX += b2 + g2;
   });
 
-  // Right guard bars
   bars.push({ x: cursorX + 1, width: 2 }, { x: cursorX + 5, width: 2 });
   const svgWidth = cursorX + 13;
 
@@ -55,10 +84,9 @@ export function BarcodeStickerModal({
       aria-labelledby="barcode-modal-title"
     >
       <div className="bg-white border border-slate-200 rounded-xl w-full max-w-sm overflow-hidden shadow-xl">
-        {/* Modal Header */}
         <div className="no-print flex items-center justify-between px-5 py-4 border-b border-slate-200">
           <h2 id="barcode-modal-title" className="text-base font-bold text-slate-900">
-            {t.barcodeModalTitle}
+            {t.qrLabelTitle}
           </h2>
           <button
             type="button"
@@ -70,11 +98,35 @@ export function BarcodeStickerModal({
           </button>
         </div>
 
+        {/* Format Selector */}
+        <div className="no-print px-5 pt-4 flex items-center justify-center gap-1.5">
+          {(
+            [
+              ['barcode', t.labelFormatBarcode],
+              ['qr', t.labelFormatQr],
+              ['both', t.labelFormatBoth],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setFormat(key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                format === key
+                  ? 'bg-teal-700 text-white border-teal-700'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         {/* Printable Sticker Preview */}
         <div className="p-6 bg-slate-50 flex justify-center">
           <div
             id="printable-barcode-area"
-            className="bg-white border border-slate-300 rounded-lg p-4 w-full max-w-[240px] text-center space-y-1.5"
+            className="bg-white border border-slate-300 rounded-lg p-4 w-full max-w-[260px] text-center space-y-2"
           >
             <p className="text-[11px] font-semibold tracking-wide text-slate-600 truncate">
               {shopName || t.brandName}
@@ -83,38 +135,53 @@ export function BarcodeStickerModal({
               {displayName}
             </p>
 
-            <div className="pt-1 pb-0.5 flex justify-center" dir="ltr">
-              <svg
-                viewBox={`0 0 ${svgWidth} 44`}
-                className="w-full max-w-[196px] h-12"
-                role="img"
-                aria-label={`Barcode ${barcodeValue}`}
-              >
-                <rect x="0" y="0" width={svgWidth} height="44" fill="#FFFFFF" />
-                {bars.map((bar, i) => (
-                  <rect
-                    key={i}
-                    x={bar.x}
-                    y="2"
-                    width={bar.width}
-                    height="40"
-                    fill="#0F172A"
-                  />
-                ))}
-              </svg>
-            </div>
+            {(format === 'barcode' || format === 'both') && (
+              <>
+                <div className="pt-1 pb-0.5 flex justify-center" dir="ltr">
+                  <svg
+                    viewBox={`0 0 ${svgWidth} 44`}
+                    className="w-full max-w-[196px] h-12"
+                    role="img"
+                    aria-label={`Barcode ${barcodeValue}`}
+                  >
+                    <rect x="0" y="0" width={svgWidth} height="44" fill="#FFFFFF" />
+                    {bars.map((bar, i) => (
+                      <rect
+                        key={i}
+                        x={bar.x}
+                        y="2"
+                        width={bar.width}
+                        height="40"
+                        fill="#0F172A"
+                      />
+                    ))}
+                  </svg>
+                </div>
+                <p className="font-mono text-xs font-semibold tracking-widest text-slate-800 tabular-nums">
+                  {barcodeValue}
+                </p>
+              </>
+            )}
 
-            <p className="font-mono text-xs font-semibold tracking-widest text-slate-800 tabular-nums">
-              {barcodeValue}
-            </p>
+            {(format === 'qr' || format === 'both') && qrDataUrl && (
+              <div className="pt-1 flex flex-col items-center gap-1" dir="ltr">
+                <img
+                  src={qrDataUrl}
+                  alt={`QR ${qrPayload}`}
+                  className="w-24 h-24 border border-slate-200 rounded p-0.5 bg-white"
+                />
+                <p className="font-mono text-[10px] text-slate-500 truncate max-w-full">
+                  {qrPayload}
+                </p>
+              </div>
+            )}
 
-            <p className="font-mono text-base font-bold text-slate-900 tabular-nums pt-0.5 border-t border-dashed border-slate-200">
+            <p className="font-mono text-base font-bold text-slate-900 tabular-nums pt-1 border-t border-dashed border-slate-200">
               {formatCurrency(product.price, lang)}
             </p>
           </div>
         </div>
 
-        {/* Action Footer */}
         <div className="no-print px-5 py-4 border-t border-slate-200 bg-white flex items-center justify-end gap-2">
           <button
             type="button"

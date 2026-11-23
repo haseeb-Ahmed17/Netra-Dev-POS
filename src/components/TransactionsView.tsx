@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
 import {
   ArrowLeftRight,
+  Ban,
   Banknote,
+  MessageCircle,
   Printer,
   RotateCcw,
   Search,
@@ -13,6 +15,12 @@ import {
   getPaymentLabel,
   type TranslationStrings,
 } from '../i18n';
+import {
+  formatQuantity,
+  formatQuantityWithUnit,
+  getUnitLabel,
+  roundQuantity,
+} from '../lib/unitUtils';
 import type { Language, OrderRecord, PaymentMethod } from '../types';
 
 export type ReturnResolutionMode = 'refund' | 'exchange';
@@ -26,16 +34,22 @@ export interface ReturnRequestPayload {
 
 interface TransactionsViewProps {
   orders: OrderRecord[];
-  onPrintReceipt: (order: OrderRecord) => void;
+  canCancelOrders?: boolean;
+  onPrintReceipt: (order: OrderRecord, isReprint?: boolean) => void;
   onProcessReturn: (payload: ReturnRequestPayload) => void;
+  onCancelOrder?: (orderId: string, reason: string) => void;
+  onSendWhatsApp?: (order: OrderRecord) => void;
   lang: Language;
   t: TranslationStrings;
 }
 
 export function TransactionsView({
   orders,
+  canCancelOrders = false,
   onPrintReceipt,
   onProcessReturn,
+  onCancelOrder,
+  onSendWhatsApp,
   lang,
   t,
 }: TransactionsViewProps) {
@@ -47,6 +61,10 @@ export function TransactionsView({
   const [selectedQtys, setSelectedQtys] = useState<Record<string, number>>({});
   const [returnMode, setReturnMode] = useState<ReturnResolutionMode>('refund');
   const [returnReason, setReturnReason] = useState('');
+
+  // Cancel Order Modal state
+  const [cancelOrderTarget, setCancelOrderTarget] = useState<OrderRecord | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
 
   const filteredOrders = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -102,7 +120,8 @@ export function TransactionsView({
 
   const setItemQty = (productId: string, nextQty: number, maxQty: number) => {
     if (maxQty <= 0) return;
-    if (nextQty <= 0) {
+    const rounded = roundQuantity(nextQty);
+    if (!Number.isFinite(rounded) || rounded <= 0) {
       setSelectedQtys((prev) => {
         const next = { ...prev };
         delete next[productId];
@@ -112,7 +131,7 @@ export function TransactionsView({
     }
     setSelectedQtys((prev) => ({
       ...prev,
-      [productId]: Math.min(maxQty, Math.max(1, Math.floor(nextQty))),
+      [productId]: Math.min(roundQuantity(maxQty), Math.max(0.001, rounded)),
     }));
   };
 
@@ -128,12 +147,18 @@ export function TransactionsView({
     const discountFactor = 1 - returnOrder.discountPercent / 100;
 
     for (const item of returnOrder.items) {
-      const remaining = Math.max(0, item.quantity - (item.returnedQty ?? 0));
-      totalRemainingUnits += remaining;
+      const remaining = Math.max(
+        0,
+        roundQuantity(item.quantity - (item.returnedQty ?? 0))
+      );
+      totalRemainingUnits = roundQuantity(totalRemainingUnits + remaining);
 
-      const qty = Math.min(remaining, Math.max(0, selectedQtys[item.productId] ?? 0));
+      const qty = Math.min(
+        remaining,
+        Math.max(0, roundQuantity(selectedQtys[item.productId] ?? 0))
+      );
       if (qty > 0) {
-        totalUnits += qty;
+        totalUnits = roundQuantity(totalUnits + qty);
         const lineSub = item.unitPrice * qty;
         returnedSubtotal += lineSub;
         const discountedLine = lineSub * discountFactor;
@@ -178,6 +203,13 @@ export function TransactionsView({
 
   const getStatusBadge = (order: OrderRecord) => {
     const status = order.returnStatus ?? 'completed';
+    if (status === 'cancelled') {
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-200 text-slate-800 border border-slate-300 whitespace-nowrap">
+          {t.statusCancelledLabel}
+        </span>
+      );
+    }
     if (status === 'refunded') {
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-red-50 text-red-700 border border-red-200 whitespace-nowrap">
@@ -232,7 +264,9 @@ export function TransactionsView({
         </div>
 
         <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
-          {(['all', 'cash', 'jazzcash', 'easypaisa', 'card', 'udhaar'] as const).map(
+          {(
+            ['all', 'cash', 'jazzcash', 'easypaisa', 'card', 'bank_transfer', 'udhaar'] as const
+          ).map(
             (method) => {
               const active = paymentFilter === method;
               const label =
@@ -281,9 +315,11 @@ export function TransactionsView({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredOrders.map((order) => {
-                  const unitCount = order.items.reduce((s, i) => s + i.quantity, 0);
+                  const unitCount = roundQuantity(
+                    order.items.reduce((s, i) => s + i.quantity, 0)
+                  );
                   const remainingReturnable = order.items.reduce(
-                    (s, i) => s + Math.max(0, i.quantity - (i.returnedQty ?? 0)),
+                    (s, i) => s + Math.max(0, roundQuantity(i.quantity - (i.returnedQty ?? 0))),
                     0
                   );
                   const refundedAmt = order.refundedAmount ?? 0;
@@ -300,7 +336,7 @@ export function TransactionsView({
                         {order.customerName || t.walkInCustomer}
                       </td>
                       <td className="py-3 px-4 text-end font-mono text-slate-700 tabular-nums">
-                        {unitCount}
+                        {formatQuantity(unitCount)}
                       </td>
                       <td className="py-3 px-4 text-slate-700 whitespace-nowrap">
                         <div>{getPaymentLabel(order.paymentMethod, t)}</div>
@@ -331,7 +367,7 @@ export function TransactionsView({
                       </td>
                       <td className="py-3 px-5 text-end whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
-                          {remainingReturnable > 0 && (
+                          {remainingReturnable > 0 && order.returnStatus !== 'cancelled' && (
                             <button
                               type="button"
                               onClick={() => openReturnModal(order)}
@@ -342,9 +378,37 @@ export function TransactionsView({
                             </button>
                           )}
 
+                          {canCancelOrders &&
+                            onCancelOrder &&
+                            order.returnStatus !== 'cancelled' &&
+                            order.returnStatus !== 'refunded' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCancelOrderTarget(order);
+                                  setCancelReason('');
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-md whitespace-nowrap transition-colors cursor-pointer"
+                              >
+                                <Ban className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                <span>{t.cancelOrderBtn}</span>
+                              </button>
+                            )}
+
+                          {onSendWhatsApp && (
+                            <button
+                              type="button"
+                              onClick={() => onSendWhatsApp(order)}
+                              aria-label={t.sendWhatsappReceiptBtn}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md whitespace-nowrap transition-colors cursor-pointer"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                            </button>
+                          )}
+
                           <button
                             type="button"
-                            onClick={() => onPrintReceipt(order)}
+                            onClick={() => onPrintReceipt(order, true)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-teal-800 bg-teal-50 hover:bg-teal-100 rounded-md whitespace-nowrap transition-colors cursor-pointer"
                           >
                             <Printer className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -451,11 +515,15 @@ export function TransactionsView({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {returnOrder.items.map((item) => {
-                        const alreadyReturned = item.returnedQty ?? 0;
-                        const remaining = Math.max(0, item.quantity - alreadyReturned);
+                        const alreadyReturned = roundQuantity(item.returnedQty ?? 0);
+                        const remaining = Math.max(
+                          0,
+                          roundQuantity(item.quantity - alreadyReturned)
+                        );
                         const selectedQty = selectedQtys[item.productId] ?? 0;
                         const isChecked = selectedQty > 0;
                         const itemName = lang === 'ur' ? item.nameUr : item.nameEn;
+                        const unitLabel = getUnitLabel(item.sellingUnit, lang);
 
                         return (
                           <tr
@@ -482,16 +550,25 @@ export function TransactionsView({
                                 {item.sku}
                                 {alreadyReturned > 0 && (
                                   <span className="ms-2 text-amber-700">
-                                    · {t.alreadyReturnedLabel}: {alreadyReturned}
+                                    · {t.alreadyReturnedLabel}:{' '}
+                                    {formatQuantityWithUnit(
+                                      alreadyReturned,
+                                      item.sellingUnit,
+                                      lang
+                                    )}
                                   </span>
                                 )}
                               </div>
                             </td>
                             <td className="py-2.5 px-3 text-end font-mono text-slate-700 tabular-nums whitespace-nowrap">
-                              {formatCurrency(item.unitPrice, lang)}
+                              {formatCurrency(item.unitPrice, lang)} / {unitLabel}
                             </td>
-                            <td className="py-2.5 px-3 text-end font-mono text-slate-700 tabular-nums">
-                              {item.quantity}
+                            <td className="py-2.5 px-3 text-end font-mono text-slate-700 tabular-nums whitespace-nowrap">
+                              {formatQuantityWithUnit(
+                                item.quantity,
+                                item.sellingUnit,
+                                lang
+                              )}
                             </td>
                             <td className="py-2.5 px-3 text-end">
                               {remaining === 0 ? (
@@ -505,7 +582,7 @@ export function TransactionsView({
                                     onClick={() =>
                                       setItemQty(
                                         item.productId,
-                                        selectedQty - 1,
+                                        roundQuantity(selectedQty - 1),
                                         remaining
                                       )
                                     }
@@ -517,6 +594,7 @@ export function TransactionsView({
                                     type="number"
                                     min={0}
                                     max={remaining}
+                                    step="any"
                                     value={selectedQty}
                                     onChange={(e) =>
                                       setItemQty(
@@ -525,7 +603,7 @@ export function TransactionsView({
                                         remaining
                                       )
                                     }
-                                    className="w-12 h-7 text-center font-mono font-semibold bg-slate-50 border border-slate-200 rounded-md text-slate-900 tabular-nums focus:outline-none focus:border-teal-700"
+                                    className="w-16 h-7 text-center font-mono font-semibold bg-slate-50 border border-slate-200 rounded-md text-slate-900 tabular-nums focus:outline-none focus:border-teal-700"
                                   />
                                   <button
                                     type="button"
@@ -533,7 +611,7 @@ export function TransactionsView({
                                     onClick={() =>
                                       setItemQty(
                                         item.productId,
-                                        selectedQty + 1,
+                                        roundQuantity(selectedQty + 1),
                                         remaining
                                       )
                                     }
@@ -541,6 +619,9 @@ export function TransactionsView({
                                   >
                                     +
                                   </button>
+                                  <span className="text-[10px] font-medium text-slate-500 ms-0.5">
+                                    {unitLabel}
+                                  </span>
                                 </div>
                               )}
                             </td>
@@ -633,7 +714,7 @@ export function TransactionsView({
                 <div className="flex items-center justify-between">
                   <span className="text-slate-600">{t.returnSummaryStockLabel}</span>
                   <span className="font-mono font-bold text-emerald-700 tabular-nums">
-                    +{returnSummary.totalUnits}
+                    +{formatQuantity(returnSummary.totalUnits)}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -680,6 +761,59 @@ export function TransactionsView({
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Cancel Order Modal */}
+      {cancelOrderTarget && onCancelOrder && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!cancelReason.trim()) return;
+              onCancelOrder(cancelOrderTarget.id, cancelReason.trim());
+              setCancelOrderTarget(null);
+              setCancelReason('');
+            }}
+            className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 space-y-4 shadow-xl"
+          >
+            <h2 className="text-base font-bold text-slate-900">
+              {t.cancelOrderBtn} ·{' '}
+              <span className="font-mono text-rose-700">{cancelOrderTarget.receiptNumber}</span>
+            </h2>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {t.cancelOrderReasonLabel} *
+              </label>
+              <input
+                type="text"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="e.g., Customer cancelled at counter"
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                required
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCancelOrderTarget(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+              >
+                {t.closeBtn}
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg cursor-pointer"
+              >
+                {t.cancelOrderBtn}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

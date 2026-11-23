@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Pencil, Plus, Search, Trash2, X } from 'lucide-react';
+import { Check, Pencil, Plus, Repeat, Search, Trash2, X } from 'lucide-react';
 import { formatCurrency, type TranslationStrings } from '../i18n';
 import type { ExpenseCategory, ExpenseRecord, Language } from '../types';
 
 interface ExpensesViewProps {
   expenses: ExpenseRecord[];
   canDelete?: boolean;
+  activeShiftOpen?: boolean;
+  canApproveExpenses?: boolean;
   onAddExpense: (payload: Omit<ExpenseRecord, 'id' | 'createdAt'>) => void;
   onUpdateExpense: (updated: ExpenseRecord) => void;
   onDeleteExpense: (expenseId: string) => void;
@@ -53,6 +55,8 @@ export function getExpenseCategoryLabel(
 export function ExpensesView({
   expenses,
   canDelete = true,
+  activeShiftOpen = false,
+  canApproveExpenses = false,
   onAddExpense,
   onUpdateExpense,
   onDeleteExpense,
@@ -71,6 +75,12 @@ export function ExpensesView({
   const [amount, setAmount] = useState('');
   const [expenseDate, setExpenseDate] = useState(getTodayDateString);
   const [notes, setNotes] = useState('');
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurrenceInterval, setRecurrenceInterval] = useState<
+    'weekly' | 'monthly' | 'yearly'
+  >('monthly');
+  const [nextDueDate, setNextDueDate] = useState('');
+  const [paidFromDrawer, setPaidFromDrawer] = useState(false);
 
   const summaryStats = useMemo(() => {
     const todayStr = getTodayDateString();
@@ -129,6 +139,10 @@ export function ExpensesView({
     setAmount('');
     setExpenseDate(getTodayDateString());
     setNotes('');
+    setIsRecurring(false);
+    setRecurrenceInterval('monthly');
+    setNextDueDate('');
+    setPaidFromDrawer(false);
     setShowModal(true);
   };
 
@@ -139,6 +153,10 @@ export function ExpensesView({
     setAmount(String(exp.amount));
     setExpenseDate(exp.expenseDate || getTodayDateString());
     setNotes(exp.notes);
+    setIsRecurring(Boolean(exp.isRecurring));
+    setRecurrenceInterval(exp.recurrenceInterval ?? 'monthly');
+    setNextDueDate(exp.nextDueDate ?? '');
+    setPaidFromDrawer(Boolean(exp.paidFromDrawer));
     setShowModal(true);
   };
 
@@ -148,6 +166,13 @@ export function ExpensesView({
     const numAmount = Math.max(0, Number(amount) || 0);
     if (!cleanTitle || numAmount <= 0) return;
 
+    const recurrenceFields = {
+      isRecurring,
+      recurrenceInterval: isRecurring ? recurrenceInterval : undefined,
+      nextDueDate: isRecurring ? nextDueDate || undefined : undefined,
+      paidFromDrawer,
+    };
+
     if (editingExpense) {
       onUpdateExpense({
         ...editingExpense,
@@ -156,6 +181,7 @@ export function ExpensesView({
         amount: numAmount,
         expenseDate: expenseDate || getTodayDateString(),
         notes: notes.trim(),
+        ...recurrenceFields,
       });
     } else {
       onAddExpense({
@@ -164,6 +190,8 @@ export function ExpensesView({
         amount: numAmount,
         expenseDate: expenseDate || getTodayDateString(),
         notes: notes.trim(),
+        approvalStatus: canApproveExpenses ? 'approved' : 'pending',
+        ...recurrenceFields,
       });
     }
     setShowModal(false);
@@ -296,22 +324,51 @@ export function ExpensesView({
                   <th className="py-3 px-5 text-start font-medium">{t.expenseDateLabel}</th>
                   <th className="py-3 px-4 text-start font-medium">{t.expenseTitleLabel}</th>
                   <th className="py-3 px-4 text-start font-medium">{t.expenseCategoryLabel}</th>
+                  <th className="py-3 px-4 text-start font-medium">{t.approvalStatusLabel}</th>
                   <th className="py-3 px-4 text-start font-medium">{t.expenseNotesLabel}</th>
                   <th className="py-3 px-4 text-end font-medium">{t.amountCol}</th>
                   <th className="py-3 px-5 text-end font-medium">{t.actionCol}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredExpenses.map((exp) => (
+                {filteredExpenses.map((exp) => {
+                  const status = exp.approvalStatus ?? 'approved';
+                  return (
                   <tr key={exp.id} className="hover:bg-slate-50 transition-colors">
                     <td className="py-3 px-5 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
                       {exp.expenseDate}
                     </td>
                     <td className="py-3 px-4 font-semibold text-slate-900">
-                      {exp.title}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span>{exp.title}</span>
+                        {exp.isRecurring && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-teal-50 text-teal-800">
+                            <Repeat className="w-2.5 h-2.5" aria-hidden="true" />
+                            {exp.recurrenceInterval || 'monthly'}
+                          </span>
+                        )}
+                        {exp.paidFromDrawer && (
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                            Drawer
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-4 text-xs text-slate-700 whitespace-nowrap">
                       {getExpenseCategoryLabel(exp.category, t)}
+                    </td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      <span
+                        className={`text-[11px] font-semibold px-2 py-0.5 rounded capitalize ${
+                          status === 'approved'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : status === 'rejected'
+                            ? 'bg-red-50 text-red-700'
+                            : 'bg-amber-50 text-amber-800'
+                        }`}
+                      >
+                        {status}
+                      </span>
                     </td>
                     <td className="py-3 px-4 text-xs text-slate-500 max-w-xs truncate">
                       {exp.notes || '—'}
@@ -321,6 +378,28 @@ export function ExpensesView({
                     </td>
                     <td className="py-3 px-5 text-end">
                       <div className="inline-flex items-center justify-end gap-1.5">
+                        {canApproveExpenses && status === 'pending' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateExpense({ ...exp, approvalStatus: 'approved' })
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-md cursor-pointer"
+                            >
+                              <Check className="w-3 h-3" aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateExpense({ ...exp, approvalStatus: 'rejected' })
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-md cursor-pointer"
+                            >
+                              <X className="w-3 h-3" aria-hidden="true" />
+                            </button>
+                          </>
+                        )}
                         <button
                           type="button"
                           onClick={() => openEditModal(exp)}
@@ -356,7 +435,8 @@ export function ExpensesView({
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -481,6 +561,64 @@ export function ExpensesView({
                   onChange={(e) => setNotes(e.target.value)}
                   className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
                 />
+              </div>
+
+              <div className="space-y-3 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isRecurring}
+                    onChange={(e) => setIsRecurring(e.target.checked)}
+                    className="rounded border-slate-300 text-teal-700"
+                  />
+                  <span>{t.recurringExpenseLabel}</span>
+                </label>
+
+                {isRecurring && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <select
+                      value={recurrenceInterval}
+                      onChange={(e) =>
+                        setRecurrenceInterval(
+                          e.target.value as 'weekly' | 'monthly' | 'yearly'
+                        )
+                      }
+                      className="h-9 px-2.5 text-xs bg-white border border-slate-200 rounded-lg"
+                    >
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                      <option value="yearly">Yearly</option>
+                    </select>
+                    <input
+                      type="date"
+                      value={nextDueDate}
+                      onChange={(e) => setNextDueDate(e.target.value)}
+                      className="h-9 px-2.5 text-xs font-mono bg-white border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                )}
+
+                {!editingExpense && (
+                  <label
+                    className={`flex items-center gap-2 text-xs font-medium ${
+                      activeShiftOpen
+                        ? 'text-slate-800 cursor-pointer'
+                        : 'text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={!activeShiftOpen}
+                      checked={paidFromDrawer}
+                      onChange={(e) => setPaidFromDrawer(e.target.checked)}
+                      className="rounded border-slate-300 text-teal-700"
+                    />
+                    <span>
+                      {t.deductFromDrawerLabel}
+                      {!activeShiftOpen ? ` (${t.shiftClosedStatus})` : ''}
+                    </span>
+                  </label>
+                )}
               </div>
 
               <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-2">

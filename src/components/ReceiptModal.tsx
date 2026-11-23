@@ -1,17 +1,20 @@
-import { useState } from 'react';
-import { Download, Printer, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Download, MessageCircle, Printer, X } from 'lucide-react';
 import {
   formatCurrency,
   formatDateTime,
   getPaymentLabel,
   type TranslationStrings,
 } from '../i18n';
+import { formatQuantityWithUnit } from '../lib/unitUtils';
 import type { Language, OrderRecord, StoreSettings } from '../types';
 
 interface ReceiptModalProps {
   order: OrderRecord | null;
   storeSettings: StoreSettings;
   cashierName?: string;
+  isReprint?: boolean;
+  onSendWhatsApp?: (order: OrderRecord) => Promise<{ manualUrl?: string; statusText?: string }>;
   onClose: () => void;
   lang: Language;
   t: TranslationStrings;
@@ -21,11 +24,24 @@ export function ReceiptModal({
   order,
   storeSettings,
   cashierName,
+  isReprint = false,
+  onSendWhatsApp,
   onClose,
   lang,
   t,
 }: ReceiptModalProps) {
-  const [paperSize, setPaperSize] = useState<'80mm' | '58mm'>('80mm');
+  const [paperSize, setPaperSize] = useState<'80mm' | '58mm'>(
+    storeSettings.thermalPaperWidth || '80mm'
+  );
+  const [waNotice, setWaNotice] = useState<string | null>(null);
+  const [waManualUrl, setWaManualUrl] = useState<string | null>(null);
+  const [sendingWa, setSendingWa] = useState(false);
+
+  useEffect(() => {
+    setPaperSize(storeSettings.thermalPaperWidth || '80mm');
+    setWaNotice(null);
+    setWaManualUrl(null);
+  }, [order?.id, storeSettings.thermalPaperWidth]);
 
   if (!order) return null;
 
@@ -35,13 +51,35 @@ export function ReceiptModal({
   const storePhone = storeSettings.phone || t.storePhone;
   const taxNumber = storeSettings.taxNumber || t.taxRegNumber;
   const receiptFooter = storeSettings.receiptFooter || t.thankYouMsg;
-  const activeCashier = cashierName || t.cashierDefault;
+  const activeCashier = order.cashierName || cashierName || t.cashierDefault;
+  const hasSplits = Array.isArray(order.paymentSplits) && order.paymentSplits.length > 0;
 
   const handlePrint = () => {
     window.print();
   };
 
+  const handleShareWhatsApp = async () => {
+    if (!onSendWhatsApp || sendingWa) return;
+    setSendingWa(true);
+    try {
+      const res = await onSendWhatsApp(order);
+      setWaNotice(res.statusText || null);
+      setWaManualUrl(res.manualUrl || null);
+    } finally {
+      setSendingWa(false);
+    }
+  };
+
   const handleDownloadTxt = () => {
+    const splitLines = hasSplits
+      ? order.paymentSplits!.map(
+          (sp) =>
+            `  - ${getPaymentLabel(sp.method, t)}: Rs. ${sp.amount}${
+              sp.reference ? ` (${sp.reference})` : ''
+            }`
+        )
+      : [];
+
     const paymentLines = isUdhaar
       ? [
           `${t.paidViaLabel}: ${getPaymentLabel(order.paymentMethod, t)}`,
@@ -49,9 +87,8 @@ export function ReceiptModal({
         ]
       : [
           `${t.paidViaLabel}: ${getPaymentLabel(order.paymentMethod, t)}`,
-          ...(order.transactionId
-            ? [`${t.tidReceiptLabel}: ${order.transactionId}`]
-            : []),
+          ...splitLines,
+          ...(order.transactionId ? [`${t.tidReceiptLabel}: ${order.transactionId}`] : []),
           `${t.tenderedLabel}: Rs. ${order.amountTendered}`,
           `${t.changeLabel}: Rs. ${order.changeDue}`,
         ];
@@ -59,6 +96,7 @@ export function ReceiptModal({
     const lines: string[] = [
       '========================================',
       `          ${storeName.toUpperCase()}`,
+      ...(isReprint ? [`          [ ${t.reprintBadge} ]`] : []),
       ...(storeAddress ? [`     ${storeAddress}`] : []),
       ...(storePhone ? [`     ${storePhone}`] : []),
       ...(taxNumber ? [`     ${taxNumber}`] : []),
@@ -72,12 +110,13 @@ export function ReceiptModal({
         const name = lang === 'ur' ? item.nameUr : item.nameEn;
         const isRet = Boolean(item.isReturn) || item.quantity < 0;
         const prefix = isRet ? `[${t.posReturnBadge}] ` : '';
-        return `${prefix}${name}\n  ${item.quantity} x Rs. ${item.unitPrice} = ${formatCurrency(item.lineTotal, lang)}`;
+        const qtyStr = formatQuantityWithUnit(item.quantity, item.sellingUnit, lang);
+        return `${prefix}${name}\n  ${qtyStr} x Rs. ${item.unitPrice} = ${formatCurrency(item.lineTotal, lang)}`;
       }),
       '----------------------------------------',
       `${t.subtotalLabel}: Rs. ${order.subtotal}`,
       ...(order.discountAmount > 0
-        ? [`${t.discountLabel} (${order.discountPercent}%): -Rs. ${order.discountAmount}`]
+        ? [`${t.discountLabel}: -Rs. ${order.discountAmount}`]
         : []),
       `${t.taxLabel}: Rs. ${order.taxAmount}`,
       `${t.grandTotalLabel}: Rs. ${order.total}`,
@@ -112,14 +151,19 @@ export function ReceiptModal({
       aria-labelledby="receipt-modal-heading"
     >
       <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md overflow-hidden shadow-xl">
-        {/* Modal Header */}
         <div className="no-print flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-200">
-          <h2 id="receipt-modal-heading" className="text-base font-bold text-slate-900">
-            {t.receiptModalTitle}
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 id="receipt-modal-heading" className="text-base font-bold text-slate-900">
+              {t.receiptModalTitle}
+            </h2>
+            {isReprint && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                {t.reprintBadge}
+              </span>
+            )}
+          </div>
 
           <div className="flex items-center gap-2">
-            {/* 58mm / 80mm Paper Toggle */}
             <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg">
               {(['58mm', '80mm'] as const).map((size) => (
                 <button
@@ -148,8 +192,23 @@ export function ReceiptModal({
           </div>
         </div>
 
-        {/* Printable 58mm/80mm Thermal Slip */}
-        <div className="p-5 bg-slate-50 max-h-[70vh] overflow-y-auto">
+        <div className="p-5 bg-slate-50 max-h-[68vh] overflow-y-auto space-y-3">
+          {waNotice && (
+            <div className="no-print rounded-lg bg-teal-50 border border-teal-200 p-3 text-xs text-teal-900 space-y-1.5">
+              <p>{waNotice}</p>
+              {waManualUrl && (
+                <a
+                  href={waManualUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold underline text-teal-800"
+                >
+                  <span>Open WhatsApp Share Link</span>
+                </a>
+              )}
+            </div>
+          )}
+
           <div
             id="printable-receipt-area"
             data-paper-size={paperSize}
@@ -160,9 +219,17 @@ export function ReceiptModal({
             }`}
           >
             <div className="text-center border-b border-dashed border-slate-300 pb-3">
+              {isReprint && (
+                <p className="text-[10px] font-bold tracking-widest text-slate-700 mb-1">
+                  *** {t.reprintBadge} ***
+                </p>
+              )}
               <p className="text-base font-bold tracking-tight text-slate-900">
                 {storeName}
               </p>
+              {order.branchName && (
+                <p className="text-[11px] font-semibold text-slate-600">{order.branchName}</p>
+              )}
               {storeAddress && (
                 <p className="text-[11px] text-slate-600 mt-0.5">{storeAddress}</p>
               )}
@@ -189,7 +256,6 @@ export function ReceiptModal({
               </div>
             </div>
 
-            {/* Itemized Table */}
             <table className="w-full my-3 text-[11px]">
               <thead>
                 <tr className="border-b border-dashed border-slate-300 text-slate-500">
@@ -213,11 +279,11 @@ export function ReceiptModal({
                         )}
                       </td>
                       <td
-                        className={`py-2 text-end tabular-nums ${
+                        className={`py-2 text-end tabular-nums whitespace-nowrap ${
                           isRet ? 'text-red-700 font-semibold' : ''
                         }`}
                       >
-                        {item.quantity}
+                        {formatQuantityWithUnit(item.quantity, item.sellingUnit, lang)}
                       </td>
                       <td className="py-2 text-end tabular-nums">{item.unitPrice}</td>
                       <td
@@ -233,7 +299,6 @@ export function ReceiptModal({
               </tbody>
             </table>
 
-            {/* Totals Summary */}
             <div className="pt-3 border-t border-dashed border-slate-300 space-y-1 text-[11px]">
               <div className="flex justify-between">
                 <span className="text-slate-600">{t.subtotalLabel}</span>
@@ -242,7 +307,8 @@ export function ReceiptModal({
               {order.discountAmount > 0 && (
                 <div className="flex justify-between">
                   <span className="text-slate-600">
-                    {t.discountLabel} ({order.discountPercent}%)
+                    {t.discountLabel}
+                    {order.discountMode === 'fixed' ? '' : ` (${order.discountPercent}%)`}
                   </span>
                   <span className="tabular-nums">
                     -{formatCurrency(order.discountAmount, lang)}
@@ -263,7 +329,6 @@ export function ReceiptModal({
               </div>
             </div>
 
-            {/* Payment Details */}
             <div className="mt-3 pt-3 border-t border-dashed border-slate-300 space-y-1 text-[11px]">
               <div className="flex justify-between">
                 <span className="text-slate-600">{t.paidViaLabel}</span>
@@ -271,6 +336,19 @@ export function ReceiptModal({
                   {getPaymentLabel(order.paymentMethod, t)}
                 </span>
               </div>
+              {hasSplits && (
+                <div className="space-y-0.5 pt-1 text-[10px] text-slate-600">
+                  {order.paymentSplits!.map((sp, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span>
+                        {getPaymentLabel(sp.method, t)}
+                        {sp.reference ? ` (${sp.reference})` : ''}
+                      </span>
+                      <span className="tabular-nums">{formatCurrency(sp.amount, lang)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {order.transactionId && (
                 <div className="flex justify-between gap-2">
                   <span className="text-slate-600">{t.tidReceiptLabel}</span>
@@ -302,7 +380,6 @@ export function ReceiptModal({
               )}
             </div>
 
-            {/* Footer & Barcode */}
             <div className="mt-4 pt-3 border-t border-dashed border-slate-300 text-center space-y-2">
               <p className="text-[11px] font-medium text-slate-700 whitespace-pre-line">
                 {receiptFooter}
@@ -325,16 +402,28 @@ export function ReceiptModal({
           </div>
         </div>
 
-        {/* Action Footer */}
         <div className="no-print px-5 py-4 border-t border-slate-200 bg-white flex flex-wrap items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={handleDownloadTxt}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors min-h-[40px] cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            <span>{t.downloadTxtBtn}</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleDownloadTxt}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors min-h-[40px] cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>{t.downloadTxtBtn}</span>
+            </button>
+            {onSendWhatsApp && (
+              <button
+                type="button"
+                disabled={sendingWa}
+                onClick={handleShareWhatsApp}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-lg transition-colors min-h-[40px] cursor-pointer"
+              >
+                <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>{t.sendWhatsappReceiptBtn}</span>
+              </button>
+            )}
+          </div>
 
           <div className="flex items-center gap-2">
             <button

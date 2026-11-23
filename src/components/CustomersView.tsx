@@ -19,24 +19,33 @@ import {
   getPaymentLabel,
   type TranslationStrings,
 } from '../i18n';
-import type { Customer, Language, OrderRecord } from '../types';
+import type { Customer, Language, OrderRecord, StoreSettings, UdhaarEntry } from '../types';
 import { buildUdhaarWhatsAppUrl } from './UdhaarView';
 
 interface CustomersViewProps {
   storeName: string;
   customers: Customer[];
   orders: OrderRecord[];
+  entries?: UdhaarEntry[];
+  storeSettings?: StoreSettings;
   canDelete: boolean;
   onAddCustomer: (payload: {
     name: string;
     phone: string;
     address: string;
     balance: number;
+    creditLimit?: number;
+    discountPercent?: number;
+    whatsappOptIn?: boolean;
   }) => Customer;
   onUpdateCustomer: (customer: Customer) => void;
   onDeleteCustomer: (customerId: string) => void;
   onRecordPayment: (customerId: string, amount: number) => void;
   onPrintReceipt: (order: OrderRecord) => void;
+  onSendWhatsAppMessage?: (
+    customer: Customer,
+    type: 'reminder' | 'statement'
+  ) => Promise<{ manualUrl?: string; statusText?: string }>;
   lang: Language;
   t: TranslationStrings;
 }
@@ -46,6 +55,9 @@ interface CustomerFormState {
   phone: string;
   address: string;
   balance: string;
+  creditLimit: string;
+  discountPercent: string;
+  whatsappOptIn: boolean;
 }
 
 const EMPTY_FORM: CustomerFormState = {
@@ -53,18 +65,23 @@ const EMPTY_FORM: CustomerFormState = {
   phone: '',
   address: '',
   balance: '0',
+  creditLimit: '',
+  discountPercent: '0',
+  whatsappOptIn: true,
 };
 
 export function CustomersView({
   storeName,
   customers,
   orders,
+  entries = [],
   canDelete,
   onAddCustomer,
   onUpdateCustomer,
   onDeleteCustomer,
   onRecordPayment,
   onPrintReceipt,
+  onSendWhatsAppMessage,
   lang,
   t,
 }: CustomersViewProps) {
@@ -79,6 +96,8 @@ export function CustomersView({
   const [paymentCustomer, setPaymentCustomer] = useState<Customer | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null);
+  const [waNotice, setWaNotice] = useState<{ statusText?: string; manualUrl?: string } | null>(null);
 
   const customerOrdersMap = useMemo(() => {
     const map = new Map<string, OrderRecord[]>();
@@ -159,6 +178,10 @@ export function CustomersView({
       phone: customer.phone,
       address: customer.address,
       balance: String(customer.balance),
+      creditLimit:
+        customer.creditLimit !== undefined ? String(customer.creditLimit) : '',
+      discountPercent: String(customer.discountPercent ?? 0),
+      whatsappOptIn: customer.whatsappOptIn ?? true,
     });
     setModalMode('edit');
   };
@@ -169,6 +192,14 @@ export function CustomersView({
     if (!cleanName) return;
 
     const cleanBalance = Math.max(0, Math.round(Number(form.balance) || 0));
+    const creditLimit =
+      form.creditLimit.trim() !== ''
+        ? Math.max(0, Math.round(Number(form.creditLimit) || 0))
+        : undefined;
+    const discountPercent = Math.min(
+      100,
+      Math.max(0, Number(form.discountPercent) || 0)
+    );
 
     if (modalMode === 'add') {
       const created = onAddCustomer({
@@ -176,6 +207,9 @@ export function CustomersView({
         phone: form.phone.trim(),
         address: form.address.trim(),
         balance: cleanBalance,
+        creditLimit,
+        discountPercent,
+        whatsappOptIn: form.whatsappOptIn,
       });
       setSelectedCustomerId(created.id);
     } else if (modalMode === 'edit' && editingId) {
@@ -187,10 +221,22 @@ export function CustomersView({
           phone: form.phone.trim(),
           address: form.address.trim(),
           balance: cleanBalance,
+          creditLimit,
+          discountPercent,
+          whatsappOptIn: form.whatsappOptIn,
         });
       }
     }
     setModalMode('closed');
+  };
+
+  const handleSendWhatsApp = async (
+    cust: Customer,
+    type: 'reminder' | 'statement'
+  ) => {
+    if (!onSendWhatsAppMessage) return;
+    const result = await onSendWhatsAppMessage(cust, type);
+    setWaNotice(result);
   };
 
   const openPaymentModal = (customer: Customer) => {
@@ -228,6 +274,35 @@ export function CustomersView({
           <span>{t.addCrmCustomerBtn}</span>
         </button>
       </div>
+
+      {waNotice && (
+        <div
+          role="status"
+          className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-emerald-900"
+        >
+          <span>{waNotice.statusText || t.whatsappManualFallbackNotice}</span>
+          <div className="flex items-center gap-2">
+            {waNotice.manualUrl && (
+              <a
+                href={waNotice.manualUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-3 py-1.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
+              >
+                <MessageCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{t.sendWhatsappBtn}</span>
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => setWaNotice(null)}
+              className="px-2 py-1 text-emerald-800 hover:underline cursor-pointer"
+            >
+              {t.dismissLabel}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* KPI Strip */}
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -337,7 +412,21 @@ export function CustomersView({
                       className="hover:bg-slate-50 transition-colors cursor-pointer"
                     >
                       <td className="py-3.5 px-5">
-                        <div className="font-semibold text-slate-900">{cust.name}</div>
+                        <div className="font-semibold text-slate-900 flex flex-wrap items-center gap-1.5">
+                          <span>{cust.name}</span>
+                          {cust.creditLimit !== undefined &&
+                            cust.creditLimit > 0 &&
+                            cust.balance > cust.creditLimit && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                                Limit Exceeded
+                              </span>
+                            )}
+                          {(cust.discountPercent ?? 0) > 0 && (
+                            <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-teal-50 text-teal-800">
+                              -{cust.discountPercent}%
+                            </span>
+                          )}
+                        </div>
                         <div className="text-xs text-slate-400 font-mono">
                           {formatDateTime(cust.createdAt)}
                         </div>
@@ -379,20 +468,31 @@ export function CustomersView({
 
                           {cust.balance > 0 && (
                             <>
-                              <a
-                                href={buildUdhaarWhatsAppUrl({
-                                  storeName,
-                                  customerName: cust.name,
-                                  phone: cust.phone,
-                                  amount: cust.balance,
-                                })}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors whitespace-nowrap"
-                              >
-                                <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                                <span>{t.sendWhatsappBtn}</span>
-                              </a>
+                              {onSendWhatsAppMessage ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSendWhatsApp(cust, 'reminder')}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors whitespace-nowrap cursor-pointer"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                  <span>{t.sendWhatsappBtn}</span>
+                                </button>
+                              ) : (
+                                <a
+                                  href={buildUdhaarWhatsAppUrl({
+                                    storeName,
+                                    customerName: cust.name,
+                                    phone: cust.phone,
+                                    amount: cust.balance,
+                                  })}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors whitespace-nowrap"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                  <span>{t.sendWhatsappBtn}</span>
+                                </a>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => openPaymentModal(cust)}
@@ -518,16 +618,41 @@ export function CustomersView({
                   >
                     {formatCurrency(drawerCustomer.balance, lang)}
                   </p>
-                  {drawerCustomer.balance > 0 && (
+                  {drawerCustomer.creditLimit !== undefined && drawerCustomer.creditLimit > 0 && (
+                    <p className="text-[11px] font-mono text-slate-500">
+                      {t.creditLimitLabel}: {formatCurrency(drawerCustomer.creditLimit, lang)}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
                       type="button"
-                      onClick={() => openPaymentModal(drawerCustomer)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
+                      onClick={() => setStatementCustomer(drawerCustomer)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer"
                     >
-                      <Banknote className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      <span>{t.recordCustomerPaymentBtn}</span>
+                      <Printer className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      <span>{t.printStatementBtn}</span>
                     </button>
-                  )}
+                    {onSendWhatsAppMessage && (
+                      <button
+                        type="button"
+                        onClick={() => handleSendWhatsApp(drawerCustomer, 'statement')}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg cursor-pointer"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>{t.sendWhatsappBtn}</span>
+                      </button>
+                    )}
+                    {drawerCustomer.balance > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => openPaymentModal(drawerCustomer)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
+                      >
+                        <Banknote className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>{t.recordCustomerPaymentBtn}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -706,6 +831,52 @@ export function CustomersView({
                 />
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.creditLimitLabel}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    placeholder="No limit"
+                    value={form.creditLimit}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, creditLimit: e.target.value }))
+                    }
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.customerDiscountLabel}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.5"
+                    value={form.discountPercent}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, discountPercent: e.target.value }))
+                    }
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.whatsappOptIn}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, whatsappOptIn: e.target.checked }))
+                  }
+                  className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                />
+                <span>{t.whatsappOptInLabel}</span>
+              </label>
+
               <div className="pt-2 flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -793,6 +964,90 @@ export function CustomersView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Printable Customer Statement Modal */}
+      {statementCustomer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-2xl overflow-hidden shadow-xl">
+            <div className="no-print flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <h2 className="text-base font-bold text-slate-900">
+                {t.printStatementBtn} — {statementCustomer.name}
+              </h2>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{t.printReportBtn}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatementCustomer(null)}
+                  aria-label={t.closeBtn}
+                  className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
+                >
+                  <X className="w-4 h-4" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto text-sm">
+              <div className="flex items-start justify-between border-b border-slate-200 pb-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">{storeName}</h3>
+                  <p className="text-xs text-slate-700 font-semibold">{statementCustomer.name}</p>
+                  <p className="text-xs font-mono text-slate-500">{statementCustomer.phone}</p>
+                </div>
+                <div className="text-end">
+                  <p className="text-xs text-slate-500">{t.remainingBalanceLabel}</p>
+                  <p className="font-mono text-xl font-bold text-amber-700 tabular-nums">
+                    {formatCurrency(statementCustomer.balance, lang)}
+                  </p>
+                </div>
+              </div>
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                  <tr>
+                    <th className="py-2 px-3 text-start">{t.entryDateCol}</th>
+                    <th className="py-2 px-3 text-start">{t.receiptCol}</th>
+                    <th className="py-2 px-3 text-start">{t.methodCol}</th>
+                    <th className="py-2 px-3 text-end">{t.totalCol}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {(customerOrdersMap.get(statementCustomer.id) ?? []).map((ord) => (
+                    <tr key={ord.id}>
+                      <td className="py-2 px-3 font-mono">{formatDateTime(ord.createdAt)}</td>
+                      <td className="py-2 px-3 font-mono">{ord.receiptNumber}</td>
+                      <td className="py-2 px-3">{getPaymentLabel(ord.paymentMethod, t)}</td>
+                      <td className="py-2 px-3 text-end font-mono font-semibold tabular-nums">
+                        {formatCurrency(ord.total, lang)}
+                      </td>
+                    </tr>
+                  ))}
+                  {entries
+                    .filter((e) => e.customerId === statementCustomer.id)
+                    .map((e) => (
+                      <tr key={e.id}>
+                        <td className="py-2 px-3 font-mono">{formatDateTime(e.createdAt)}</td>
+                        <td className="py-2 px-3">{e.note}</td>
+                        <td className="py-2 px-3">{e.type === 'credit' ? t.typeCredit : t.typePayment}</td>
+                        <td className="py-2 px-3 text-end font-mono tabular-nums">
+                          {e.type === 'credit' ? '+' : '-'}
+                          {formatCurrency(e.amount, lang)}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

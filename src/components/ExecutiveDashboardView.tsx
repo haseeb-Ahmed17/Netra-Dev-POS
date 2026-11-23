@@ -38,7 +38,14 @@ import {
   type SalesGranularity,
   type TopProductTimeframe,
 } from '../lib/dashboardAnalytics';
+import {
+  formatQuantity,
+  formatQuantityWithUnit,
+  getUnitLabel,
+} from '../lib/unitUtils';
 import type {
+  Branch,
+  CashShift,
   ExpenseRecord,
   Language,
   OrderRecord,
@@ -55,6 +62,8 @@ interface ExecutiveDashboardViewProps {
   expenses: ExpenseRecord[];
   products: Product[];
   purchases: PurchaseRecord[];
+  cashShifts?: CashShift[];
+  branches?: Branch[];
   latestNewOrderId: string | null;
   canResetDemo?: boolean;
   suppressPrint?: boolean;
@@ -74,6 +83,7 @@ const PAYMENT_COLORS: Record<PaymentBreakdownMethod, string> = {
   jazzcash: '#0284C7',
   easypaisa: '#059669',
   card: '#4F46E5',
+  bank_transfer: '#0EA5E9',
   udhaar: '#D97706',
 };
 
@@ -252,6 +262,8 @@ export function ExecutiveDashboardView({
   expenses,
   products,
   purchases,
+  cashShifts = [],
+  branches = [],
   latestNewOrderId,
   canResetDemo = true,
   suppressPrint = false,
@@ -292,6 +304,8 @@ export function ExecutiveDashboardView({
     switch (timeframe) {
       case 'today':
         return t.timeframeToday;
+      case 'yesterday':
+        return t.timeframeYesterday;
       case 'week':
         return t.timeframeWeek;
       case 'month':
@@ -307,6 +321,8 @@ export function ExecutiveDashboardView({
     switch (timeframe) {
       case 'today':
         return t.vsYesterdayLabel;
+      case 'yesterday':
+        return t.vsPrevPeriodLabel;
       case 'week':
         return t.vsLastWeekLabel;
       case 'month':
@@ -474,12 +490,13 @@ export function ExecutiveDashboardView({
       ]),
       [],
       [`${t.topProductsTitle} (${periodLabel})`],
-      [t.rankCol, t.productCol, t.skuLabel, t.qtySoldCol, t.revenueCol, t.profitCol],
+      [t.rankCol, t.productCol, t.skuLabel, t.sellingUnitLabel, t.qtySoldCol, t.revenueCol, t.profitCol],
       ...csvTopProducts.map((item, idx) => [
         idx + 1,
         lang === 'ur' ? item.nameUr : item.nameEn,
         item.sku,
-        item.units,
+        getUnitLabel(item.sellingUnit, lang),
+        formatQuantity(item.units),
         Math.round(item.revenue),
         Math.round(item.profit),
       ]),
@@ -639,6 +656,7 @@ export function ExecutiveDashboardView({
           {(
             [
               { id: 'today', label: t.timeframeToday },
+              { id: 'yesterday', label: t.timeframeYesterday },
               { id: 'week', label: t.timeframeWeek },
               { id: 'month', label: t.timeframeMonth },
               { id: 'year', label: t.timeframeYear },
@@ -1337,6 +1355,7 @@ export function ExecutiveDashboardView({
               {(
                 [
                   { id: 'today', label: t.timeframeToday },
+                  { id: 'yesterday', label: t.timeframeYesterday },
                   { id: 'week', label: t.timeframeWeek },
                   { id: 'month', label: t.timeframeMonth },
                   { id: 'year', label: t.timeframeYear },
@@ -1415,8 +1434,8 @@ export function ExecutiveDashboardView({
                             </div>
                           </div>
                         </td>
-                        <td className="py-2.5 px-3 text-end font-mono text-slate-700 tabular-nums">
-                          {item.units}
+                        <td className="py-2.5 px-3 text-end font-mono text-slate-700 tabular-nums whitespace-nowrap">
+                          {formatQuantityWithUnit(item.units, item.sellingUnit, lang)}
                         </td>
                         <td className="py-2.5 px-3 text-end font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
                           {formatCurrency(item.revenue, lang)}
@@ -1526,7 +1545,8 @@ export function ExecutiveDashboardView({
                     const pName =
                       lang === 'ur' ? item.product.nameUr : item.product.nameEn;
                     const isOut = item.product.stock <= 0;
-                    const isLow = item.product.stock > 0 && item.product.stock <= 5;
+                    const minAlert = item.product.minStock ?? 5;
+                    const isLow = item.product.stock > 0 && item.product.stock <= minAlert;
 
                     return (
                       <tr
@@ -1553,7 +1573,7 @@ export function ExecutiveDashboardView({
                           </div>
                         </td>
                         <td
-                          className={`py-2.5 px-3 text-end font-mono font-semibold tabular-nums ${
+                          className={`py-2.5 px-3 text-end font-mono font-semibold tabular-nums whitespace-nowrap ${
                             isOut
                               ? 'text-red-700'
                               : isLow
@@ -1561,18 +1581,31 @@ export function ExecutiveDashboardView({
                               : 'text-slate-900'
                           }`}
                         >
-                          {item.product.stock}
+                          {formatQuantityWithUnit(
+                            item.product.stock,
+                            item.product.sellingUnit,
+                            lang
+                          )}
                         </td>
-                        <td className="py-2.5 px-3 text-end font-mono text-slate-700 tabular-nums">
-                          {item.unitsSold30d}
+                        <td className="py-2.5 px-3 text-end font-mono text-slate-700 tabular-nums whitespace-nowrap">
+                          {formatQuantityWithUnit(
+                            item.unitsSold30d,
+                            item.product.sellingUnit,
+                            lang
+                          )}
                         </td>
                         <td className="py-2.5 px-3 text-end font-mono text-slate-600 tabular-nums">
                           {item.daysOfCover !== null ? `${item.daysOfCover}d` : '—'}
                         </td>
-                        <td className="py-2.5 ps-3 pe-5 text-end font-mono font-semibold tabular-nums">
+                        <td className="py-2.5 ps-3 pe-5 text-end font-mono font-semibold tabular-nums whitespace-nowrap">
                           {item.suggestedReorderQty > 0 ? (
                             <span className="text-teal-800">
-                              +{item.suggestedReorderQty}
+                              +
+                              {formatQuantityWithUnit(
+                                item.suggestedReorderQty,
+                                item.product.sellingUnit,
+                                lang
+                              )}
                             </span>
                           ) : (
                             <span className="text-slate-400">0</span>
@@ -1658,6 +1691,120 @@ export function ExecutiveDashboardView({
           </div>
         )}
       </section>
+
+      {/* Cashier, Branch & Cash Shift Performance Breakdown */}
+      {(periodData.currentOrders.length > 0 || cashShifts.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-900">
+                {t.cashierLabel} / {t.navBranches}
+              </h2>
+              <span className="text-xs font-mono text-slate-500">
+                {t.statusRefundedLabel}: {s.refundedOrderCount}
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                  <tr>
+                    <th className="py-2.5 px-4 text-start font-medium">{t.cashierLabel}</th>
+                    <th className="py-2.5 px-4 text-end font-medium">{t.ordersCompleted}</th>
+                    <th className="py-2.5 px-4 text-end font-medium">{t.revenueCol}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {Object.entries(
+                    periodData.currentOrders.reduce<
+                      Record<string, { count: number; total: number }>
+                    >((acc, o) => {
+                      if (o.returnStatus === 'cancelled') return acc;
+                      const key = o.cashierName || t.cashierDefault;
+                      const curr = acc[key] ?? { count: 0, total: 0 };
+                      curr.count += 1;
+                      curr.total += o.total;
+                      acc[key] = curr;
+                      return acc;
+                    }, {})
+                  ).map(([cashier, stats]) => (
+                    <tr key={cashier}>
+                      <td className="py-2.5 px-4 font-semibold text-slate-900">{cashier}</td>
+                      <td className="py-2.5 px-4 text-end font-mono tabular-nums">{stats.count}</td>
+                      <td className="py-2.5 px-4 text-end font-mono tabular-nums font-semibold">
+                        {formatCurrency(stats.total, lang)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {branches.length > 0 && (
+              <div className="border-t border-slate-200 px-4 py-3 space-y-1.5 text-xs">
+                {branches.map((branch) => {
+                  const branchTotal = periodData.currentOrders
+                    .filter(
+                      (o) =>
+                        o.returnStatus !== 'cancelled' &&
+                        (o.branchId === branch.id || (!o.branchId && branch.isMain))
+                    )
+                    .reduce((sum, o) => sum + o.total, 0);
+                  return (
+                    <div key={branch.id} className="flex justify-between font-mono">
+                      <span className="text-slate-700">{branch.name}</span>
+                      <span className="font-semibold text-slate-900">
+                        {formatCurrency(branchTotal, lang)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {cashShifts.length > 0 && (
+            <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200">
+                <h2 className="text-base font-bold text-slate-900">
+                  {t.shiftHistoryTitle}
+                </h2>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                    <tr>
+                      <th className="py-2.5 px-4 text-start font-medium">{t.cashierLabel}</th>
+                      <th className="py-2.5 px-4 text-start font-medium">{t.statusCol}</th>
+                      <th className="py-2.5 px-4 text-end font-medium">{t.expectedCashLabel}</th>
+                      <th className="py-2.5 px-4 text-end font-medium">{t.cashShortageOverLabel}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {cashShifts.slice(0, 6).map((sh) => (
+                      <tr key={sh.id}>
+                        <td className="py-2.5 px-4 font-semibold text-slate-900">
+                          {sh.cashierName}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          {sh.status === 'open' ? t.shiftOpenStatus : t.shiftClosedStatus}
+                        </td>
+                        <td className="py-2.5 px-4 text-end font-mono tabular-nums">
+                          {formatCurrency(sh.expectedCash, lang)}
+                        </td>
+                        <td className="py-2.5 px-4 text-end font-mono tabular-nums">
+                          {typeof sh.cashDifference === 'number'
+                            ? formatCurrency(sh.cashDifference, lang)
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </div>
+      )}
 
       {/* Safe Confirmation Modal for Reset Demo Data */}
       {showResetConfirm && (

@@ -4,19 +4,40 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  PackageCheck,
   PackagePlus,
   Plus,
+  RotateCcw,
   Trash2,
+  X,
 } from 'lucide-react';
 import { formatCurrency, formatDateTime, type TranslationStrings } from '../i18n';
-import type { Language, Product, PurchaseRecord, Vendor } from '../types';
+import {
+  formatQuantity,
+  formatQuantityWithUnit,
+  getUnitLabel,
+  normalizeSellingUnit,
+  roundCurrency,
+  roundQuantity,
+} from '../lib/unitUtils';
+import type {
+  Language,
+  Product,
+  PurchaseOrderStatus,
+  PurchaseRecord,
+  SellingUnit,
+  Vendor,
+} from '../types';
 
-interface DraftPurchaseLine {
+export interface DraftPurchaseLine {
   productId: string;
   productName: string;
   sku: string;
+  sellingUnit: SellingUnit;
   quantity: number;
   unitCost: number;
+  batchNumber?: string;
+  expiryDate?: string;
 }
 
 interface PurchasesViewProps {
@@ -28,8 +49,15 @@ interface PurchasesViewProps {
     invoiceNumber: string;
     paidAmount: number;
     note: string;
+    status?: PurchaseOrderStatus;
     lines: DraftPurchaseLine[];
   }) => PurchaseRecord | null;
+  onUpdatePurchaseStatus?: (purchaseId: string, status: PurchaseOrderStatus) => void;
+  onPurchaseReturn?: (payload: {
+    purchaseId: string;
+    items: { productId: string; quantity: number }[];
+    reason: string;
+  }) => void;
   onGoToVendors: () => void;
   lang: Language;
   t: TranslationStrings;
@@ -40,6 +68,8 @@ export function PurchasesView({
   products,
   purchases,
   onReceiveInventory,
+  onUpdatePurchaseStatus,
+  onPurchaseReturn,
   onGoToVendors,
   lang,
   t,
@@ -50,6 +80,7 @@ export function PurchasesView({
   const [invoiceNumber, setInvoiceNumber] = useState(
     () => `PO-2026-${401 + purchases.length}`
   );
+  const [poStatus, setPoStatus] = useState<PurchaseOrderStatus>('received');
   const [selectedProductId, setSelectedProductId] = useState<string>(
     products[0]?.id ?? ''
   );
@@ -58,6 +89,11 @@ export function PurchasesView({
   const [note, setNote] = useState('');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [expandedPurchaseId, setExpandedPurchaseId] = useState<string | null>(null);
+
+  // Purchase return modal state
+  const [returnPurchase, setReturnPurchase] = useState<PurchaseRecord | null>(null);
+  const [returnQuantities, setReturnQuantities] = useState<Record<string, string>>({});
+  const [returnReason, setReturnReason] = useState('');
 
   const effectiveVendorId = useMemo(() => {
     if (selectedVendorId && vendors.some((v) => v.id === selectedVendorId)) {
@@ -73,17 +109,27 @@ export function PurchasesView({
     return products[0]?.id ?? '';
   }, [selectedProductId, products]);
 
+  const productUnitMap = useMemo(() => {
+    const map = new Map<string, SellingUnit>();
+    for (const p of products) {
+      map.set(p.id, normalizeSellingUnit(p.sellingUnit));
+    }
+    return map;
+  }, [products]);
+
   const totalAmount = useMemo(
     () =>
-      draftLines.reduce(
-        (sum, line) => sum + Math.max(0, line.quantity) * Math.max(0, line.unitCost),
-        0
+      roundCurrency(
+        draftLines.reduce(
+          (sum, line) => sum + Math.max(0, line.quantity) * Math.max(0, line.unitCost),
+          0
+        )
       ),
     [draftLines]
   );
 
   const paidAmount = Math.max(0, Number(paidAmountInput) || 0);
-  const remainingPayable = Math.max(0, totalAmount - paidAmount);
+  const remainingPayable = Math.max(0, roundCurrency(totalAmount - paidAmount));
 
   const handleAddLine = () => {
     const prod = products.find((p) => p.id === effectiveProductId);
@@ -94,7 +140,9 @@ export function PurchasesView({
       const existing = prev.find((l) => l.productId === prod.id);
       if (existing) {
         return prev.map((l) =>
-          l.productId === prod.id ? { ...l, quantity: l.quantity + 1 } : l
+          l.productId === prod.id
+            ? { ...l, quantity: roundQuantity(l.quantity + 1) }
+            : l
         );
       }
       return [
@@ -103,15 +151,29 @@ export function PurchasesView({
           productId: prod.id,
           productName: lang === 'ur' ? prod.nameUr : prod.nameEn,
           sku: prod.sku,
+          sellingUnit: normalizeSellingUnit(prod.sellingUnit),
           quantity: 10,
           unitCost: prod.cost,
+          batchNumber: prod.batchNumber,
+          expiryDate: prod.expiryDate,
         },
       ];
     });
   };
 
+  const handleUpdateLineMeta = (
+    productId: string,
+    field: 'batchNumber' | 'expiryDate',
+    value: string
+  ) => {
+    setDraftLines((prev) =>
+      prev.map((l) => (l.productId === productId ? { ...l, [field]: value } : l))
+    );
+  };
+
   const handleUpdateLineQty = (productId: string, qty: number) => {
-    const cleanQty = Math.max(1, Math.floor(qty || 1));
+    const parsed = roundQuantity(qty);
+    const cleanQty = Number.isFinite(parsed) && parsed > 0 ? parsed : 0.001;
     setDraftLines((prev) =>
       prev.map((l) => (l.productId === productId ? { ...l, quantity: cleanQty } : l))
     );
@@ -138,6 +200,7 @@ export function PurchasesView({
         invoiceNumber.trim() || `PO-2026-${401 + purchases.length}`,
       paidAmount,
       note: note.trim(),
+      status: poStatus,
       lines: draftLines,
     });
 
@@ -145,9 +208,41 @@ export function PurchasesView({
       setDraftLines([]);
       setPaidAmountInput('0');
       setNote('');
+      setPoStatus('received');
       setInvoiceNumber(`PO-2026-${402 + purchases.length}`);
       setSuccessMessage(t.purchaseSuccessMsg);
     }
+  };
+
+  const openReturnModal = (pur: PurchaseRecord) => {
+    setReturnPurchase(pur);
+    const init: Record<string, string> = {};
+    for (const item of pur.items) {
+      init[item.productId] = '0';
+    }
+    setReturnQuantities(init);
+    setReturnReason('');
+  };
+
+  const handleConfirmPurchaseReturn = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!returnPurchase || !onPurchaseReturn) return;
+    const items = returnPurchase.items
+      .map((item) => ({
+        productId: item.productId,
+        quantity: Math.min(
+          item.quantity,
+          Math.max(0, roundQuantity(Number(returnQuantities[item.productId]) || 0))
+        ),
+      }))
+      .filter((x) => x.quantity > 0);
+    if (items.length === 0) return;
+    onPurchaseReturn({
+      purchaseId: returnPurchase.id,
+      items,
+      reason: returnReason.trim() || 'Supplier return',
+    });
+    setReturnPurchase(null);
   };
 
   const sortedPurchases = useMemo(
@@ -205,7 +300,7 @@ export function PurchasesView({
             {t.newPurchaseTitle}
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 {t.selectVendorLabel} *
@@ -241,6 +336,21 @@ export function PurchasesView({
                 className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
               />
             </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                {t.poStatusLabel}
+              </label>
+              <select
+                value={poStatus}
+                onChange={(e) => setPoStatus(e.target.value as PurchaseOrderStatus)}
+                className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+              >
+                <option value="received">Received</option>
+                <option value="partial">Partial</option>
+                <option value="ordered">Ordered (Pending)</option>
+              </select>
+            </div>
           </div>
 
           {/* Product Selector Bar */}
@@ -260,7 +370,8 @@ export function PurchasesView({
                   products.map((p) => (
                     <option key={p.id} value={p.id}>
                       {lang === 'ur' ? p.nameUr : p.nameEn} ({p.sku}) · {t.inStockLabel}:{' '}
-                      {p.stock} · {formatCurrency(p.cost, lang)}
+                      {formatQuantityWithUnit(p.stock, p.sellingUnit, lang)} ·{' '}
+                      {formatCurrency(p.cost, lang)} / {getUnitLabel(p.sellingUnit, lang)}
                     </option>
                   ))
                 )}
@@ -311,27 +422,59 @@ export function PurchasesView({
                           <div className="text-[11px] font-mono text-slate-400">
                             {line.sku}
                           </div>
+                          <div className="flex flex-wrap gap-1.5 mt-1">
+                            <input
+                              type="text"
+                              placeholder={t.batchNumberLabel}
+                              value={line.batchNumber ?? ''}
+                              onChange={(e) =>
+                                handleUpdateLineMeta(
+                                  line.productId,
+                                  'batchNumber',
+                                  e.target.value
+                                )
+                              }
+                              className="w-24 h-7 px-2 text-[11px] font-mono bg-slate-50 border border-slate-200 rounded"
+                            />
+                            <input
+                              type="date"
+                              value={line.expiryDate ?? ''}
+                              onChange={(e) =>
+                                handleUpdateLineMeta(
+                                  line.productId,
+                                  'expiryDate',
+                                  e.target.value
+                                )
+                              }
+                              className="h-7 px-1.5 text-[11px] font-mono bg-slate-50 border border-slate-200 rounded"
+                            />
+                          </div>
                         </td>
                         <td className="py-2.5 px-3 text-end">
-                          <input
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={line.quantity}
-                            onChange={(e) =>
-                              handleUpdateLineQty(
-                                line.productId,
-                                Number(e.target.value)
-                              )
-                            }
-                            className="w-20 h-9 px-2 text-end font-mono text-xs bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:border-teal-700 focus:bg-white"
-                          />
+                          <div className="inline-flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.001"
+                              step="any"
+                              value={line.quantity}
+                              onChange={(e) =>
+                                handleUpdateLineQty(
+                                  line.productId,
+                                  Number(e.target.value)
+                                )
+                              }
+                              className="w-20 h-9 px-2 text-end font-mono text-xs bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:border-teal-700 focus:bg-white"
+                            />
+                            <span className="text-[11px] font-medium text-slate-500 shrink-0">
+                              {getUnitLabel(line.sellingUnit, lang)}
+                            </span>
+                          </div>
                         </td>
                         <td className="py-2.5 px-3 text-end">
                           <input
                             type="number"
                             min="0"
-                            step="1"
+                            step="any"
                             value={line.unitCost}
                             onChange={(e) =>
                               handleUpdateLineCost(
@@ -343,7 +486,7 @@ export function PurchasesView({
                           />
                         </td>
                         <td className="py-2.5 px-3 text-end font-mono text-xs font-semibold text-slate-900 tabular-nums whitespace-nowrap">
-                          {formatCurrency(line.quantity * line.unitCost, lang)}
+                          {formatCurrency(roundCurrency(line.quantity * line.unitCost), lang)}
                         </td>
                         <td className="py-2.5 px-2 text-end">
                           <button
@@ -478,7 +621,10 @@ export function PurchasesView({
               ) : (
                 sortedPurchases.map((pur) => {
                   const isExpanded = expandedPurchaseId === pur.id;
-                  const totalUnits = pur.items.reduce((s, i) => s + i.quantity, 0);
+                  const totalUnits = roundQuantity(
+                    pur.items.reduce((s, i) => s + i.quantity, 0)
+                  );
+                  const status = pur.status ?? 'received';
                   return (
                     <Fragment key={pur.id}>
                       <tr
@@ -488,7 +634,18 @@ export function PurchasesView({
                         className="hover:bg-slate-50 transition-colors cursor-pointer"
                       >
                         <td className="py-3.5 px-4 font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">
-                          {pur.invoiceNumber}
+                          <div>{pur.invoiceNumber}</div>
+                          <span
+                            className={`inline-block mt-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase ${
+                              status === 'received'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : status === 'returned'
+                                ? 'bg-red-50 text-red-700'
+                                : 'bg-amber-50 text-amber-800'
+                            }`}
+                          >
+                            {status}
+                          </span>
                         </td>
                         <td className="py-3.5 px-4 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
                           {formatDateTime(pur.createdAt)}
@@ -497,7 +654,7 @@ export function PurchasesView({
                           {pur.vendorName}
                         </td>
                         <td className="py-3.5 px-4 text-end font-mono text-xs text-slate-700 tabular-nums">
-                          {totalUnits}
+                          {formatQuantity(totalUnits)}
                         </td>
                         <td className="py-3.5 px-4 text-end font-mono text-xs font-semibold text-slate-900 tabular-nums whitespace-nowrap">
                           {formatCurrency(pur.totalAmount, lang)}
@@ -514,39 +671,88 @@ export function PurchasesView({
                             <span className="text-emerald-700">{t.settledStatus}</span>
                           )}
                         </td>
-                        <td className="py-3.5 px-4 text-end">
-                          {isExpanded ? (
-                            <ChevronUp className="w-4 h-4 text-slate-400 inline" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-slate-400 inline" />
-                          )}
+                        <td
+                          className="py-3.5 px-4 text-end whitespace-nowrap"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="inline-flex items-center gap-1.5">
+                            {(status === 'ordered' || status === 'partial') &&
+                              onUpdatePurchaseStatus && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onUpdatePurchaseStatus(pur.id, 'received')
+                                  }
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded cursor-pointer"
+                                >
+                                  <PackageCheck className="w-3 h-3" aria-hidden="true" />
+                                  <span>{t.receiveInventoryBtn}</span>
+                                </button>
+                              )}
+                            {status !== 'returned' && onPurchaseReturn && (
+                              <button
+                                type="button"
+                                onClick={() => openReturnModal(pur)}
+                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-amber-900 bg-amber-50 hover:bg-amber-100 rounded cursor-pointer"
+                              >
+                                <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                                <span>{t.supplierReturnBtn}</span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedPurchaseId(isExpanded ? null : pur.id)
+                              }
+                              className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                            >
+                              {isExpanded ? (
+                                <ChevronUp className="w-4 h-4 inline" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4 inline" />
+                              )}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {isExpanded && (
                         <tr className="bg-slate-50/70">
                           <td colSpan={8} className="px-6 py-3">
                             <div className="space-y-1.5 text-xs">
-                              {pur.items.map((item) => (
-                                <div
-                                  key={item.id}
-                                  className="flex items-center justify-between text-slate-700"
-                                >
-                                  <span>
-                                    <span className="font-medium text-slate-900">
-                                      {item.productName}
-                                    </span>{' '}
-                                    <span className="font-mono text-[11px] text-slate-400">
-                                      ({item.sku})
+                              {pur.items.map((item) => {
+                                const unit =
+                                  item.sellingUnit ??
+                                  productUnitMap.get(item.productId) ??
+                                  'piece';
+                                return (
+                                  <div
+                                    key={item.id}
+                                    className="flex items-center justify-between text-slate-700"
+                                  >
+                                    <span>
+                                      <span className="font-medium text-slate-900">
+                                        {item.productName}
+                                      </span>{' '}
+                                      <span className="font-mono text-[11px] text-slate-400">
+                                        ({item.sku})
+                                      </span>
+                                      {(item.batchNumber || item.expiryDate) && (
+                                        <span className="ms-2 text-[11px] font-mono text-slate-500">
+                                          {item.batchNumber ? `Batch: ${item.batchNumber}` : ''}{' '}
+                                          {item.expiryDate ? `Exp: ${item.expiryDate}` : ''}
+                                        </span>
+                                      )}
                                     </span>
-                                  </span>
-                                  <span className="font-mono tabular-nums">
-                                    {item.quantity} × {formatCurrency(item.unitCost, lang)} ={' '}
-                                    <strong className="text-slate-900">
-                                      {formatCurrency(item.lineTotal, lang)}
-                                    </strong>
-                                  </span>
-                                </div>
-                              ))}
+                                    <span className="font-mono tabular-nums">
+                                      {formatQuantityWithUnit(item.quantity, unit, lang)} ×{' '}
+                                      {formatCurrency(item.unitCost, lang)} ={' '}
+                                      <strong className="text-slate-900">
+                                        {formatCurrency(item.lineTotal, lang)}
+                                      </strong>
+                                    </span>
+                                  </div>
+                                );
+                              })}
                               {pur.note && (
                                 <p className="pt-1 text-[11px] text-slate-500">
                                   {pur.note}
@@ -564,6 +770,89 @@ export function PurchasesView({
           </table>
         </div>
       </section>
+
+      {/* Purchase Return Modal */}
+      {returnPurchase && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg overflow-hidden shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <h2 className="text-base font-bold text-slate-900">
+                {t.supplierReturnBtn} — {returnPurchase.invoiceNumber}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setReturnPurchase(null)}
+                aria-label={t.closeBtn}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+            <form onSubmit={handleConfirmPurchaseReturn} className="p-5 space-y-4">
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {returnPurchase.items.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-3 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                  >
+                    <div>
+                      <p className="font-semibold text-slate-900">{item.productName}</p>
+                      <p className="font-mono text-slate-500">
+                        Max: {formatQuantity(item.quantity)} · {formatCurrency(item.unitCost, lang)}
+                      </p>
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      max={item.quantity}
+                      step="any"
+                      value={returnQuantities[item.productId] ?? '0'}
+                      onChange={(e) =>
+                        setReturnQuantities((prev) => ({
+                          ...prev,
+                          [item.productId]: e.target.value,
+                        }))
+                      }
+                      className="w-24 h-9 px-2 text-end font-mono bg-white border border-slate-300 rounded-md"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {t.returnReasonLabel}
+                </label>
+                <input
+                  type="text"
+                  value={returnReason}
+                  onChange={(e) => setReturnReason(e.target.value)}
+                  placeholder="Damaged / short delivery..."
+                  className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReturnPurchase(null)}
+                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg cursor-pointer"
+                >
+                  {t.cancelBtn}
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-amber-700 hover:bg-amber-800 rounded-lg cursor-pointer"
+                >
+                  {t.supplierReturnBtn}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

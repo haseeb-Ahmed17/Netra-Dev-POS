@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { CalendarPlus, RefreshCw, Search, ShieldBan, ShieldCheck } from 'lucide-react';
+import { CalendarPlus, RefreshCw, Search, ShieldBan, ShieldCheck, SlidersHorizontal, X } from 'lucide-react';
 import type { TranslationStrings } from '../i18n';
-import type { Language, SubscriptionRecord } from '../types';
+import type { Language, SubscriptionPaymentEntry, SubscriptionRecord } from '../types';
 
 interface SaasAdminViewProps {
   subscriptions: SubscriptionRecord[];
@@ -11,6 +11,15 @@ interface SaasAdminViewProps {
   onAdminAction: (
     sub: SubscriptionRecord,
     action: 'extend_30_days' | 'extend_1_year' | 'toggle_block'
+  ) => void;
+  onUpdateSubscriptionMeta?: (
+    sub: SubscriptionRecord,
+    patch: {
+      planName?: string;
+      maxBranches?: number;
+      maxEmployees?: number;
+      paymentEntry?: SubscriptionPaymentEntry;
+    }
   ) => void;
   lang: Language;
   t: TranslationStrings;
@@ -27,11 +36,18 @@ export function SaasAdminView({
   updatingUserId,
   onRefresh,
   onAdminAction,
+  onUpdateSubscriptionMeta,
   lang,
   t,
 }: SaasAdminViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'locked'>('all');
+  const [managingSub, setManagingSub] = useState<SubscriptionRecord | null>(null);
+  const [planNameInput, setPlanNameInput] = useState('');
+  const [maxBranchesInput, setMaxBranchesInput] = useState('3');
+  const [maxEmployeesInput, setMaxEmployeesInput] = useState('15');
+  const [paymentAmountInput, setPaymentAmountInput] = useState('');
+  const [paymentNoteInput, setPaymentNoteInput] = useState('');
 
   const stats = useMemo(() => {
     let activeCount = 0;
@@ -197,7 +213,10 @@ export function SaasAdminView({
                         {sub.shopName || '—'}
                       </td>
                       <td className="py-3 px-4 text-xs text-slate-700">
-                        {sub.planName}
+                        <div>{sub.planName}</div>
+                        <div className="font-mono text-[11px] text-slate-500">
+                          {sub.maxBranches ?? 3}B / {sub.maxEmployees ?? 15}S
+                        </div>
                       </td>
                       <td className="py-3 px-4 font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
                         <div>{expiryLabel}</div>
@@ -264,6 +283,24 @@ export function SaasAdminView({
                               </>
                             )}
                           </button>
+                          {onUpdateSubscriptionMeta && (
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => {
+                                setManagingSub(sub);
+                                setPlanNameInput(sub.planName);
+                                setMaxBranchesInput(String(sub.maxBranches ?? 3));
+                                setMaxEmployeesInput(String(sub.maxEmployees ?? 15));
+                                setPaymentAmountInput('');
+                                setPaymentNoteInput('');
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-md whitespace-nowrap transition-colors cursor-pointer"
+                            >
+                              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                              <span>Limits</span>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -274,6 +311,146 @@ export function SaasAdminView({
           </div>
         )}
       </section>
+
+      {managingSub && onUpdateSubscriptionMeta && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg overflow-hidden shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <h2 className="text-base font-bold text-slate-900">
+                {managingSub.shopName || managingSub.email}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setManagingSub(null)}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const amt = Math.max(0, Number(paymentAmountInput) || 0);
+                onUpdateSubscriptionMeta(managingSub, {
+                  planName: planNameInput.trim() || managingSub.planName,
+                  maxBranches: Math.max(1, Number(maxBranchesInput) || 1),
+                  maxEmployees: Math.max(1, Number(maxEmployeesInput) || 1),
+                  paymentEntry:
+                    amt > 0
+                      ? {
+                          id: `sub-pay-${Date.now()}`,
+                          amount: amt,
+                          currency: 'PKR',
+                          planName: planNameInput.trim() || managingSub.planName,
+                          paidAt: new Date().toISOString(),
+                          note: paymentNoteInput.trim() || 'License renewal payment',
+                        }
+                      : undefined,
+                });
+                setManagingSub(null);
+              }}
+              className="p-5 space-y-4"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.tenantPlanCol}
+                  </label>
+                  <input
+                    type="text"
+                    value={planNameInput}
+                    onChange={(e) => setPlanNameInput(e.target.value)}
+                    className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Max Branches
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={maxBranchesInput}
+                    onChange={(e) => setMaxBranchesInput(e.target.value)}
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Max Staff
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={maxEmployeesInput}
+                    onChange={(e) => setMaxEmployeesInput(e.target.value)}
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Record Payment (Rs., optional)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={paymentAmountInput}
+                    onChange={(e) => setPaymentAmountInput(e.target.value)}
+                    placeholder="0"
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Payment Note
+                  </label>
+                  <input
+                    type="text"
+                    value={paymentNoteInput}
+                    onChange={(e) => setPaymentNoteInput(e.target.value)}
+                    placeholder="Bank / JazzCash ref"
+                    className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {managingSub.paymentHistory && managingSub.paymentHistory.length > 0 && (
+                <div className="max-h-32 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1 text-xs">
+                  {managingSub.paymentHistory.map((p) => (
+                    <div key={p.id} className="flex justify-between font-mono">
+                      <span>{p.paidAt.slice(0, 10)} · {p.planName}</span>
+                      <span className="font-semibold">Rs. {p.amount}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setManagingSub(null)}
+                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg cursor-pointer"
+                >
+                  {t.cancelBtn}
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg cursor-pointer"
+                >
+                  {t.saveProductBtn}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

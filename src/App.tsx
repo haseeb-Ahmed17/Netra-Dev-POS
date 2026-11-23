@@ -30,6 +30,8 @@ import { createDefaultStoreSettings } from './data/initialData';
 import { TRANSLATIONS } from './i18n';
 import {
   adminUpdateSubscription,
+  authorizeServerAction,
+  checkIsSuperAdmin,
   deleteCustomerRecord,
   deleteEmployeeRecord,
   deleteExpenseRecord,
@@ -45,8 +47,8 @@ import {
   insertPurchaseRecord,
   insertUdhaarCustomerRecord,
   insertUdhaarEntryRecord,
-  isSuperAdminEmail,
   resetUserDemoWorkspace,
+  saveEmployeeRecord,
   signInShopkeeper,
   signOutShopkeeper,
   signUpShopkeeper,
@@ -54,14 +56,24 @@ import {
   updateOrderReturnRecord,
   updateUdhaarCustomerRecord,
   upsertCustomerRecord,
-  upsertEmployeeRecord,
   upsertExpenseRecord,
   upsertProductRecord,
   upsertStoreSettingsRecord,
   upsertVendorRecord,
+  verifyStaffPinRecord,
 } from './lib/posRepository';
 import { generateUuid } from './lib/idUtils';
-import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
+import { hasRolePermission, type RoleAction } from './lib/rbac';
+import {
+  isSupabaseConfigured,
+  setStaffSessionHeaderToken,
+  supabase,
+} from './lib/supabaseClient';
+import {
+  normalizeSellingUnit,
+  roundCurrency,
+  roundQuantity,
+} from './lib/unitUtils';
 import type {
   AdjustmentType,
   CartItem,
@@ -79,7 +91,9 @@ import type {
   PurchaseItem,
   PurchaseRecord,
   ReminderSchedule,
+  SellingUnit,
   ShopkeeperUser,
+  StaffSessionInfo,
   StoreSettings,
   SubscriptionRecord,
   UdhaarCustomer,
@@ -124,6 +138,40 @@ function activeStaffStorageKey(userId: string): string {
   return `khaas_pos_active_staff_${userId}_v1`;
 }
 
+function staffSessionStorageKey(userId: string): string {
+  return `khaas_pos_staff_session_${userId}_v1`;
+}
+
+function loadStoredStaffSession(userId: string): StaffSessionInfo | null {
+  try {
+    const raw = sessionStorage.getItem(staffSessionStorageKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StaffSessionInfo;
+    if (!parsed?.token || !parsed?.employeeId || !parsed?.expiresAt) return null;
+    if (new Date(parsed.expiresAt).getTime() <= Date.now()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredStaffSession(
+  userId: string,
+  session: StaffSessionInfo | null
+): void {
+  try {
+    if (session) {
+      sessionStorage.setItem(staffSessionStorageKey(userId), JSON.stringify(session));
+      setStaffSessionHeaderToken(session.token);
+    } else {
+      sessionStorage.removeItem(staffSessionStorageKey(userId));
+      setStaffSessionHeaderToken(null);
+    }
+  } catch {
+    setStaffSessionHeaderToken(session?.token ?? null);
+  }
+}
+
 function loadStoredLang(): Language {
   try {
     const raw = localStorage.getItem(LANG_STORAGE_KEY);
@@ -157,13 +205,18 @@ export default function App() {
     createDefaultStoreSettings()
   );
 
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [subscription, setSubscription] = useState<SubscriptionRecord | null>(null);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [allSubscriptions, setAllSubscriptions] = useState<SubscriptionRecord[]>([]);
   const [loadingAllSubs, setLoadingAllSubs] = useState(false);
   const [updatingSubUserId, setUpdatingSubUserId] = useState<string | null>(null);
 
+  const [staffSession, setStaffSession] = useState<StaffSessionInfo | null>(null);
   const [activeEmployeeId, setActiveEmployeeId] = useState<string | null>(null);
+  const [pendingSwitchEmployeeId, setPendingSwitchEmployeeId] = useState<string | null>(
+    null
+  );
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [isScreenLocked, setIsScreenLocked] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -180,11 +233,11 @@ export default function App() {
   const [isSyncingOffline, setIsSyncingOffline] = useState<boolean>(false);
   const [syncToastMessage, setSyncToastMessage] = useState<string | null>(null);
   const [offlineSaleNotice, setOfflineSaleNotice] = useState<boolean>(false);
+  const [rbacNotice, setRbacNotice] = useState<string | null>(null);
   const syncInFlightRef = useRef<boolean>(false);
 
   const t = TRANSLATIONS[lang];
   const isEffectiveOnline = browserOnline && networkReachable;
-  const isSuperAdmin = Boolean(user && isSuperAdminEmail(user.email));
   const isSubscriptionLocked = Boolean(
     user &&
       !isSuperAdmin &&
@@ -270,19 +323,57 @@ export default function App() {
       setPendingSyncCount(getOfflineQueue(userId).length);
 
       const activeList = ws.employees.filter((e) => e.isActive);
-      let restoredId: string | null = null;
-      try {
-        restoredId = localStorage.getItem(activeStaffStorageKey(userId));
-      } catch {
-        restoredId = null;
+      const candidateSession =
+        ws.refreshedStaffSession ?? loadStoredStaffSession(userId);
+      const sessionEmployee = candidateSession
+        ? activeList.find((e) => e.id === candidateSession.employeeId)
+        : undefined;
+
+      if (candidateSession && sessionEmployee) {
+        const syncedSession: StaffSessionInfo = {
+          ...candidateSession,
+          role: sessionEmployee.role,
+        };
+        saveStoredStaffSession(userId, syncedSession);
+        setStaffSession(syncedSession);
+        setActiveEmployeeId(sessionEmployee.id);
+        setIsScreenLocked(false);
+        return;
       }
-      const validRestored = activeList.find((e) => e.id === restoredId);
-      if (validRestored) {
-        setActiveEmployeeId(validRestored.id);
+
+      saveStoredStaffSession(userId, null);
+      setStaffSession(null);
+
+      const fallbackAdmin =
+        activeList.find((e) => e.role === 'admin') ?? activeList[0] ?? null;
+
+      if (ws.wasEmployeesBootstrapped && fallbackAdmin) {
+        void verifyStaffPinRecord(userId, '1234', fallbackAdmin.id).then((res) => {
+          if (res.ok && res.token && res.employeeId && res.role && res.expiresAt) {
+            const newSession: StaffSessionInfo = {
+              token: res.token,
+              employeeId: res.employeeId,
+              role: res.role,
+              expiresAt: res.expiresAt,
+            };
+            saveStoredStaffSession(userId, newSession);
+            setStaffSession(newSession);
+            setActiveEmployeeId(res.employeeId);
+            setIsScreenLocked(false);
+          } else {
+            setActiveEmployeeId(null);
+            setIsScreenLocked(true);
+          }
+        });
+        return;
+      }
+
+      if (activeList.length > 0) {
+        setActiveEmployeeId(null);
+        setIsScreenLocked(true);
       } else {
-        const fallbackAdmin =
-          activeList.find((e) => e.role === 'admin') ?? activeList[0] ?? null;
-        setActiveEmployeeId(fallbackAdmin?.id ?? null);
+        setActiveEmployeeId(null);
+        setIsScreenLocked(false);
       }
     },
     []
@@ -377,12 +468,16 @@ export default function App() {
       setEmployees([]);
       setExpenses([]);
       setStoreSettings(createDefaultStoreSettings());
+      setIsSuperAdmin(false);
       setSubscription(null);
       setCheckingSubscription(false);
       setAllSubscriptions([]);
       setLoadingAllSubs(false);
       setUpdatingSubUserId(null);
+      setStaffSession(null);
+      setStaffSessionHeaderToken(null);
       setActiveEmployeeId(null);
+      setPendingSwitchEmployeeId(null);
       setShowStaffModal(false);
       setIsScreenLocked(false);
       setCart([]);
@@ -392,8 +487,12 @@ export default function App() {
       setPendingSyncCount(0);
       setOfflineSaleNotice(false);
       setSyncToastMessage(null);
+      setRbacNotice(null);
       return;
     }
+
+    const storedSession = loadStoredStaffSession(user.id);
+    setStaffSessionHeaderToken(storedSession?.token ?? null);
 
     setLoadingData(true);
     setCheckingSubscription(true);
@@ -410,22 +509,26 @@ export default function App() {
         if (active) setCheckingSubscription(false);
       });
 
-    if (isSuperAdminEmail(user.email)) {
-      setLoadingAllSubs(true);
-      fetchAllSubscriptions()
-        .then((res) => {
-          if (!active) return;
-          setAllSubscriptions(res.subscriptions);
-          if (res.error) {
-            setCloudSyncError((prev) => prev ?? res.error);
-          }
-        })
-        .finally(() => {
-          if (active) setLoadingAllSubs(false);
-        });
-    } else {
-      setAllSubscriptions([]);
-    }
+    checkIsSuperAdmin(user.id).then((adminOk) => {
+      if (!active) return;
+      setIsSuperAdmin(adminOk);
+      if (adminOk) {
+        setLoadingAllSubs(true);
+        fetchAllSubscriptions()
+          .then((res) => {
+            if (!active) return;
+            setAllSubscriptions(res.subscriptions);
+            if (res.error) {
+              setCloudSyncError((prev) => prev ?? res.error);
+            }
+          })
+          .finally(() => {
+            if (active) setLoadingAllSubs(false);
+          });
+      } else {
+        setAllSubscriptions([]);
+      }
+    });
 
     fetchWorkspaceData(user.id, user.shopName)
       .then((ws) => {
@@ -450,15 +553,11 @@ export default function App() {
 
   const activeEmployee = useMemo(() => {
     const activeList = employees.filter((e) => e.isActive);
-    return (
-      activeList.find((e) => e.id === activeEmployeeId) ??
-      activeList.find((e) => e.role === 'admin') ??
-      activeList[0] ??
-      null
-    );
-  }, [employees, activeEmployeeId]);
+    if (!staffSession || isScreenLocked) return null;
+    return activeList.find((e) => e.id === (activeEmployeeId ?? staffSession.employeeId)) ?? null;
+  }, [employees, activeEmployeeId, staffSession, isScreenLocked]);
 
-  const activeRole: EmployeeRole = activeEmployee?.role ?? 'admin';
+  const activeRole: EmployeeRole = activeEmployee?.role ?? staffSession?.role ?? 'cashier';
 
   // Persist selected active employee per shopkeeper user
   useEffect(() => {
@@ -516,14 +615,37 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    const prevUserId = user?.id;
     await signOutShopkeeper();
+    if (prevUserId) {
+      saveStoredStaffSession(prevUserId, null);
+    }
     setUser(null);
+    setIsSuperAdmin(false);
+    setStaffSession(null);
+    setActiveEmployeeId(null);
+    setPendingSwitchEmployeeId(null);
     setIsScreenLocked(false);
     setShowStaffModal(false);
     setMobileMenuOpen(false);
     setCart([]);
     setActiveReceiptOrder(null);
     setLatestNewOrderId(null);
+    setRbacNotice(null);
+  };
+
+  const guardAction = (action: RoleAction): boolean => {
+    if (!hasRolePermission(activeRole, action)) {
+      setRbacNotice(t.rbacUnauthorizedError);
+      return false;
+    }
+    setRbacNotice(null);
+    void authorizeServerAction(action).then((err) => {
+      if (err) {
+        setCloudSyncError(err);
+      }
+    });
+    return true;
   };
 
   const handleAddToCart = (productId: string) => {
@@ -531,22 +653,31 @@ export default function App() {
     if (!product) return;
 
     setCart((prev) => {
-      const usedPositiveQty = prev
-        .filter((i) => i.productId === productId && !i.isReturn)
-        .reduce((s, i) => s + i.quantity, 0);
-      if (usedPositiveQty >= product.stock) return prev;
+      const usedPositiveQty = roundQuantity(
+        prev
+          .filter((i) => i.productId === productId && !i.isReturn)
+          .reduce((s, i) => s + i.quantity, 0)
+      );
+      const remaining = roundQuantity(product.stock - usedPositiveQty);
+      if (remaining <= 0) return prev;
 
+      const increment = remaining < 1 ? remaining : 1;
       const existing = prev.find(
         (item) => item.productId === productId && !item.isReturn
       );
       if (existing) {
         return prev.map((item) =>
           item.productId === productId && !item.isReturn
-            ? { ...item, quantity: item.quantity + 1 }
+            ? {
+                ...item,
+                quantity: roundQuantity(
+                  Math.min(product.stock, item.quantity + increment)
+                ),
+              }
             : item
         );
       }
-      return [...prev, { productId, quantity: 1, isReturn: false }];
+      return [...prev, { productId, quantity: increment, isReturn: false }];
     });
   };
 
@@ -564,12 +695,41 @@ export default function App() {
           if (item.productId !== productId || Boolean(item.isReturn) !== isReturn) {
             return item;
           }
-          const rawNext = item.quantity + delta;
-          const nextQty = isReturn ? rawNext : Math.min(maxStock, rawNext);
+          const rawNext = roundQuantity(item.quantity + delta);
+          const nextQty = isReturn
+            ? rawNext
+            : roundQuantity(Math.min(maxStock, rawNext));
           return { ...item, quantity: nextQty };
         })
         .filter((item) => item.quantity > 0)
     );
+  };
+
+  const handleSetCartQuantity = (
+    productId: string,
+    quantity: number,
+    isReturn = false
+  ) => {
+    const product = products.find((p) => p.id === productId);
+    const maxStock = product?.stock ?? 0;
+    const rounded = roundQuantity(quantity);
+
+    setCart((prev) => {
+      if (!Number.isFinite(rounded) || rounded <= 0) {
+        return prev.filter(
+          (item) =>
+            !(item.productId === productId && Boolean(item.isReturn) === isReturn)
+        );
+      }
+      const nextQty = isReturn ? rounded : roundQuantity(Math.min(maxStock, rounded));
+      return prev
+        .map((item) =>
+          item.productId === productId && Boolean(item.isReturn) === isReturn
+            ? { ...item, quantity: nextQty }
+            : item
+        )
+        .filter((item) => item.quantity > 0);
+    });
   };
 
   const handleToggleCartItemReturn = (
@@ -676,12 +836,12 @@ export default function App() {
     for (const cartItem of cart) {
       const product = products.find((p) => p.id === cartItem.productId);
       const isRet = Boolean(cartItem.isReturn);
-      if (!product || (!isRet && product.stock < cartItem.quantity)) continue;
+      const qty = roundQuantity(cartItem.quantity);
+      if (!product || qty <= 0 || (!isRet && product.stock + 0.0001 < qty)) continue;
 
-      const signedQty = isRet ? -cartItem.quantity : cartItem.quantity;
-      const signedLineTotal = isRet
-        ? -(product.price * cartItem.quantity)
-        : product.price * cartItem.quantity;
+      const signedQty = isRet ? -qty : qty;
+      const absLineTotal = roundCurrency(product.price * qty);
+      const signedLineTotal = isRet ? -absLineTotal : absLineTotal;
 
       lineItems.push({
         productId: product.id,
@@ -689,6 +849,7 @@ export default function App() {
         nameEn: product.nameEn,
         nameUr: product.nameUr,
         category: product.category,
+        sellingUnit: normalizeSellingUnit(product.sellingUnit),
         unitPrice: product.price,
         unitCost: product.cost,
         taxRate: product.taxRate ?? 0,
@@ -700,7 +861,9 @@ export default function App() {
 
     if (lineItems.length === 0) return null;
 
-    const subtotal = lineItems.reduce((sum, item) => sum + item.lineTotal, 0);
+    const subtotal = roundCurrency(
+      lineItems.reduce((sum, item) => sum + item.lineTotal, 0)
+    );
     const discountAmount =
       subtotal > 0 ? Math.round(subtotal * (discountPercent / 100)) : 0;
     const discountFactor = subtotal > 0 ? 1 - discountPercent / 100 : 1;
@@ -710,9 +873,9 @@ export default function App() {
         return sum + discountedLine * ((item.taxRate ?? 0) / 100);
       }, 0)
     );
-    const taxable = subtotal - discountAmount;
+    const taxable = roundCurrency(subtotal - discountAmount);
     const effectiveTaxRate = taxable !== 0 ? taxAmount / taxable : 0;
-    const total = taxable + taxAmount;
+    const total = roundCurrency(taxable + taxAmount);
 
     const effectiveTendered =
       paymentMethod === 'cash'
@@ -922,7 +1085,7 @@ export default function App() {
       if (!delta) return prod;
       return {
         ...prod,
-        stock: Math.max(0, prod.stock + delta),
+        stock: Math.max(0, roundQuantity(prod.stock + delta)),
       };
     });
 
@@ -999,30 +1162,33 @@ export default function App() {
     const discountFactor = 1 - targetOrder.discountPercent / 100;
 
     const updatedItems = targetOrder.items.map((item) => {
-      const remaining = Math.max(0, item.quantity - (item.returnedQty ?? 0));
-      totalRemainingBefore += remaining;
+      const remaining = Math.max(
+        0,
+        roundQuantity(item.quantity - (item.returnedQty ?? 0))
+      );
+      totalRemainingBefore = roundQuantity(totalRemainingBefore + remaining);
 
-      const requested = reqQtyMap.get(item.productId) ?? 0;
+      const requested = roundQuantity(reqQtyMap.get(item.productId) ?? 0);
       const qtyToApply = Math.min(remaining, Math.max(0, requested));
       if (qtyToApply <= 0) return item;
 
       appliedQtyMap.set(item.productId, qtyToApply);
-      totalReturnedNow += qtyToApply;
+      totalReturnedNow = roundQuantity(totalReturnedNow + qtyToApply);
 
-      const lineSub = item.unitPrice * qtyToApply;
-      returnedSubtotal += lineSub;
+      const lineSub = roundCurrency(item.unitPrice * qtyToApply);
+      returnedSubtotal = roundCurrency(returnedSubtotal + lineSub);
       returnedTax += lineSub * discountFactor * ((item.taxRate ?? 0) / 100);
 
       return {
         ...item,
-        returnedQty: (item.returnedQty ?? 0) + qtyToApply,
+        returnedQty: roundQuantity((item.returnedQty ?? 0) + qtyToApply),
         refundedQty:
           mode === 'refund'
-            ? (item.refundedQty ?? 0) + qtyToApply
+            ? roundQuantity((item.refundedQty ?? 0) + qtyToApply)
             : item.refundedQty ?? 0,
         exchangedQty:
           mode === 'exchange'
-            ? (item.exchangedQty ?? 0) + qtyToApply
+            ? roundQuantity((item.exchangedQty ?? 0) + qtyToApply)
             : item.exchangedQty ?? 0,
       };
     });
@@ -1051,16 +1217,19 @@ export default function App() {
         const roundedTax = Math.round(returnedTax);
         const computedRefund = Math.max(
           0,
-          returnedSubtotal - returnedDiscount + roundedTax
+          roundCurrency(returnedSubtotal - returnedDiscount + roundedTax)
         );
         addedRefundAmount = Math.min(targetOrder.total, computedRefund);
-        nextTotal = Math.max(0, targetOrder.total - addedRefundAmount);
-        nextSubtotal = Math.max(0, targetOrder.subtotal - returnedSubtotal);
+        nextTotal = Math.max(0, roundCurrency(targetOrder.total - addedRefundAmount));
+        nextSubtotal = Math.max(
+          0,
+          roundCurrency(targetOrder.subtotal - returnedSubtotal)
+        );
         nextDiscountAmount = Math.max(
           0,
-          targetOrder.discountAmount - returnedDiscount
+          roundCurrency(targetOrder.discountAmount - returnedDiscount)
         );
-        nextTaxAmount = Math.max(0, targetOrder.taxAmount - roundedTax);
+        nextTaxAmount = Math.max(0, roundCurrency(targetOrder.taxAmount - roundedTax));
       }
     }
 
@@ -1068,7 +1237,7 @@ export default function App() {
       targetOrder.returnStatus ?? 'completed';
     if (mode === 'refund') {
       const allUnitsRefunded = updatedItems.every(
-        (li) => (li.refundedQty ?? 0) >= li.quantity
+        (li) => roundQuantity(li.refundedQty ?? 0) >= roundQuantity(li.quantity)
       );
       nextReturnStatus = allUnitsRefunded ? 'refunded' : 'partially_refunded';
     } else if (nextReturnStatus !== 'partially_refunded') {
@@ -1083,7 +1252,9 @@ export default function App() {
       taxAmount: nextTaxAmount,
       total: nextTotal,
       returnStatus: nextReturnStatus,
-      refundedAmount: (targetOrder.refundedAmount ?? 0) + addedRefundAmount,
+      refundedAmount: roundCurrency(
+        (targetOrder.refundedAmount ?? 0) + addedRefundAmount
+      ),
       returnedAt: new Date().toISOString(),
       returnNote: reason || targetOrder.returnNote,
     };
@@ -1094,7 +1265,7 @@ export default function App() {
       if (addBackQty <= 0) return prod;
       const nextProd = {
         ...prod,
-        stock: prod.stock + addBackQty,
+        stock: roundQuantity(prod.stock + addBackQty),
       };
       restockedProducts.push(nextProd);
       return nextProd;
@@ -1114,12 +1285,15 @@ export default function App() {
 
   // Stock Management Handlers
   const handleAdjustStock = (productId: string, delta: number) => {
-    if (!user) return;
+    if (!user || !guardAction('inventory.write')) return;
     let updatedTarget: Product | null = null;
     setProducts((prev) =>
       prev.map((prod) => {
         if (prod.id !== productId) return prod;
-        updatedTarget = { ...prod, stock: Math.max(0, prod.stock + delta) };
+        updatedTarget = {
+          ...prod,
+          stock: Math.max(0, roundQuantity(prod.stock + delta)),
+        };
         return updatedTarget;
       })
     );
@@ -1131,9 +1305,11 @@ export default function App() {
   };
 
   const handleAddProduct = (newProd: Omit<Product, 'id'>) => {
-    if (!user) return;
+    if (!user || !guardAction('inventory.write')) return;
     const created: Product = {
       ...newProd,
+      sellingUnit: normalizeSellingUnit(newProd.sellingUnit),
+      stock: Math.max(0, roundQuantity(newProd.stock)),
       id: `${user.id.slice(0, 8)}-prod-${Date.now()}`,
     };
     setProducts((prev) => [created, ...prev]);
@@ -1143,17 +1319,22 @@ export default function App() {
   };
 
   const handleUpdateProduct = (updated: Product) => {
-    if (!user) return;
+    if (!user || !guardAction('inventory.write')) return;
+    const normalized: Product = {
+      ...updated,
+      sellingUnit: normalizeSellingUnit(updated.sellingUnit),
+      stock: Math.max(0, roundQuantity(updated.stock)),
+    };
     setProducts((prev) =>
-      prev.map((prod) => (prod.id === updated.id ? updated : prod))
+      prev.map((prod) => (prod.id === normalized.id ? normalized : prod))
     );
-    upsertProductRecord(user.id, updated).then((syncErr) => {
+    upsertProductRecord(user.id, normalized).then((syncErr) => {
       if (syncErr) setCloudSyncError(syncErr);
     });
   };
 
   const handleDeleteProduct = (productId: string) => {
-    if (!user || activeRole === 'cashier') return;
+    if (!user || !guardAction('inventory.write')) return;
     setProducts((prev) => prev.filter((prod) => prod.id !== productId));
     setCart((prev) => prev.filter((item) => item.productId !== productId));
     deleteProductRecord(user.id, productId).then((syncErr) => {
@@ -1276,6 +1457,7 @@ export default function App() {
       balance: Math.max(0, balance),
       createdAt: new Date().toISOString(),
     };
+    if (!guardAction('vendors.write')) return created;
     setVendors((prev) => [created, ...prev]);
     if (user) {
       upsertVendorRecord(user.id, created).then((syncErr) => {
@@ -1286,6 +1468,7 @@ export default function App() {
   };
 
   const handleUpdateVendor = (updated: Vendor) => {
+    if (!guardAction('vendors.write')) return;
     setVendors((prev) =>
       prev.map((v) => (v.id === updated.id ? updated : v))
     );
@@ -1297,6 +1480,7 @@ export default function App() {
   };
 
   const handleRecordVendorPayment = (vendorId: string, amount: number) => {
+    if (!guardAction('vendors.write')) return;
     const target = vendors.find((v) => v.id === vendorId);
     if (!target || amount <= 0) return;
 
@@ -1329,31 +1513,39 @@ export default function App() {
       productId: string;
       productName: string;
       sku: string;
+      sellingUnit?: SellingUnit;
       quantity: number;
       unitCost: number;
     }[];
   }): PurchaseRecord | null => {
-    if (!user || lines.length === 0) return null;
+    if (!user || lines.length === 0 || !guardAction('purchases.write')) return null;
     const vendor = vendors.find((v) => v.id === vendorId);
     if (!vendor) return null;
 
     const nowIso = new Date().toISOString();
     const purchaseId = generateUuid();
 
-    const items: PurchaseItem[] = lines.map((line) => ({
-      id: generateUuid(),
-      purchaseId,
-      productId: line.productId,
-      productName: line.productName,
-      sku: line.sku,
-      quantity: line.quantity,
-      unitCost: line.unitCost,
-      lineTotal: line.quantity * line.unitCost,
-    }));
+    const items: PurchaseItem[] = lines.map((line) => {
+      const prod = products.find((p) => p.id === line.productId);
+      const qty = roundQuantity(line.quantity);
+      return {
+        id: generateUuid(),
+        purchaseId,
+        productId: line.productId,
+        productName: line.productName,
+        sku: line.sku,
+        sellingUnit: normalizeSellingUnit(line.sellingUnit ?? prod?.sellingUnit),
+        quantity: qty,
+        unitCost: line.unitCost,
+        lineTotal: roundCurrency(qty * line.unitCost),
+      };
+    });
 
-    const totalAmount = items.reduce((sum, item) => sum + item.lineTotal, 0);
+    const totalAmount = roundCurrency(
+      items.reduce((sum, item) => sum + item.lineTotal, 0)
+    );
     const cleanPaid = Math.max(0, paidAmount);
-    const balanceDue = Math.max(0, totalAmount - cleanPaid);
+    const balanceDue = Math.max(0, roundCurrency(totalAmount - cleanPaid));
 
     const purchase: PurchaseRecord = {
       id: purchaseId,
@@ -1373,7 +1565,10 @@ export default function App() {
     const qtyByProd = new Map<string, number>();
     const costByProd = new Map<string, number>();
     for (const item of items) {
-      qtyByProd.set(item.productId, (qtyByProd.get(item.productId) ?? 0) + item.quantity);
+      qtyByProd.set(
+        item.productId,
+        roundQuantity((qtyByProd.get(item.productId) ?? 0) + item.quantity)
+      );
       costByProd.set(item.productId, item.unitCost);
     }
 
@@ -1383,14 +1578,14 @@ export default function App() {
       const latestCost = costByProd.get(prod.id) ?? prod.cost;
       return {
         ...prod,
-        stock: prod.stock + addedQty,
+        stock: roundQuantity(prod.stock + addedQty),
         cost: latestCost,
       };
     });
 
     const updatedVendor: Vendor = {
       ...vendor,
-      balance: vendor.balance + balanceDue,
+      balance: roundCurrency(vendor.balance + balanceDue),
     };
 
     setPurchases((prev) => [purchase, ...prev]);
@@ -1419,13 +1614,13 @@ export default function App() {
     quantityChange: number;
     reason: string;
   }) => {
-    if (!user || quantityChange === 0) return;
+    if (!user || quantityChange === 0 || !guardAction('inventory.write')) return;
     const product = products.find((p) => p.id === productId);
     if (!product) return;
 
-    const previousStock = product.stock;
-    const newStock = Math.max(0, previousStock + quantityChange);
-    const actualDelta = newStock - previousStock;
+    const previousStock = roundQuantity(product.stock);
+    const newStock = Math.max(0, roundQuantity(previousStock + quantityChange));
+    const actualDelta = roundQuantity(newStock - previousStock);
 
     const updatedProduct: Product = {
       ...product,
@@ -1437,6 +1632,7 @@ export default function App() {
       productId: product.id,
       productName: lang === 'ur' ? product.nameUr : product.nameEn,
       sku: product.sku,
+      sellingUnit: normalizeSellingUnit(product.sellingUnit),
       adjustmentType,
       quantityChange: actualDelta,
       previousStock,
@@ -1498,7 +1694,7 @@ export default function App() {
   };
 
   const handleDeleteCustomer = (customerId: string) => {
-    if (!user || activeRole !== 'admin') return;
+    if (!user || !guardAction('customers.delete')) return;
     setCustomers((prev) => prev.filter((c) => c.id !== customerId));
     deleteCustomerRecord(user.id, customerId).then((syncErr) => {
       if (syncErr) setCloudSyncError(syncErr);
@@ -1523,56 +1719,64 @@ export default function App() {
     }
   };
 
-  const handleAddEmployee = ({
+  const handleSaveEmployee = async ({
+    id,
     name,
     phone,
     role,
-    pinCode,
+    pin,
     isActive,
   }: {
+    id?: string;
     name: string;
     phone: string;
     role: EmployeeRole;
-    pinCode: string;
+    pin?: string;
     isActive: boolean;
-  }) => {
-    if (!user || activeRole !== 'admin') return;
+  }): Promise<string | null> => {
+    if (!user) return 'Not signed in.';
+    if (!guardAction('staff.manage')) return t.rbacUnauthorizedError;
+
     const prefix = user.id.slice(0, 8);
-    const created: Employee = {
-      id: `${prefix}-emp-${Date.now()}`,
+    const existing = id ? employees.find((e) => e.id === id) : undefined;
+    const empId = existing?.id ?? `${prefix}-emp-${Date.now()}`;
+    const createdAt = existing?.createdAt ?? new Date().toISOString();
+
+    const { employee, error } = await saveEmployeeRecord(user.id, {
+      id: empId,
       name,
       phone,
       role,
-      pinCode,
+      pin,
       isActive,
-      createdAt: new Date().toISOString(),
-    };
-    setEmployees((prev) => [...prev, created]);
-    upsertEmployeeRecord(user.id, created).then((syncErr) => {
-      if (syncErr) setCloudSyncError(syncErr);
+      createdAt,
     });
-  };
 
-  const handleUpdateEmployee = (updated: Employee) => {
-    if (!user || activeRole !== 'admin') return;
+    if (error || !employee) {
+      return error || 'Failed to save staff member.';
+    }
+
     setEmployees((prev) =>
-      prev.map((e) => (e.id === updated.id ? updated : e))
+      existing
+        ? prev.map((e) => (e.id === employee.id ? employee : e))
+        : [...prev, employee]
     );
-    upsertEmployeeRecord(user.id, updated).then((syncErr) => {
-      if (syncErr) setCloudSyncError(syncErr);
-    });
+    return null;
   };
 
-  const handleDeleteEmployee = (employeeId: string) => {
-    if (!user || activeRole !== 'admin') return;
+  const handleDeleteEmployee = async (employeeId: string): Promise<string | null> => {
+    if (!user) return 'Not signed in.';
+    if (!guardAction('staff.manage')) return t.rbacUnauthorizedError;
+
+    const err = await deleteEmployeeRecord(user.id, employeeId);
+    if (err) return err;
+
     setEmployees((prev) => prev.filter((e) => e.id !== employeeId));
-    deleteEmployeeRecord(user.id, employeeId).then((syncErr) => {
-      if (syncErr) setCloudSyncError(syncErr);
-    });
+    return null;
   };
 
   const handleSaveStoreSettings = (nextSettings: StoreSettings) => {
-    if (!user || activeRole !== 'admin') return;
+    if (!user || !guardAction('settings.write')) return;
     setStoreSettings(nextSettings);
     upsertStoreSettingsRecord(user.id, nextSettings).then((syncErr) => {
       if (syncErr) setCloudSyncError(syncErr);
@@ -1581,7 +1785,7 @@ export default function App() {
 
   // Phase 5: Daily Shop Expenses & SaaS Subscription Handlers
   const handleAddExpense = (payload: Omit<ExpenseRecord, 'id' | 'createdAt'>) => {
-    if (!user || activeRole === 'cashier') return;
+    if (!user || !guardAction('expenses.write')) return;
     const created: ExpenseRecord = {
       ...payload,
       id: generateUuid(),
@@ -1594,7 +1798,7 @@ export default function App() {
   };
 
   const handleUpdateExpense = (updated: ExpenseRecord) => {
-    if (!user || activeRole === 'cashier') return;
+    if (!user || !guardAction('expenses.write')) return;
     setExpenses((prev) =>
       prev.map((e) => (e.id === updated.id ? updated : e))
     );
@@ -1604,7 +1808,7 @@ export default function App() {
   };
 
   const handleDeleteExpense = (expenseId: string) => {
-    if (!user || activeRole !== 'admin') return;
+    if (!user || !guardAction('expenses.write')) return;
     setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
     deleteExpenseRecord(user.id, expenseId).then((syncErr) => {
       if (syncErr) setCloudSyncError(syncErr);
@@ -1659,21 +1863,53 @@ export default function App() {
     }
   };
 
-  const handleSelectEmployeeByPin = (emp: Employee) => {
-    setActiveEmployeeId(emp.id);
+  const handleVerifyStaffPin = async (
+    pin: string,
+    targetEmployeeId?: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!user) return { ok: false, error: 'Not signed in.' };
+    const result = await verifyStaffPinRecord(user.id, pin, targetEmployeeId);
+    if (!result.ok || !result.token || !result.employeeId || !result.role || !result.expiresAt) {
+      return { ok: false, error: result.error || t.invalidPinError };
+    }
+
+    const nextSession: StaffSessionInfo = {
+      token: result.token,
+      employeeId: result.employeeId,
+      role: result.role,
+      expiresAt: result.expiresAt,
+    };
+    saveStoredStaffSession(user.id, nextSession);
+    setStaffSession(nextSession);
+    setActiveEmployeeId(result.employeeId);
+    setPendingSwitchEmployeeId(null);
     setIsScreenLocked(false);
     setShowStaffModal(false);
+    setRbacNotice(null);
+
     if (activeTab === 'saas_admin') {
       if (!isSuperAdmin) setActiveTab('pos');
-      return;
+      return { ok: true };
     }
-    if (!ROLE_ALLOWED_TABS[emp.role].includes(activeTab)) {
+    if (!ROLE_ALLOWED_TABS[result.role].includes(activeTab)) {
       setActiveTab('pos');
     }
+    return { ok: true };
+  };
+
+  const handleLockScreen = () => {
+    if (user) {
+      saveStoredStaffSession(user.id, null);
+    }
+    setStaffSession(null);
+    setActiveEmployeeId(null);
+    setPendingSwitchEmployeeId(null);
+    setShowStaffModal(false);
+    setIsScreenLocked(true);
   };
 
   const handleResetDemo = () => {
-    if (!user || activeRole !== 'admin') return;
+    if (!user || !guardAction('workspace.reset')) return;
     setLoadingData(true);
     resetUserDemoWorkspace(user.id, storeSettings.storeName || user.shopName)
       .then((ws) => {
@@ -1759,7 +1995,7 @@ export default function App() {
         mobileMenuOpen={mobileMenuOpen}
         isSuperAdmin={isSuperAdmin}
         subscription={subscription}
-        onLockScreen={() => setIsScreenLocked(true)}
+        onLockScreen={handleLockScreen}
         isOnline={isEffectiveOnline}
         pendingSyncCount={pendingSyncCount}
         isSyncingOffline={isSyncingOffline}
@@ -1775,9 +2011,12 @@ export default function App() {
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         activeRole={activeRole}
-        activeEmployeeName={activeEmployee?.name ?? 'Admin'}
+        activeEmployeeName={activeEmployee?.name ?? t.roleCashier}
         isSuperAdmin={isSuperAdmin}
-        onOpenStaffSwitcher={() => setShowStaffModal(true)}
+        onOpenStaffSwitcher={() => {
+          setPendingSwitchEmployeeId(null);
+          setShowStaffModal(true);
+        }}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
         shopName={activeStoreName}
@@ -1792,6 +2031,22 @@ export default function App() {
             onRetry={handleRetrySync}
             t={t}
           />
+        )}
+
+        {rbacNotice && (
+          <div className="no-print bg-red-50 border-b border-red-200 px-4 sm:px-6 py-2.5">
+            <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-3 text-xs font-semibold text-red-900">
+              <span>{rbacNotice}</span>
+              <button
+                type="button"
+                onClick={() => setRbacNotice(null)}
+                aria-label={t.closeBtn}
+                className="p-1 text-red-700 hover:text-red-950 rounded cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
         )}
 
         {syncToastMessage && (
@@ -1852,12 +2107,19 @@ export default function App() {
                 onCreateInlineKhataCustomer={handleCreateInlineKhataCustomer}
                 onAddToCart={handleAddToCart}
                 onUpdateQuantity={handleUpdateQuantity}
+                onSetQuantity={handleSetCartQuantity}
                 onToggleReturn={handleToggleCartItemReturn}
                 onRemoveFromCart={handleRemoveFromCart}
                 onClearCart={handleClearCart}
                 onCompleteSale={handleCompleteSale}
                 onGoToDashboard={() => setActiveTab('dashboard')}
                 lastCompletedOrder={latestCompletedOrder}
+                scannerDisabled={
+                  Boolean(activeReceiptOrder) ||
+                  showStaffModal ||
+                  isScreenLocked ||
+                  isSubscriptionLocked
+                }
                 lang={lang}
                 t={t}
               />
@@ -1992,10 +2254,12 @@ export default function App() {
               <StaffView
                 employees={employees}
                 activeEmployeeId={activeEmployee?.id ?? null}
-                onAddEmployee={handleAddEmployee}
-                onUpdateEmployee={handleUpdateEmployee}
+                onSaveEmployee={handleSaveEmployee}
                 onDeleteEmployee={handleDeleteEmployee}
-                onSwitchActiveEmployee={(empId) => setActiveEmployeeId(empId)}
+                onRequestSwitchEmployee={(empId) => {
+                  setPendingSwitchEmployeeId(empId);
+                  setShowStaffModal(true);
+                }}
                 t={t}
               />
             )}
@@ -2041,13 +2305,14 @@ export default function App() {
           isLocked={isScreenLocked}
           employees={employees}
           activeEmployee={activeEmployee}
+          initialTargetEmployeeId={pendingSwitchEmployeeId}
           shopName={activeStoreName}
-          onSelectEmployeeByPin={handleSelectEmployeeByPin}
-          onLockScreen={() => {
+          onVerifyPin={handleVerifyStaffPin}
+          onLockScreen={handleLockScreen}
+          onClose={() => {
+            setPendingSwitchEmployeeId(null);
             setShowStaffModal(false);
-            setIsScreenLocked(true);
           }}
-          onClose={() => setShowStaffModal(false)}
           onLogout={handleLogout}
           t={t}
         />

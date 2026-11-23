@@ -3,6 +3,9 @@ import {
   AlertTriangle,
   Barcode,
   CheckCircle2,
+  CheckSquare,
+  Download,
+  FileSpreadsheet,
   Pencil,
   Plus,
   RefreshCw,
@@ -14,18 +17,34 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
+  exportProductsToCsv,
+  parseProductsFromCsv,
+  type ImportedProductDraft,
+} from '../lib/csvUtils';
+import {
   formatCurrency,
   formatDateTime,
   getCategoryLabel,
   type TranslationStrings,
 } from '../i18n';
 import { uploadProductImage } from '../lib/posRepository';
+import {
+  SELLING_UNITS,
+  formatQuantity,
+  formatQuantityWithUnit,
+  getUnitLabel,
+  getUnitOptionLabel,
+  isValidSellingUnit,
+  normalizeSellingUnit,
+  roundQuantity,
+} from '../lib/unitUtils';
 import type {
   AdjustmentType,
   CategoryId,
   InventoryAdjustment,
   Language,
   Product,
+  SellingUnit,
 } from '../types';
 import { BarcodeStickerModal } from './BarcodeStickerModal';
 import { ProductImage } from './ProductImage';
@@ -46,6 +65,8 @@ interface InventoryViewProps {
   onAddProduct: (product: Omit<Product, 'id'>) => void;
   onUpdateProduct: (product: Product) => void;
   onDeleteProduct: (productId: string) => void;
+  onBulkImportProducts?: (drafts: ImportedProductDraft[]) => void;
+  onBulkUpdateProducts?: (ids: string[], patch: Partial<Product>) => void;
   lang: Language;
   t: TranslationStrings;
 }
@@ -54,11 +75,20 @@ type ProductFormState = {
   nameEn: string;
   nameUr: string;
   category: Exclude<CategoryId, 'all'>;
+  brand: string;
+  variant: string;
+  sellingUnit: SellingUnit | '';
   barcode: string;
+  qrCode: string;
   price: string;
+  wholesalePrice: string;
   cost: string;
   taxRate: string;
   stock: string;
+  minStock: string;
+  reorderLevel: string;
+  batchNumber: string;
+  expiryDate: string;
   image: string;
 };
 
@@ -66,13 +96,34 @@ const EMPTY_FORM: ProductFormState = {
   nameEn: '',
   nameUr: '',
   category: 'pantry',
+  brand: '',
+  variant: '',
+  sellingUnit: '',
   barcode: '',
+  qrCode: '',
   price: '',
+  wholesalePrice: '',
   cost: '',
   taxRate: '0',
   stock: '10',
+  minStock: '5',
+  reorderLevel: '10',
+  batchNumber: '',
+  expiryDate: '',
   image: '',
 };
+
+function getExpiryStatus(expiryDate?: string): 'expired' | 'expiring_soon' | null {
+  if (!expiryDate) return null;
+  const parsed = new Date(`${expiryDate}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.ceil((parsed.getTime() - todayMidnight.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) return 'expired';
+  if (diffDays <= 30) return 'expiring_soon';
+  return null;
+}
 
 function generateUnique12DigitBarcode(existingProducts: Product[]): string {
   const used = new Set(existingProducts.map((p) => p.barcode));
@@ -98,6 +149,8 @@ export function InventoryView({
   onAddProduct,
   onUpdateProduct,
   onDeleteProduct,
+  onBulkImportProducts,
+  onBulkUpdateProducts,
   lang,
   t,
 }: InventoryViewProps) {
@@ -106,6 +159,7 @@ export function InventoryView({
   const [modalMode, setModalMode] = useState<'closed' | 'add' | 'edit'>('closed');
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM);
+  const [formError, setFormError] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [pendingDeleteProduct, setPendingDeleteProduct] = useState<Product | null>(
@@ -113,8 +167,23 @@ export function InventoryView({
   );
   const [stickerProduct, setStickerProduct] = useState<Pick<
     Product,
-    'nameEn' | 'nameUr' | 'barcode' | 'sku' | 'price'
+    'id' | 'nameEn' | 'nameUr' | 'barcode' | 'qrCode' | 'sku' | 'price'
   > | null>(null);
+
+  // Bulk Edit & CSV Import state
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkCategory, setBulkCategory] = useState<'' | Exclude<CategoryId, 'all'>>('');
+  const [bulkTaxRate, setBulkTaxRate] = useState('');
+  const [bulkMinStock, setBulkMinStock] = useState('');
+  const [bulkPriceDeltaPct, setBulkPriceDeltaPct] = useState('');
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [csvImportText, setCsvImportText] = useState('');
+  const [csvImportResult, setCsvImportResult] = useState<{
+    valid: ImportedProductDraft[];
+    errors: string[];
+  } | null>(null);
 
   // Stock Adjustment Modal state
   const [showAdjustModal, setShowAdjustModal] = useState(false);
@@ -128,10 +197,18 @@ export function InventoryView({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const productUnitMap = useMemo(() => {
+    const map = new Map<string, SellingUnit>();
+    for (const p of products) {
+      map.set(p.id, normalizeSellingUnit(p.sellingUnit));
+    }
+    return map;
+  }, [products]);
+
   const stockStats = useMemo(() => {
-    const totalUnits = products.reduce((sum, p) => sum + p.stock, 0);
+    const totalUnits = roundQuantity(products.reduce((sum, p) => sum + p.stock, 0));
     const totalStockValue = products.reduce((sum, p) => sum + p.stock * p.cost, 0);
-    const lowStockCount = products.filter((p) => p.stock <= 5).length;
+    const lowStockCount = products.filter((p) => p.stock <= (p.minStock ?? 5)).length;
     return {
       totalProducts: products.length,
       totalUnits,
@@ -143,14 +220,17 @@ export function InventoryView({
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return products.filter((p) => {
-      if (stockFilter === 'healthy' && p.stock <= 5) return false;
-      if (stockFilter === 'low' && p.stock > 5) return false;
+      const minLevel = p.minStock ?? 5;
+      if (stockFilter === 'healthy' && p.stock <= minLevel) return false;
+      if (stockFilter === 'low' && p.stock > minLevel) return false;
       if (!q) return true;
       return (
         p.nameEn.toLowerCase().includes(q) ||
         p.nameUr.toLowerCase().includes(q) ||
         p.sku.toLowerCase().includes(q) ||
-        p.barcode.toLowerCase().includes(q)
+        p.barcode.toLowerCase().includes(q) ||
+        (p.brand ?? '').toLowerCase().includes(q) ||
+        (p.batchNumber ?? '').toLowerCase().includes(q)
       );
     });
   }, [products, searchQuery, stockFilter]);
@@ -163,6 +243,7 @@ export function InventoryView({
 
   const openAddModal = () => {
     setEditingProductId(null);
+    setFormError(null);
     setUploadError(null);
     setForm({
       ...EMPTY_FORM,
@@ -173,16 +254,27 @@ export function InventoryView({
 
   const openEditModal = (product: Product) => {
     setEditingProductId(product.id);
+    setFormError(null);
     setUploadError(null);
     setForm({
       nameEn: product.nameEn,
       nameUr: product.nameUr,
       category: product.category,
+      brand: product.brand ?? '',
+      variant: product.variant ?? '',
+      sellingUnit: normalizeSellingUnit(product.sellingUnit),
       barcode: product.barcode || product.sku,
+      qrCode: product.qrCode ?? '',
       price: String(product.price),
+      wholesalePrice:
+        product.wholesalePrice !== undefined ? String(product.wholesalePrice) : '',
       cost: String(product.cost),
       taxRate: String(product.taxRate ?? 0),
       stock: String(product.stock),
+      minStock: String(product.minStock ?? 5),
+      reorderLevel: String(product.reorderLevel ?? 10),
+      batchNumber: product.batchNumber ?? '',
+      expiryDate: product.expiryDate ?? '',
       image: product.image,
     });
     setModalMode('edit');
@@ -191,6 +283,7 @@ export function InventoryView({
   const closeModal = () => {
     setModalMode('closed');
     setEditingProductId(null);
+    setFormError(null);
     setUploadError(null);
   };
 
@@ -218,16 +311,28 @@ export function InventoryView({
   const handleSaveProduct = (e: React.FormEvent) => {
     e.preventDefault();
     if (uploadingPhoto) return;
+    setFormError(null);
 
     const cleanNameEn = form.nameEn.trim();
     if (!cleanNameEn) return;
 
+    if (!isValidSellingUnit(form.sellingUnit)) {
+      setFormError(t.sellingUnitRequiredError);
+      return;
+    }
+
     const cleanNameUr = form.nameUr.trim() || cleanNameEn;
     const priceNum = Math.max(0, Number(form.price) || 0);
+    const wholesaleNum =
+      form.wholesalePrice.trim() !== ''
+        ? Math.max(0, Number(form.wholesalePrice) || 0)
+        : undefined;
     const costNum =
       form.cost.trim() === '' ? 0 : Math.max(0, Number(form.cost) || 0);
     const taxNum = Math.max(0, Number(form.taxRate) || 0);
-    const stockNum = Math.max(0, Math.floor(Number(form.stock) || 0));
+    const stockNum = Math.max(0, roundQuantity(Number(form.stock) || 0));
+    const minStockNum = Math.max(0, roundQuantity(Number(form.minStock) || 5));
+    const reorderNum = Math.max(0, roundQuantity(Number(form.reorderLevel) || 10));
     const cleanBarcode =
       form.barcode.trim() || generateUnique12DigitBarcode(products);
     const prefix =
@@ -237,6 +342,17 @@ export function InventoryView({
         ? 'BAK'
         : 'PAN';
 
+    const extraFields = {
+      brand: form.brand.trim() || undefined,
+      variant: form.variant.trim() || undefined,
+      qrCode: form.qrCode.trim() || undefined,
+      wholesalePrice: wholesaleNum,
+      minStock: minStockNum,
+      reorderLevel: reorderNum,
+      batchNumber: form.batchNumber.trim() || undefined,
+      expiryDate: form.expiryDate.trim() || undefined,
+    };
+
     if (modalMode === 'add') {
       const sku = `${prefix}-${String(101 + products.length)}`;
       onAddProduct({
@@ -245,11 +361,13 @@ export function InventoryView({
         nameEn: cleanNameEn,
         nameUr: cleanNameUr,
         category: form.category,
+        sellingUnit: form.sellingUnit,
         price: priceNum,
         cost: costNum,
         taxRate: taxNum,
         stock: stockNum,
         image: form.image,
+        ...extraFields,
       });
     } else if (modalMode === 'edit' && editingProductId) {
       const existing = products.find((p) => p.id === editingProductId);
@@ -259,17 +377,112 @@ export function InventoryView({
           nameEn: cleanNameEn,
           nameUr: cleanNameUr,
           category: form.category,
+          sellingUnit: form.sellingUnit,
           barcode: cleanBarcode,
           price: priceNum,
           cost: costNum,
           taxRate: taxNum,
           stock: stockNum,
           image: form.image,
+          ...extraFields,
         });
       }
     }
 
     closeModal();
+  };
+
+  const handleExportCsv = () => {
+    const csv = exportProductsToCsv(products);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory-catalog-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleParseCsvInput = (raw: string) => {
+    setCsvImportText(raw);
+    if (!raw.trim()) {
+      setCsvImportResult(null);
+      return;
+    }
+    setCsvImportResult(parseProductsFromCsv(raw));
+  };
+
+  const handleConfirmCsvImport = () => {
+    if (!csvImportResult || csvImportResult.valid.length === 0) return;
+    if (onBulkImportProducts) {
+      onBulkImportProducts(csvImportResult.valid);
+    } else {
+      for (const item of csvImportResult.valid) {
+        onAddProduct({
+          sku: item.sku,
+          barcode: item.barcode || generateUnique12DigitBarcode(products),
+          qrCode: item.qrCode,
+          nameEn: item.nameEn,
+          nameUr: item.nameUr,
+          category: item.category,
+          brand: item.brand,
+          variant: item.variant,
+          sellingUnit: item.sellingUnit,
+          cost: item.cost,
+          price: item.price,
+          wholesalePrice: item.wholesalePrice,
+          taxRate: item.taxRate,
+          stock: item.stock,
+          minStock: item.minStock,
+          reorderLevel: item.reorderLevel,
+          batchNumber: item.batchNumber,
+          expiryDate: item.expiryDate,
+          image: '',
+        });
+      }
+    }
+    setShowImportModal(false);
+    setCsvImportText('');
+    setCsvImportResult(null);
+  };
+
+  const toggleProductSelection = (id: string) => {
+    setSelectedProductIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleApplyBulkEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedProductIds.length === 0) return;
+    const patch: Partial<Product> = {};
+    if (bulkCategory) patch.category = bulkCategory;
+    if (bulkTaxRate.trim() !== '') patch.taxRate = Math.max(0, Number(bulkTaxRate) || 0);
+    if (bulkMinStock.trim() !== '')
+      patch.minStock = Math.max(0, roundQuantity(Number(bulkMinStock) || 0));
+
+    const pctDelta = Number(bulkPriceDeltaPct);
+    const hasPriceDelta = bulkPriceDeltaPct.trim() !== '' && Number.isFinite(pctDelta) && pctDelta !== 0;
+
+    if (onBulkUpdateProducts && !hasPriceDelta) {
+      onBulkUpdateProducts(selectedProductIds, patch);
+    } else {
+      const selectedSet = new Set(selectedProductIds);
+      for (const p of products) {
+        if (!selectedSet.has(p.id)) continue;
+        const nextPrice = hasPriceDelta
+          ? Math.max(1, Math.round(p.price * (1 + pctDelta / 100)))
+          : p.price;
+        onUpdateProduct({ ...p, ...patch, price: nextPrice });
+      }
+    }
+
+    setShowBulkModal(false);
+    setSelectedProductIds([]);
+    setBulkCategory('');
+    setBulkTaxRate('');
+    setBulkMinStock('');
+    setBulkPriceDeltaPct('');
   };
 
   const openAdjustModal = (targetProductId?: string) => {
@@ -288,11 +501,11 @@ export function InventoryView({
     [products, adjustProductId]
   );
 
-  const adjustQtyNum = Math.max(0, Math.floor(Number(adjustQty) || 0));
+  const adjustQtyNum = Math.max(0, roundQuantity(Number(adjustQty) || 0));
   const signedAdjustDelta =
     adjustDirection === 'add' ? adjustQtyNum : -adjustQtyNum;
   const previewNewStock = selectedAdjustProduct
-    ? Math.max(0, selectedAdjustProduct.stock + signedAdjustDelta)
+    ? Math.max(0, roundQuantity(selectedAdjustProduct.stock + signedAdjustDelta))
     : 0;
 
   const handleSubmitAdjustment = (e: React.FormEvent) => {
@@ -321,6 +534,8 @@ export function InventoryView({
         return t.adjTypeLost;
       case 'Stock Count Correction':
         return t.adjTypeCorrection;
+      default:
+        return type;
     }
   };
 
@@ -334,7 +549,43 @@ export function InventoryView({
           <p className="text-sm text-slate-600 mt-1">{t.inventorySubtitle}</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {selectedProductIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowBulkModal(true)}
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-teal-900 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-lg whitespace-nowrap min-h-[44px] transition-colors cursor-pointer"
+            >
+              <CheckSquare className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span>
+                {t.bulkEditBtn} ({selectedProductIds.length})
+              </span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            disabled={products.length === 0}
+            className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-50 rounded-lg whitespace-nowrap min-h-[44px] transition-colors cursor-pointer"
+          >
+            <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>{t.exportCsvBtn}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setCsvImportText('');
+              setCsvImportResult(null);
+              setShowImportModal(true);
+            }}
+            className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg whitespace-nowrap min-h-[44px] transition-colors cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>{t.importCsvBtn}</span>
+          </button>
+
           <button
             type="button"
             disabled={products.length === 0}
@@ -368,7 +619,7 @@ export function InventoryView({
         <div className="bg-white border border-slate-200 rounded-xl p-5">
           <p className="text-xs font-medium text-slate-500">{t.totalUnitsInStockLabel}</p>
           <p className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-2">
-            {stockStats.totalUnits}
+            {formatQuantity(stockStats.totalUnits)}
           </p>
         </div>
 
@@ -453,7 +704,25 @@ export function InventoryView({
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
                 <tr>
-                  <th className="py-3 px-5 text-start font-medium">{t.productCol}</th>
+                  <th className="py-3 ps-4 pe-2 w-8">
+                    <input
+                      type="checkbox"
+                      aria-label={t.bulkEditBtn}
+                      checked={
+                        filteredProducts.length > 0 &&
+                        filteredProducts.every((p) => selectedProductIds.includes(p.id))
+                      }
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedProductIds(filteredProducts.map((p) => p.id));
+                        } else {
+                          setSelectedProductIds([]);
+                        }
+                      }}
+                      className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                    />
+                  </th>
+                  <th className="py-3 px-4 text-start font-medium">{t.productCol}</th>
                   <th className="py-3 px-4 text-start font-medium">{t.barcodeLabel}</th>
                   <th className="py-3 px-4 text-end font-medium">{t.costCol}</th>
                   <th className="py-3 px-4 text-end font-medium">{t.priceCol}</th>
@@ -467,13 +736,24 @@ export function InventoryView({
               <tbody className="divide-y divide-slate-100">
                 {filteredProducts.map((product) => {
                   const name = lang === 'ur' ? product.nameUr : product.nameEn;
+                  const minLevel = product.minStock ?? 5;
                   const isOut = product.stock === 0;
-                  const isLow = product.stock > 0 && product.stock <= 5;
+                  const isLow = product.stock > 0 && product.stock <= minLevel;
                   const stockValue = product.stock * product.cost;
+                  const expiryStatus = getExpiryStatus(product.expiryDate);
 
                   return (
                     <tr key={product.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-3 px-5">
+                      <td className="py-3 ps-4 pe-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedProductIds.includes(product.id)}
+                          onChange={() => toggleProductSelection(product.id)}
+                          aria-label={name}
+                          className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                        />
+                      </td>
+                      <td className="py-3 px-4">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-lg overflow-hidden bg-slate-100 shrink-0">
                             <ProductImage
@@ -483,11 +763,32 @@ export function InventoryView({
                             />
                           </div>
                           <div>
-                            <div className="font-semibold text-slate-900">{name}</div>
+                            <div className="font-semibold text-slate-900 flex flex-wrap items-center gap-1.5">
+                              <span>{name}</span>
+                              {expiryStatus === 'expired' && (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                                  {t.expiredBadge}
+                                </span>
+                              )}
+                              {expiryStatus === 'expiring_soon' && (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                                  {t.expiringSoonBadge}
+                                </span>
+                              )}
+                            </div>
                             <div className="text-xs text-slate-500">
                               {getCategoryLabel(product.category, t)} ·{' '}
                               <span className="font-mono">{product.sku}</span>
+                              {product.brand ? ` · ${product.brand}` : ''}
+                              {product.variant ? ` (${product.variant})` : ''}
                             </div>
+                            {(product.batchNumber || product.expiryDate) && (
+                              <div className="text-[11px] font-mono text-slate-400">
+                                {product.batchNumber ? `Batch: ${product.batchNumber}` : ''}
+                                {product.batchNumber && product.expiryDate ? ' · ' : ''}
+                                {product.expiryDate ? `Exp: ${product.expiryDate}` : ''}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -499,12 +800,16 @@ export function InventoryView({
                       </td>
                       <td className="py-3 px-4 text-end font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
                         {formatCurrency(product.price, lang)}
+                        <span className="text-[11px] font-normal text-slate-500">
+                          {' '}
+                          / {getUnitLabel(product.sellingUnit, lang)}
+                        </span>
                       </td>
                       <td className="py-3 px-4 text-end font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
                         {product.taxRate ?? 0}%
                       </td>
-                      <td className="py-3 px-4 text-end font-mono font-bold text-slate-900 tabular-nums">
-                        {product.stock}
+                      <td className="py-3 px-4 text-end font-mono font-bold text-slate-900 tabular-nums whitespace-nowrap">
+                        {formatQuantityWithUnit(product.stock, product.sellingUnit, lang)}
                       </td>
                       <td className="py-3 px-4 text-end font-mono text-xs font-semibold text-slate-700 tabular-nums whitespace-nowrap">
                         {formatCurrency(stockValue, lang)}
@@ -561,9 +866,11 @@ export function InventoryView({
                             type="button"
                             onClick={() =>
                               setStickerProduct({
+                                id: product.id,
                                 nameEn: product.nameEn,
                                 nameUr: product.nameUr,
                                 barcode: product.barcode,
+                                qrCode: product.qrCode,
                                 sku: product.sku,
                                 price: product.price,
                               })
@@ -637,39 +944,45 @@ export function InventoryView({
                   </td>
                 </tr>
               ) : (
-                adjustments.map((adj) => (
-                  <tr key={adj.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-3 px-4 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
-                      {formatDateTime(adj.createdAt)}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="text-xs font-semibold text-slate-900">
-                        {adj.productName}
-                      </div>
-                      <div className="text-[11px] font-mono text-slate-400">
-                        {adj.sku}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-xs font-medium text-slate-700 whitespace-nowrap">
-                      {getAdjustmentTypeLabel(adj.adjustmentType)}
-                    </td>
-                    <td
-                      className={`py-3 px-4 text-end font-mono text-xs font-bold tabular-nums whitespace-nowrap ${
-                        adj.quantityChange >= 0 ? 'text-emerald-700' : 'text-red-700'
-                      }`}
-                    >
-                      {adj.quantityChange >= 0
-                        ? `+${adj.quantityChange}`
-                        : adj.quantityChange}
-                    </td>
-                    <td className="py-3 px-4 text-end font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
-                      {adj.previousStock} → {adj.newStock}
-                    </td>
-                    <td className="py-3 px-4 text-xs text-slate-600">
-                      {adj.reason || '—'}
-                    </td>
-                  </tr>
-                ))
+                adjustments.map((adj) => {
+                  const adjUnit =
+                    adj.sellingUnit ?? productUnitMap.get(adj.productId) ?? 'piece';
+                  return (
+                    <tr key={adj.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="py-3 px-4 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
+                        {formatDateTime(adj.createdAt)}
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="text-xs font-semibold text-slate-900">
+                          {adj.productName}
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-400">
+                          {adj.sku}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 text-xs font-medium text-slate-700 whitespace-nowrap">
+                        {getAdjustmentTypeLabel(adj.adjustmentType)}
+                      </td>
+                      <td
+                        className={`py-3 px-4 text-end font-mono text-xs font-bold tabular-nums whitespace-nowrap ${
+                          adj.quantityChange >= 0 ? 'text-emerald-700' : 'text-red-700'
+                        }`}
+                      >
+                        {adj.quantityChange >= 0
+                          ? `+${formatQuantity(adj.quantityChange)}`
+                          : formatQuantity(adj.quantityChange)}{' '}
+                        {getUnitLabel(adjUnit, lang)}
+                      </td>
+                      <td className="py-3 px-4 text-end font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
+                        {formatQuantity(adj.previousStock)} → {formatQuantity(adj.newStock)}{' '}
+                        {getUnitLabel(adjUnit, lang)}
+                      </td>
+                      <td className="py-3 px-4 text-xs text-slate-600">
+                        {adj.reason || '—'}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -703,6 +1016,15 @@ export function InventoryView({
               onSubmit={handleSaveProduct}
               className="p-5 space-y-4 max-h-[82vh] overflow-y-auto"
             >
+              {formError && (
+                <div
+                  role="alert"
+                  className="bg-red-50 border border-red-200 text-red-800 text-xs font-medium rounded-lg px-3.5 py-2.5"
+                >
+                  {formError}
+                </div>
+              )}
+
               {/* Product Photo Upload & Preview */}
               <div className="flex items-center gap-4 p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
                 <div className="w-16 h-16 rounded-lg overflow-hidden bg-white border border-slate-200 shrink-0">
@@ -791,8 +1113,8 @@ export function InventoryView({
                 </div>
               </div>
 
-              {/* Category, Stock Quantity & Tax % */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Category, Selling Unit, Stock Quantity & Tax % */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <label
                     htmlFor="prod-category"
@@ -819,15 +1141,50 @@ export function InventoryView({
 
                 <div>
                   <label
+                    htmlFor="prod-selling-unit"
+                    className="block text-xs font-medium text-slate-700 mb-1"
+                  >
+                    {t.sellingUnitLabel} *
+                  </label>
+                  <select
+                    id="prod-selling-unit"
+                    required
+                    value={form.sellingUnit}
+                    onChange={(e) => {
+                      setFormError(null);
+                      setForm((f) => ({
+                        ...f,
+                        sellingUnit: e.target.value as SellingUnit | '',
+                      }));
+                    }}
+                    className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  >
+                    <option value="" disabled>
+                      {t.selectUnitPlaceholder}
+                    </option>
+                    {SELLING_UNITS.map((unit) => (
+                      <option key={unit} value={unit}>
+                        {getUnitOptionLabel(unit, lang)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
                     htmlFor="prod-stock"
                     className="block text-xs font-medium text-slate-700 mb-1"
                   >
                     {t.stockQtyLabel}
+                    {form.sellingUnit
+                      ? ` (${getUnitLabel(form.sellingUnit, lang)})`
+                      : ''}
                   </label>
                   <input
                     id="prod-stock"
                     type="number"
                     min={0}
+                    step="any"
                     required
                     value={form.stock}
                     onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))}
@@ -922,6 +1279,107 @@ export function InventoryView({
                 </div>
               </div>
 
+              {/* Brand, Variant, Wholesale, Min Stock & Reorder */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.brandLabel}
+                  </label>
+                  <input
+                    type="text"
+                    value={form.brand}
+                    onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))}
+                    placeholder="e.g., Tapal"
+                    className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.variantLabel}
+                  </label>
+                  <input
+                    type="text"
+                    value={form.variant}
+                    onChange={(e) => setForm((f) => ({ ...f, variant: e.target.value }))}
+                    placeholder="e.g., Family Pack"
+                    className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.wholesalePriceLabel}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={form.wholesalePrice}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, wholesalePrice: e.target.value }))
+                    }
+                    placeholder="Optional"
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.minStockLabel}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={form.minStock}
+                    onChange={(e) => setForm((f) => ({ ...f, minStock: e.target.value }))}
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.reorderLevelLabel}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={form.reorderLevel}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, reorderLevel: e.target.value }))
+                    }
+                    className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.batchNumberLabel}
+                  </label>
+                  <input
+                    type="text"
+                    value={form.batchNumber}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, batchNumber: e.target.value }))
+                    }
+                    placeholder="B-2026-01"
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.expiryDateLabel}
+                  </label>
+                  <input
+                    type="date"
+                    value={form.expiryDate}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, expiryDate: e.target.value }))
+                    }
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-teal-700 focus:bg-white"
+                  />
+                </div>
+              </div>
+
               {/* Barcode / UPC with Generate & Print Label */}
               <div className="space-y-2">
                 <label
@@ -957,9 +1415,11 @@ export function InventoryView({
                     disabled={!form.barcode.trim()}
                     onClick={() =>
                       setStickerProduct({
+                        id: editingProductId || 'preview-sticker',
                         nameEn: form.nameEn.trim() || 'Product Label',
                         nameUr: form.nameUr.trim() || form.nameEn.trim() || 'پروڈکٹ',
                         barcode: form.barcode.trim(),
+                        qrCode: form.qrCode.trim() || undefined,
                         sku: form.barcode.trim(),
                         price: Math.max(0, Number(form.price) || 0),
                       })
@@ -1057,7 +1517,7 @@ export function InventoryView({
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
                       {lang === 'ur' ? p.nameUr : p.nameEn} ({p.sku}) · {t.inStockLabel}:{' '}
-                      {p.stock}
+                      {formatQuantityWithUnit(p.stock, p.sellingUnit, lang)}
                     </option>
                   ))}
                 </select>
@@ -1117,8 +1577,8 @@ export function InventoryView({
 
                   <input
                     type="number"
-                    min="1"
-                    step="1"
+                    min="0.001"
+                    step="any"
                     required
                     value={adjustQty}
                     onChange={(e) => setAdjustQty(e.target.value)}
@@ -1132,7 +1592,11 @@ export function InventoryView({
                   <span className="text-slate-600">
                     {t.currentStockLabel}:{' '}
                     <strong className="font-mono text-slate-900 tabular-nums">
-                      {selectedAdjustProduct.stock}
+                      {formatQuantityWithUnit(
+                        selectedAdjustProduct.stock,
+                        selectedAdjustProduct.sellingUnit,
+                        lang
+                      )}
                     </strong>
                   </span>
                   <span className="text-slate-600">
@@ -1142,7 +1606,11 @@ export function InventoryView({
                         previewNewStock <= 5 ? 'text-amber-700' : 'text-teal-800'
                       }`}
                     >
-                      {previewNewStock}
+                      {formatQuantityWithUnit(
+                        previewNewStock,
+                        selectedAdjustProduct.sellingUnit,
+                        lang
+                      )}
                     </strong>
                   </span>
                 </div>
@@ -1259,6 +1727,181 @@ export function InventoryView({
                 <Trash2 className="w-4 h-4 shrink-0" aria-hidden="true" />
                 <span>{t.deleteForeverBtn}</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Bulk Edit Modal */}
+      {showBulkModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md overflow-hidden shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <h2 className="text-base font-bold text-slate-900">
+                {t.bulkEditBtn} ({selectedProductIds.length})
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                aria-label={t.closeBtn}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+            <form onSubmit={handleApplyBulkEdit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {t.categoryLabel}
+                </label>
+                <select
+                  value={bulkCategory}
+                  onChange={(e) =>
+                    setBulkCategory(e.target.value as '' | Exclude<CategoryId, 'all'>)
+                  }
+                  className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900"
+                >
+                  <option value="">— No Change —</option>
+                  <option value="beverages">{t.categoryBeverages}</option>
+                  <option value="bakery">{t.categoryBakery}</option>
+                  <option value="pantry">{t.categoryPantry}</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.taxRateLabel}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.5"
+                    placeholder="No change"
+                    value={bulkTaxRate}
+                    onChange={(e) => setBulkTaxRate(e.target.value)}
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    {t.minStockLabel}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    placeholder="No change"
+                    value={bulkMinStock}
+                    onChange={(e) => setBulkMinStock(e.target.value)}
+                    className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {t.priceCol} Adjustment (%)
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  placeholder="e.g., 5 or -5"
+                  value={bulkPriceDeltaPct}
+                  onChange={(e) => setBulkPriceDeltaPct(e.target.value)}
+                  className="w-full h-10 px-3 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBulkModal(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg cursor-pointer"
+                >
+                  {t.cancelBtn}
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg cursor-pointer"
+                >
+                  {t.saveProductBtn}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CSV Bulk Import Modal */}
+      {showImportModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-xl overflow-hidden shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+              <h2 className="text-base font-bold text-slate-900">{t.importCsvBtn}</h2>
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                aria-label={t.closeBtn}
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  file.text().then((text) => handleParseCsvInput(text));
+                }}
+                className="block w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-teal-50 file:text-teal-800 hover:file:bg-teal-100"
+              />
+              <textarea
+                rows={5}
+                value={csvImportText}
+                onChange={(e) => handleParseCsvInput(e.target.value)}
+                placeholder="sku,barcode,nameEn,nameUr,category,sellingUnit,cost,price,taxRate,stock"
+                className="w-full p-3 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900"
+              />
+              {csvImportResult && (
+                <div className="space-y-2 text-xs">
+                  <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 font-semibold">
+                    Ready to import: {csvImportResult.valid.length} product(s)
+                  </div>
+                  {csvImportResult.errors.length > 0 && (
+                    <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 space-y-1 max-h-28 overflow-y-auto">
+                      {csvImportResult.errors.map((err, i) => (
+                        <p key={i}>{err}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowImportModal(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg cursor-pointer"
+                >
+                  {t.cancelBtn}
+                </button>
+                <button
+                  type="button"
+                  disabled={!csvImportResult || csvImportResult.valid.length === 0}
+                  onClick={handleConfirmCsvImport}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 disabled:bg-slate-300 rounded-lg cursor-pointer"
+                >
+                  {t.importCsvBtn} ({csvImportResult?.valid.length ?? 0})
+                </button>
+              </div>
             </div>
           </div>
         </div>

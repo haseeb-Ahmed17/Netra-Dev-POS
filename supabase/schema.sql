@@ -18,7 +18,8 @@ create table if not exists public.products (
   price numeric not null check (price >= 0),
   cost_price numeric not null default 0 check (cost_price >= 0),
   tax_rate numeric not null default 0 check (tax_rate >= 0),
-  stock integer not null default 0 check (stock >= 0),
+  selling_unit text not null default 'piece' check (selling_unit in ('kg', 'g', 'litre', 'ml', 'metre', 'cm', 'piece', 'packet', 'box', 'bottle')),
+  stock numeric(12,3) not null default 0 check (stock >= 0),
   image_url text not null default '',
   created_at timestamptz not null default now()
 );
@@ -26,6 +27,7 @@ create table if not exists public.products (
 -- Safe migrations if products table already existed from an earlier version
 alter table public.products add column if not exists cost_price numeric not null default 0;
 alter table public.products add column if not exists tax_rate numeric not null default 0;
+alter table public.products add column if not exists selling_unit text not null default 'piece';
 alter table public.products add column if not exists image_url text not null default '';
 
 do $$
@@ -267,7 +269,8 @@ create table if not exists public.purchase_items (
   product_id text not null,
   product_name text not null default '',
   sku text not null default '',
-  quantity integer not null check (quantity > 0),
+  selling_unit text not null default 'piece' check (selling_unit in ('kg', 'g', 'litre', 'ml', 'metre', 'cm', 'piece', 'packet', 'box', 'bottle')),
+  quantity numeric(12,3) not null check (quantity > 0),
   unit_cost numeric not null default 0 check (unit_cost >= 0),
   cost_price numeric not null default 0 check (cost_price >= 0),
   line_total numeric not null default 0 check (line_total >= 0)
@@ -277,6 +280,7 @@ create table if not exists public.purchase_items (
 alter table public.purchase_items add column if not exists user_id uuid references auth.users(id) on delete cascade;
 alter table public.purchase_items add column if not exists product_name text not null default '';
 alter table public.purchase_items add column if not exists sku text not null default '';
+alter table public.purchase_items add column if not exists selling_unit text not null default 'piece';
 alter table public.purchase_items add column if not exists unit_cost numeric not null default 0;
 alter table public.purchase_items add column if not exists cost_price numeric not null default 0;
 alter table public.purchase_items add column if not exists line_total numeric not null default 0;
@@ -310,10 +314,11 @@ create table if not exists public.inventory_adjustments (
   product_id text not null,
   product_name text not null default '',
   sku text not null default '',
+  selling_unit text not null default 'piece' check (selling_unit in ('kg', 'g', 'litre', 'ml', 'metre', 'cm', 'piece', 'packet', 'box', 'bottle')),
   adjustment_type text not null check (adjustment_type in ('Damaged', 'Expired', 'Lost/Theft', 'Stock Count Correction')),
-  quantity_change integer not null,
-  previous_stock integer not null default 0,
-  new_stock integer not null default 0,
+  quantity_change numeric(12,3) not null,
+  previous_stock numeric(12,3) not null default 0,
+  new_stock numeric(12,3) not null default 0,
   reason text not null default '',
   created_at timestamptz not null default now()
 );
@@ -321,8 +326,9 @@ create table if not exists public.inventory_adjustments (
 -- Safe additive columns if inventory_adjustments existed with core schema
 alter table public.inventory_adjustments add column if not exists product_name text not null default '';
 alter table public.inventory_adjustments add column if not exists sku text not null default '';
-alter table public.inventory_adjustments add column if not exists previous_stock integer not null default 0;
-alter table public.inventory_adjustments add column if not exists new_stock integer not null default 0;
+alter table public.inventory_adjustments add column if not exists selling_unit text not null default 'piece';
+alter table public.inventory_adjustments add column if not exists previous_stock numeric(12,3) not null default 0;
+alter table public.inventory_adjustments add column if not exists new_stock numeric(12,3) not null default 0;
 
 create index if not exists idx_inventory_adjustments_user_id on public.inventory_adjustments(user_id);
 create index if not exists idx_inventory_adjustments_product_id on public.inventory_adjustments(product_id);
@@ -377,7 +383,9 @@ create table if not exists public.employees (
   name text not null,
   phone text not null default '',
   role text not null check (role in ('admin', 'manager', 'cashier')),
-  pin_code text not null,
+  pin_code text not null default '****',
+  pin_hash text,
+  pin_updated_at timestamptz not null default now(),
   is_active boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -485,49 +493,76 @@ grant all privileges on table public.subscriptions to service_role;
 
 alter table public.subscriptions enable row level security;
 
+-- 17. Explicit Super Admin Role Table & Subscriptions RLS (replaces prefix matching)
+create table if not exists public.super_admins (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  email text not null unique,
+  created_at timestamptz not null default now()
+);
+
+revoke all on table public.super_admins from anon, public;
+grant select on table public.super_admins to authenticated;
+grant all privileges on table public.super_admins to service_role;
+
+alter table public.super_admins enable row level security;
+
+drop policy if exists "Users can read own super admin status" on public.super_admins;
+create policy "Users can read own super admin status"
+  on public.super_admins
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+insert into public.super_admins (user_id, email)
+select id, lower(email)
+from auth.users
+where lower(email) = 'bc260436573mha@gmail.com'
+on conflict (user_id) do update set email = excluded.email;
+
+create or replace function public.is_super_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$
+  select exists (
+    select 1
+    from public.super_admins sa
+    where sa.user_id = auth.uid()
+  );
+$$;
+
+revoke all on function public.is_super_admin() from public;
+grant execute on function public.is_super_admin() to authenticated, service_role;
+
 drop policy if exists "Users read own subscription" on public.subscriptions;
 create policy "Users read own subscription"
   on public.subscriptions
   for select
   to authenticated
-  using (
-    auth.uid() = user_id
-    or lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
-    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
-  );
+  using (auth.uid() = user_id or public.is_super_admin());
 
 drop policy if exists "Users create initial trial subscription" on public.subscriptions;
 create policy "Users create initial trial subscription"
   on public.subscriptions
   for insert
   to authenticated
-  with check (
-    (auth.uid() = user_id and is_blocked = false)
-    or lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
-    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
-  );
+  with check ((auth.uid() = user_id and is_blocked = false) or public.is_super_admin());
 
 drop policy if exists "Super admin manages all subscriptions" on public.subscriptions;
 create policy "Super admin manages all subscriptions"
   on public.subscriptions
   for update
   to authenticated
-  using (
-    lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
-    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
-  )
-  with check (
-    lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
-    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
-  );
+  using (public.is_super_admin())
+  with check (public.is_super_admin());
 
 drop policy if exists "Super admin deletes subscriptions" on public.subscriptions;
 create policy "Super admin deletes subscriptions"
   on public.subscriptions
   for delete
   to authenticated
-  using (
-    lower(coalesce(auth.jwt() ->> 'email', '')) = 'bc260436573mha@gmail.com'
-    or lower(coalesce(auth.jwt() ->> 'email', '')) like 'bc260436573%'
-  );
+  using (public.is_super_admin());
+
 
