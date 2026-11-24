@@ -204,6 +204,7 @@ export default function App() {
   const [user, setUser] = useState<ShopkeeperUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
+  const [workspaceLoadedUserId, setWorkspaceLoadedUserId] = useState<string | null>(null);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [retryingSync, setRetryingSync] = useState(false);
 
@@ -264,6 +265,9 @@ export default function App() {
     new URLSearchParams(window.location.search).get('display') === 'customer';
 
   const t = TRANSLATIONS[lang];
+  const isWorkspaceBootstrapReady = Boolean(
+    user && workspaceLoadedUserId === user.id && !loadingData
+  );
   const isEffectiveOnline = browserOnline && networkReachable;
   const isSubscriptionLocked = Boolean(
     user &&
@@ -491,6 +495,7 @@ export default function App() {
     let active = true;
 
     if (!user) {
+      setWorkspaceLoadedUserId(null);
       setProducts([]);
       setOrders([]);
       setUdhaarCustomers([]);
@@ -526,6 +531,14 @@ export default function App() {
       setRbacNotice(null);
       return;
     }
+
+    setWorkspaceLoadedUserId((prev) => (prev === user.id ? prev : null));
+    setEmployees([]);
+    setStaffSession(null);
+    setActiveEmployeeId(null);
+    setPendingSwitchEmployeeId(null);
+    setShowStaffModal(false);
+    setIsScreenLocked(false);
 
     setExtendedModules(loadExtendedModulesSync(user.id, user.shopName));
     void loadExtendedModulesAsync(user.id, user.shopName).then((ext) => {
@@ -575,6 +588,7 @@ export default function App() {
       .then((ws) => {
         if (!active) return;
         applyWorkspaceData(user.id, ws);
+        setWorkspaceLoadedUserId(user.id);
         if (
           !ws.isOffline &&
           (typeof navigator === 'undefined' || navigator.onLine !== false) &&
@@ -741,6 +755,7 @@ export default function App() {
       saveStoredStaffSession(prevUserId, null);
     }
     setUser(null);
+    setWorkspaceLoadedUserId(null);
     setIsSuperAdmin(false);
     setStaffSession(null);
     setActiveEmployeeId(null);
@@ -3404,6 +3419,15 @@ export default function App() {
     );
   }
 
+  // Wait until initial workspace load & bootstrap-admin detection complete before rendering Staff PIN modal
+  if (workspaceLoadedUserId !== user.id) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="text-sm font-medium text-slate-600">{t.loadingWorkspace}</div>
+      </div>
+    );
+  }
+
   const latestCompletedOrder =
     orders.find((o) => o.id === latestNewOrderId) ?? null;
   const activeStoreName = storeSettings.storeName || user.shopName || t.brandName;
@@ -3842,13 +3866,11 @@ export default function App() {
         </div>
       )}
 
-      {!isSubscriptionLocked && (
+      {!isSubscriptionLocked && isWorkspaceBootstrapReady && (
         <StaffPinModal
           isOpen={showStaffModal}
           isLocked={isScreenLocked}
-          needsInitialAdminSetup={Boolean(
-            user && !loadingData && !hasConfiguredAdmin(employees)
-          )}
+          needsInitialAdminSetup={!hasConfiguredAdmin(employees)}
           defaultAdminName={
             employees.find((e) => e.role === 'admin' && e.isActive)?.name ||
             (user?.shopName ? `${user.shopName} Owner` : '')

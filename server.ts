@@ -3,7 +3,6 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import express, { type Request, type Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { createServer as createViteServer } from 'vite';
 import { hasRolePermission, type RoleAction } from './src/lib/rbac';
 import {
   hashPinAsync,
@@ -205,6 +204,41 @@ async function resolveVerifiedStaffRole(
   }
 
   return { role: null, employeeId: null };
+}
+
+async function issueFallbackStaffToken(
+  userId: string,
+  employeeId: string,
+  role: EmployeeRole
+): Promise<{ token: string; signedToken: string; expiresAt: string }> {
+  const expiresMs = Date.now() + 12 * 60 * 60 * 1000;
+  const expiresAt = new Date(expiresMs).toISOString();
+  const signedToken = signStaffToken({
+    uid: userId,
+    empId: employeeId,
+    role,
+    exp: expiresMs,
+  });
+
+  if (adminSupabase) {
+    try {
+      const dbToken = crypto.randomBytes(24).toString('hex');
+      const { error } = await adminSupabase.from('staff_sessions').insert({
+        token: dbToken,
+        user_id: userId,
+        employee_id: employeeId,
+        role,
+        expires_at: expiresAt,
+      });
+      if (!error) {
+        return { token: dbToken, signedToken, expiresAt };
+      }
+    } catch {
+      // Fall back to HMAC signedToken if staff_sessions table is not yet migrated
+    }
+  }
+
+  return { token: signedToken, signedToken, expiresAt };
 }
 
 export function createPosExpressApp() {
@@ -473,14 +507,7 @@ export function createPosExpressApp() {
       });
     }
 
-    const expiresMs = Date.now() + 12 * 60 * 60 * 1000;
-    const expiresAt = new Date(expiresMs).toISOString();
-    const signedToken = signStaffToken({
-      uid: user.id,
-      empId: targetEmployeeId,
-      role: 'admin',
-      exp: expiresMs,
-    });
+    const issued = await issueFallbackStaffToken(user.id, targetEmployeeId, 'admin');
 
     return res.json({
       ok: true,
@@ -494,11 +521,11 @@ export function createPosExpressApp() {
         createdAt,
       },
       session: {
-        token: signedToken,
+        token: issued.token,
         employeeId: targetEmployeeId,
         role: 'admin',
-        expiresAt,
-        signedToken,
+        expiresAt: issued.expiresAt,
+        signedToken: issued.signedToken,
       },
     });
   });
@@ -570,21 +597,15 @@ export function createPosExpressApp() {
         const empId = String(row.id);
         const empRole = row.role as EmployeeRole;
         const empName = String(row.name || '');
-        const expMs = Date.now() + 12 * 60 * 60 * 1000;
-        const signedToken = signStaffToken({
-          uid: user.id,
-          empId,
-          role: empRole,
-          exp: expMs,
-        });
+        const issued = await issueFallbackStaffToken(user.id, empId, empRole);
         return res.json({
           ok: true,
-          token: signedToken,
+          token: issued.token,
           employeeId: empId,
           name: empName,
           role: empRole,
-          expiresAt: new Date(expMs).toISOString(),
-          signedToken,
+          expiresAt: issued.expiresAt,
+          signedToken: issued.signedToken,
         });
       }
     }
@@ -899,6 +920,7 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

@@ -62,6 +62,11 @@ async function getSupabaseAccessToken(): Promise<string | null> {
   }
 }
 
+function isJsonApiResponse(resp: Response): boolean {
+  const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+  return contentType.includes('application/json');
+}
+
 export async function checkIsSuperAdmin(userId: string): Promise<boolean> {
   if (!userId || !isSupabaseConfigured || !supabase) {
     return false;
@@ -76,7 +81,7 @@ export async function checkIsSuperAdmin(userId: string): Promise<boolean> {
           Authorization: `Bearer ${accessToken}`,
         },
       });
-      if (resp.ok) {
+      if (resp.ok && isJsonApiResponse(resp)) {
         const body = (await resp.json()) as { isSuperAdmin?: boolean };
         return Boolean(body.isSuperAdmin);
       }
@@ -120,7 +125,7 @@ export async function authorizeServerAction(
       headers,
       body: JSON.stringify({ action, customPermissions }),
     });
-    if (resp.status === 404 || resp.status >= 500) {
+    if (resp.status === 404 || resp.status >= 500 || !isJsonApiResponse(resp)) {
       return null;
     }
     const body = (await resp.json().catch(() => ({}))) as {
@@ -2723,7 +2728,7 @@ export async function verifyStaffPinRecord(
             employeeId: targetEmployeeId || undefined,
           }),
         });
-        if (resp.status !== 404 && resp.status < 500) {
+        if (resp.status !== 404 && resp.status < 500 && isJsonApiResponse(resp)) {
           const data = (await resp.json().catch(() => ({}))) as VerifyStaffPinResult;
           if (resp.ok && data.ok && data.token && data.employeeId && data.role) {
             setStaffSessionHeaderToken(data.token);
@@ -2852,7 +2857,7 @@ export async function setupInitialAdminRecord(
             pin: cleanPin,
           }),
         });
-        if (resp.status !== 404) {
+        if (resp.status !== 404 && resp.status < 500 && isJsonApiResponse(resp)) {
           const data = (await resp.json().catch(() => ({}))) as {
             ok?: boolean;
             employee?: Employee;
@@ -2913,6 +2918,13 @@ export async function setupInitialAdminRecord(
     });
     if (setErr) {
       if (!/PGRST202|Could not find the function/i.test(setErr.message)) {
+        if (setErr.code === '42501' || /Only an authenticated Admin/i.test(setErr.message)) {
+          return {
+            ok: false,
+            error:
+              'Initial Admin setup for stores with existing staff requires the backend /api/staff/bootstrap-admin endpoint to be active.',
+          };
+        }
         return { ok: false, error: setErr.message };
       }
       const pbkdf2Hash = await hashPinAsync(cleanPin);
@@ -3096,7 +3108,7 @@ export async function saveEmployeeRecord(
             customPermissions: nextEmployee.customPermissions,
           }),
         });
-        if (resp.status !== 404 && resp.status < 500) {
+        if (resp.status !== 404 && resp.status < 500 && isJsonApiResponse(resp)) {
           const body = (await resp.json().catch(() => ({}))) as { error?: string };
           if (!resp.ok) {
             return { error: body.error || 'Failed to save employee.' };
@@ -3158,7 +3170,7 @@ export async function deleteEmployeeRecord(
           method: 'DELETE',
           headers,
         });
-        if (resp.status !== 404 && resp.status < 500) {
+        if (resp.status !== 404 && resp.status < 500 && isJsonApiResponse(resp)) {
           const body = (await resp.json().catch(() => ({}))) as { error?: string };
           if (!resp.ok) {
             return body.error || 'Failed to delete employee.';

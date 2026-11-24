@@ -579,6 +579,76 @@ async function runTests(): Promise<void> {
     'StaffPinModal must provide dedicated First-Time Admin Setup flow'
   );
 
+  // -------------------------------------------------------------------------
+  // 9. PAPUDA HOTEL Scenario (Existing Active Cashier, No Admin PIN) + Gate
+  // -------------------------------------------------------------------------
+  const papudaOwnerId = 'papuda-hotel-owner-uuid';
+  const papudaCashierRes = await saveEmployeeRecord(papudaOwnerId, {
+    id: 'papuda-cashier-1',
+    name: 'Papuda Cashier',
+    phone: '0301-1234567',
+    role: 'cashier',
+    pin: '8421',
+    isActive: true,
+    createdAt: new Date().toISOString(),
+  });
+  assertEqual(papudaCashierRes.error, null, 'PAPUDA HOTEL cashier profile exists before Admin setup');
+
+  const papudaBefore = await fetchWorkspaceData(papudaOwnerId, 'PAPUDA HOTEL');
+  assertEqual(
+    hasConfiguredAdmin(papudaBefore.employees),
+    false,
+    'PAPUDA HOTEL with active Cashier and no Admin triggers initial Admin setup'
+  );
+
+  const papudaAdminSetup = await setupInitialAdminRecord(papudaOwnerId, {
+    name: 'PAPUDA HOTEL Owner',
+    phone: '0300-7654321',
+    pin: '5924',
+  });
+  assertEqual(papudaAdminSetup.ok, true, 'PAPUDA HOTEL owner can create initial Admin PIN');
+  assertEqual(papudaAdminSetup.session?.role, 'admin', 'PAPUDA HOTEL setup grants admin session');
+
+  const papudaAfter = await fetchWorkspaceData(papudaOwnerId, 'PAPUDA HOTEL');
+  assertEqual(papudaAfter.employees.length, 2, 'PAPUDA HOTEL preserves existing Cashier alongside new Admin');
+  assert(
+    papudaAfter.employees.some((e) => e.id === 'papuda-cashier-1' && e.role === 'cashier' && e.isActive),
+    'PAPUDA HOTEL active Cashier profile remains intact'
+  );
+  assertEqual(
+    hasConfiguredAdmin(papudaAfter.employees),
+    true,
+    'PAPUDA HOTEL now has a configured Store Admin'
+  );
+
+  const papudaAdminLogin = await verifyStaffPinRecord(papudaOwnerId, '5924');
+  assertEqual(papudaAdminLogin.ok, true, 'New PAPUDA HOTEL Admin PIN verifies cleanly');
+  assertEqual(papudaAdminLogin.role, 'admin', 'Admin login resolves admin role');
+
+  const papudaCashierLogin = await verifyStaffPinRecord(papudaOwnerId, '8421');
+  assertEqual(papudaCashierLogin.ok, true, 'Preserved PAPUDA HOTEL Cashier PIN still verifies cleanly');
+  assertEqual(papudaCashierLogin.role, 'cashier', 'Cashier login preserves cashier role');
+
+  const appSource = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/App.tsx'),
+    'utf8'
+  );
+  assert(
+    appSource.includes('workspaceLoadedUserId') &&
+      appSource.includes('isWorkspaceBootstrapReady') &&
+      appSource.includes('needsInitialAdminSetup={!hasConfiguredAdmin(employees)}'),
+    'App.tsx must wait for workspaceLoadedUserId & bootstrap-admin check before rendering StaffPinModal'
+  );
+  assert(
+    repoSource.includes('isJsonApiResponse'),
+    'posRepository.ts must verify JSON content-type so static SPA HTML responses fall back cleanly'
+  );
+  assert(
+    fs.existsSync(path.resolve(process.cwd(), 'api/index.ts')) &&
+      fs.existsSync(path.resolve(process.cwd(), 'vercel.json')),
+    'Vercel serverless API adapter and vercel.json must exist for /api/staff/* routing'
+  );
+
   console.log('ALL_COMMERCIAL_POS_SUITE_TESTS_PASSED');
 }
 
