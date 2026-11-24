@@ -122,6 +122,73 @@ export async function fetchEmployeesWithSchemaFallback(
   };
 }
 
+export async function fetchBootstrapStatusFromServer(): Promise<{
+  ok: boolean;
+  source?: string;
+  rlsReadable?: boolean;
+  rlsError?: string | null;
+  supportsPinHashColumn?: boolean;
+  hasConfiguredAdmin?: boolean;
+  employees?: Employee[];
+  error?: string;
+} | null> {
+  const accessToken = await getSupabaseAccessToken();
+  if (!accessToken || typeof fetch !== 'function') {
+    return null;
+  }
+  try {
+    const resp = await fetch('/api/staff/bootstrap-status', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!resp.ok || !isJsonApiResponse(resp)) {
+      return null;
+    }
+    const body = (await resp.json()) as {
+      ok?: boolean;
+      source?: string;
+      rlsReadable?: boolean;
+      rlsError?: string | null;
+      supportsPinHashColumn?: boolean;
+      hasConfiguredAdmin?: boolean;
+      employees?: Array<{
+        id: string;
+        name: string;
+        phone?: string;
+        role: Employee['role'];
+        hasPin: boolean;
+        isActive: boolean;
+        createdAt?: string;
+      }>;
+    };
+    if (!body.ok || !Array.isArray(body.employees)) {
+      return null;
+    }
+    return {
+      ok: true,
+      source: body.source,
+      rlsReadable: body.rlsReadable,
+      rlsError: body.rlsError ?? null,
+      supportsPinHashColumn: body.supportsPinHashColumn,
+      hasConfiguredAdmin: body.hasConfiguredAdmin,
+      employees: body.employees.map((e) => ({
+        id: String(e.id),
+        name: String(e.name ?? ''),
+        phone: String(e.phone ?? ''),
+        role: e.role,
+        pinHash: '',
+        hasPin: Boolean(e.hasPin),
+        isActive: e.isActive !== false,
+        createdAt: String(e.createdAt ?? new Date().toISOString()),
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function checkIsSuperAdmin(userId: string): Promise<boolean> {
   if (!userId || !isSupabaseConfigured || !supabase) {
     return false;
@@ -211,6 +278,12 @@ export interface ShopkeeperWorkspaceData {
   cloudSyncError?: string | null;
   isOffline?: boolean;
   wasEmployeesBootstrapped?: boolean;
+  employeesSource?:
+    | 'supabase_direct'
+    | 'server_api'
+    | 'local_storage_fallback'
+    | 'local_mode';
+  employeeFallbackReason?: string | null;
   refreshedStaffSession?: {
     token: string;
     employeeId: string;
@@ -1292,14 +1365,20 @@ function mapCustomerToRow(
 export function mapEmployeeFromRow(row: Record<string, unknown>): Employee {
   const rawPinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
   const rawPinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
+  const rawRole = String(row.role ?? '').trim().toLowerCase();
+  const role: Employee['role'] =
+    rawRole === 'admin' || rawRole === 'manager' || rawRole === 'cashier'
+      ? rawRole
+      : 'cashier';
   const hasPin =
     isStoredPinHash(rawPinHash) ||
-    (rawPinCode !== '' && rawPinCode !== REDACTED_PIN_SENTINEL);
+    isStoredPinHash(rawPinCode) ||
+    isValidPinFormat(rawPinCode);
   return {
     id: String(row.id),
     name: String(row.name),
     phone: String(row.phone ?? ''),
-    role: row.role as Employee['role'],
+    role,
     pinHash: '',
     hasPin,
     isActive: row.is_active !== false,
@@ -1521,7 +1600,54 @@ export async function fetchWorkspaceData(
   const browserOffline =
     typeof navigator !== 'undefined' && navigator.onLine === false;
 
+  const mergeEmployeeLocalMeta = (
+    cloudEmployees: Employee[],
+    localEmployees: Employee[]
+  ): Employee[] => {
+    const localEmpById = new Map(localEmployees.map((e) => [e.id, e]));
+    return cloudEmployees.map((mapped) => {
+      const cachedEmp = localEmpById.get(mapped.id);
+      return {
+        ...mapped,
+        branchId: mapped.branchId ?? cachedEmp?.branchId,
+        shiftAssignment: mapped.shiftAssignment ?? cachedEmp?.shiftAssignment,
+        customPermissions: mapped.customPermissions ?? cachedEmp?.customPermissions,
+      };
+    });
+  };
+
+  const logWorkspaceDiagnostic = (
+    ws: ShopkeeperWorkspaceData,
+    extra?: Record<string, unknown>
+  ) => {
+    if (typeof console !== 'undefined' && typeof console.info === 'function') {
+      console.info('[SmartBitz Workspace]', {
+        userId,
+        employeesSource: ws.employeesSource ?? 'unknown',
+        employeeFallbackReason: ws.employeeFallbackReason ?? null,
+        isOffline: Boolean(ws.isOffline),
+        hasConfiguredAdmin: hasConfiguredAdmin(ws.employees),
+        employeeCount: ws.employees.length,
+        employeesSummary: ws.employees.map((e) => ({
+          id: e.id,
+          name: e.name,
+          role: e.role,
+          isActive: e.isActive,
+          hasPin: Boolean(e.hasPin),
+        })),
+        ...extra,
+      });
+    }
+  };
+
   if (isSupabaseConfigured && supabase && !browserOffline) {
+    let resolvedCloudEmployees: Employee[] | null = null;
+    let resolvedEmployeesSource:
+      | 'supabase_direct'
+      | 'server_api'
+      | 'local_storage_fallback' = 'local_storage_fallback';
+    let employeeFallbackReason: string | null = null;
+
     try {
       const [
         prodRes,
@@ -1591,6 +1717,26 @@ export async function fetchWorkspaceData(
           .maybeSingle(),
       ]);
 
+      const localCached = loadLocalWorkspace(userId, shopName);
+
+      if (!empRes.error && empRes.data) {
+        resolvedCloudEmployees = mergeEmployeeLocalMeta(
+          empRes.data.map((raw) => mapEmployeeFromRow(raw as Record<string, unknown>)),
+          localCached.employees
+        );
+        resolvedEmployeesSource = 'supabase_direct';
+      } else {
+        employeeFallbackReason = empRes.error?.message || 'Client employees query returned empty';
+        const serverBootstrap = await fetchBootstrapStatusFromServer();
+        if (serverBootstrap?.ok && serverBootstrap.employees) {
+          resolvedCloudEmployees = mergeEmployeeLocalMeta(
+            serverBootstrap.employees,
+            localCached.employees
+          );
+          resolvedEmployeesSource = 'server_api';
+        }
+      }
+
       const firstError =
         prodRes.error ||
         ordRes.error ||
@@ -1606,36 +1752,28 @@ export async function fetchWorkspaceData(
         settingsRes.error;
 
       if (firstError) {
-        const localFallback = loadLocalWorkspace(userId, shopName);
-        if (!empRes.error && empRes.data) {
-          const localEmpById = new Map(localFallback.employees.map((e) => [e.id, e]));
-          localFallback.employees = empRes.data.map((raw) => {
-            const mapped = mapEmployeeFromRow(raw);
-            const cachedEmp = localEmpById.get(mapped.id);
-            return {
-              ...mapped,
-              branchId: mapped.branchId ?? cachedEmp?.branchId,
-              shiftAssignment: mapped.shiftAssignment ?? cachedEmp?.shiftAssignment,
-              customPermissions: mapped.customPermissions ?? cachedEmp?.customPermissions,
-            };
-          });
+        if (!employeeFallbackReason) {
+          employeeFallbackReason = `Partial query error: ${firstError.message}`;
         }
-        if (isNetworkLossError(firstError.message)) {
-          return {
-            ...localFallback,
-            cloudSyncError: null,
-            isOffline: true,
-          };
-        }
-        return {
-          ...localFallback,
-          cloudSyncError: firstError.message,
-          isOffline: false,
+        const localFallback: ShopkeeperWorkspaceData = {
+          ...localCached,
+          employees: resolvedCloudEmployees ?? localCached.employees,
+          employeesSource: resolvedCloudEmployees
+            ? resolvedEmployeesSource
+            : 'local_storage_fallback',
+          employeeFallbackReason,
+          cloudSyncError: isNetworkLossError(firstError.message)
+            ? null
+            : firstError.message,
+          isOffline: isNetworkLossError(firstError.message),
         };
+        logWorkspaceDiagnostic(localFallback, {
+          partialErrorTableMessage: firstError.message,
+          empQueryHadError: Boolean(empRes.error),
+        });
+        return localFallback;
       }
 
-      const localCached = loadLocalWorkspace(userId, shopName);
-      const localEmpById = new Map(localCached.employees.map((e) => [e.id, e]));
       const localProdById = new Map(localCached.products.map((p) => [p.id, p]));
 
       let products: Product[] = (prodRes.data ?? []).map((raw) => {
@@ -1685,16 +1823,7 @@ export async function fetchWorkspaceData(
         mapAdjustmentFromRow(row as Record<string, unknown>, productsById)
       );
       let customers = (crmCustRes.data ?? []).map(mapCustomerFromRow);
-      let employees: Employee[] = (empRes.data ?? []).map((raw) => {
-        const mapped = mapEmployeeFromRow(raw as Record<string, unknown>);
-        const cachedEmp = localEmpById.get(mapped.id);
-        return {
-          ...mapped,
-          branchId: mapped.branchId ?? cachedEmp?.branchId,
-          shiftAssignment: mapped.shiftAssignment ?? cachedEmp?.shiftAssignment,
-          customPermissions: mapped.customPermissions ?? cachedEmp?.customPermissions,
-        };
-      });
+      const employees: Employee[] = resolvedCloudEmployees ?? [];
       const expenses = (expRes.data ?? []).map(mapExpenseFromRow);
       let storeSettings = {
         ...localCached.storeSettings,
@@ -1743,7 +1872,10 @@ export async function fetchWorkspaceData(
             const qProdMap = new Map(qItem.updatedProducts.map((p) => [p.id, p]));
             products = products.map((p) => qProdMap.get(p.id) ?? p);
           }
-          if (qItem.newUdhaarCustomer && !udhaarCustomers.some((c) => c.id === qItem.newUdhaarCustomer!.id)) {
+          if (
+            qItem.newUdhaarCustomer &&
+            !udhaarCustomers.some((c) => c.id === qItem.newUdhaarCustomer!.id)
+          ) {
             udhaarCustomers.unshift(qItem.newUdhaarCustomer);
           }
           if (qItem.newUdhaarEntry && !existingEntryIds.has(qItem.newUdhaarEntry.id)) {
@@ -1773,6 +1905,8 @@ export async function fetchWorkspaceData(
         cloudSyncError: seedError,
         isOffline: false,
         wasEmployeesBootstrapped,
+        employeesSource: resolvedEmployeesSource,
+        employeeFallbackReason,
       };
       saveLocalWorkspace(userId, {
         products,
@@ -1787,25 +1921,53 @@ export async function fetchWorkspaceData(
         expenses,
         storeSettings,
       });
+      logWorkspaceDiagnostic(workspace, {
+        supportsPinHashColumn: empRes.supportsPinHashColumn,
+      });
       return workspace;
     } catch (err) {
       const localFallback = loadLocalWorkspace(userId, shopName);
       const errMsg =
         err instanceof Error ? err.message : 'Unable to reach Supabase.';
       const offlineErr = isNetworkLossError(errMsg) || browserOffline;
-      return {
+      if (!resolvedCloudEmployees && !offlineErr) {
+        const serverBootstrap = await fetchBootstrapStatusFromServer();
+        if (serverBootstrap?.ok && serverBootstrap.employees) {
+          resolvedCloudEmployees = mergeEmployeeLocalMeta(
+            serverBootstrap.employees,
+            localFallback.employees
+          );
+          resolvedEmployeesSource = 'server_api';
+        }
+      }
+      const wsResult: ShopkeeperWorkspaceData = {
         ...localFallback,
+        employees: resolvedCloudEmployees ?? localFallback.employees,
+        employeesSource: resolvedCloudEmployees
+          ? resolvedEmployeesSource
+          : 'local_storage_fallback',
+        employeeFallbackReason: errMsg,
         cloudSyncError: offlineErr ? null : errMsg,
         isOffline: offlineErr,
       };
+      logWorkspaceDiagnostic(wsResult, { caughtException: true });
+      return wsResult;
     }
   }
 
-  return {
+  const localOnlyWs: ShopkeeperWorkspaceData = {
     ...loadLocalWorkspace(userId, shopName),
     cloudSyncError: null,
     isOffline: browserOffline,
+    employeesSource: isSupabaseConfigured ? 'local_storage_fallback' : 'local_mode',
+    employeeFallbackReason: isSupabaseConfigured
+      ? browserOffline
+        ? 'Browser offline'
+        : 'Supabase client unavailable'
+      : null,
   };
+  logWorkspaceDiagnostic(localOnlyWs);
+  return localOnlyWs;
 }
 
 export async function upsertProductRecord(

@@ -31,13 +31,34 @@ function timingSafePinEquals(a: string, b: string): boolean {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+function normalizeEmployeeRole(value: unknown): EmployeeRole {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === 'admin' || raw === 'manager' || raw === 'cashier') {
+    return raw;
+  }
+  return 'cashier';
+}
+
 function rowHasConfiguredPin(row: Record<string, unknown>): boolean {
   const pinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
   const pinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
   return (
     isStoredPinHash(pinHash) ||
-    (pinCode !== '' && pinCode !== REDACTED_PIN_SENTINEL)
+    isStoredPinHash(pinCode) ||
+    isValidPinFormat(pinCode)
   );
+}
+
+function classifyPinState(row: Record<string, unknown>): 'hashed' | 'legacy_4digit' | 'unconfigured' {
+  const pinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
+  const pinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
+  if (isStoredPinHash(pinHash) || isStoredPinHash(pinCode)) {
+    return 'hashed';
+  }
+  if (isValidPinFormat(pinCode)) {
+    return 'legacy_4digit';
+  }
+  return 'unconfigured';
 }
 
 async function selectEmployeesWithSchemaFallback(
@@ -405,6 +426,69 @@ export function createPosExpressApp() {
     return res.json({ ok: true });
   });
 
+  // Authenticated non-secret staff bootstrap inspection & fallback for the signed-in owner's store
+  app.get('/api/staff/bootstrap-status', async (req: Request, res: Response) => {
+    const user = await authenticateSupabaseRequest(req);
+    if (!user) {
+      return res.status(401).json({ ok: false, error: 'Authentication required.' });
+    }
+
+    const userClient = createUserScopedSupabase(user.jwt);
+    if (!userClient && !adminSupabase) {
+      return res.status(503).json({ ok: false, error: 'Supabase client unavailable.' });
+    }
+
+    const userLookup = userClient
+      ? await selectEmployeesWithSchemaFallback(userClient, user.id)
+      : null;
+
+    let effectiveRows = userLookup?.rows ?? [];
+    let supportsPinHashColumn = userLookup?.supportsPinHashColumn ?? false;
+    let source: 'user_rls' | 'service_role_scoped' = 'user_rls';
+    const rlsReadable = Boolean(userLookup && !userLookup.error);
+    const rlsError = userLookup?.error?.message ?? null;
+
+    if ((!userLookup || userLookup.error) && adminSupabase) {
+      const adminLookup = await selectEmployeesWithSchemaFallback(adminSupabase, user.id);
+      if (adminLookup.error) {
+        return res.status(500).json({ ok: false, error: adminLookup.error.message });
+      }
+      effectiveRows = adminLookup.rows;
+      supportsPinHashColumn = adminLookup.supportsPinHashColumn;
+      source = 'service_role_scoped';
+    } else if (userLookup?.error) {
+      return res.status(500).json({ ok: false, error: userLookup.error.message });
+    }
+
+    const employees = effectiveRows.map((row) => ({
+      id: String(row.id),
+      name: String(row.name || ''),
+      phone: String(row.phone || ''),
+      role: normalizeEmployeeRole(row.role),
+      hasPin: rowHasConfiguredPin(row),
+      pinState: classifyPinState(row),
+      isActive: row.is_active !== false,
+      createdAt: String(row.created_at || ''),
+    }));
+
+    const adminConfigured = employees.some(
+      (emp) => emp.role === 'admin' && emp.isActive && emp.hasPin
+    );
+
+    return res.json({
+      ok: true,
+      userId: user.id,
+      source,
+      rlsReadable,
+      rlsError,
+      supportsPinHashColumn,
+      employeeCount: employees.length,
+      hasConfiguredAdmin: adminConfigured,
+      needsInitialAdminSetup: !adminConfigured,
+      employees,
+    });
+  });
+
   // First-time Admin onboarding: allowed ONLY when the authenticated store owner has no active Admin with a configured PIN.
   app.post('/api/staff/bootstrap-admin', async (req: Request, res: Response) => {
     const user = await authenticateSupabaseRequest(req);
@@ -444,7 +528,10 @@ export function createPosExpressApp() {
 
     const existingRows = existingLookup.rows;
     const alreadyConfigured = existingRows.some(
-      (r) => r.role === 'admin' && r.is_active !== false && rowHasConfiguredPin(r)
+      (r) =>
+        normalizeEmployeeRole(r.role) === 'admin' &&
+        r.is_active !== false &&
+        rowHasConfiguredPin(r)
     );
     if (alreadyConfigured) {
       return res.status(409).json({
@@ -455,7 +542,10 @@ export function createPosExpressApp() {
 
     // Reuse an existing unconfigured Admin row if one exists so no employee records are deleted
     const unconfiguredAdmin = existingRows.find(
-      (r) => r.role === 'admin' && r.is_active !== false && !rowHasConfiguredPin(r)
+      (r) =>
+        normalizeEmployeeRole(r.role) === 'admin' &&
+        r.is_active !== false &&
+        !rowHasConfiguredPin(r)
     );
     const targetEmployeeId =
       typeof unconfiguredAdmin?.id === 'string' && unconfiguredAdmin.id

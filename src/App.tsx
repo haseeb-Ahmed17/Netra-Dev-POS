@@ -268,6 +268,8 @@ export default function App() {
   const isWorkspaceBootstrapReady = Boolean(
     user && workspaceLoadedUserId === user.id && !loadingData
   );
+  const adminConfigured = hasConfiguredAdmin(employees);
+  const needsInitialAdminSetup = !adminConfigured;
   const isEffectiveOnline = browserOnline && networkReachable;
   const isSubscriptionLocked = Boolean(
     user &&
@@ -276,6 +278,42 @@ export default function App() {
       (subscription.isBlocked ||
         new Date(subscription.expiresAt).getTime() <= Date.now())
   );
+
+  useEffect(() => {
+    if (!user || typeof console === 'undefined' || typeof console.info !== 'function') {
+      return;
+    }
+    console.info('[SmartBitz Auth/Bootstrap]', {
+      userId: user.id,
+      shopName: user.shopName,
+      loadingData,
+      workspaceLoadedUserIdMatchesUser: workspaceLoadedUserId === user.id,
+      isWorkspaceBootstrapReady,
+      hasConfiguredAdmin: adminConfigured,
+      needsInitialAdminSetup,
+      isScreenLocked,
+      showStaffModal,
+      isSubscriptionLocked,
+      employeesSummary: employees.map((e) => ({
+        id: e.id,
+        name: e.name,
+        role: e.role,
+        isActive: e.isActive,
+        hasPin: Boolean(e.hasPin),
+      })),
+    });
+  }, [
+    user,
+    loadingData,
+    workspaceLoadedUserId,
+    isWorkspaceBootstrapReady,
+    adminConfigured,
+    needsInitialAdminSetup,
+    isScreenLocked,
+    showStaffModal,
+    isSubscriptionLocked,
+    employees,
+  ]);
 
   useEffect(() => {
     document.documentElement.lang = lang;
@@ -312,12 +350,22 @@ export default function App() {
       } = supabase.auth.onAuthStateChange((_event, session) => {
         if (!mounted) return;
         if (session?.user) {
-          setUser({
-            id: session.user.id,
-            email: session.user.email ?? '',
-            shopName:
-              (session.user.user_metadata?.shop_name as string) || 'Khaas Retail',
-          });
+          const nextId = session.user.id;
+          const nextEmail = session.user.email ?? '';
+          const nextShop =
+            (session.user.user_metadata?.shop_name as string) || 'Khaas Retail';
+          setUser((prev) =>
+            prev &&
+            prev.id === nextId &&
+            prev.email === nextEmail &&
+            prev.shopName === nextShop
+              ? prev
+              : {
+                  id: nextId,
+                  email: nextEmail,
+                  shopName: nextShop,
+                }
+          );
         } else {
           setUser(null);
         }
@@ -3870,7 +3918,7 @@ export default function App() {
         <StaffPinModal
           isOpen={showStaffModal}
           isLocked={isScreenLocked}
-          needsInitialAdminSetup={!hasConfiguredAdmin(employees)}
+          needsInitialAdminSetup={needsInitialAdminSetup}
           defaultAdminName={
             employees.find((e) => e.role === 'admin' && e.isActive)?.name ||
             (user?.shopName ? `${user.shopName} Owner` : '')

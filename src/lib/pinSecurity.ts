@@ -142,11 +142,13 @@ export function hasConfiguredAdmin(
     pinHash?: string;
   }>
 ): boolean {
-  return employees.some(
-    (emp) =>
-      emp.role === 'admin' &&
+  return employees.some((emp) => {
+    const normalizedRole = String(emp.role || '').trim().toLowerCase();
+    return (
+      normalizedRole === 'admin' &&
       emp.isActive !== false &&
       (emp.hasPin === true || isStoredPinHash(emp.pinHash))
-  );
+    );
+  });
 }
 
