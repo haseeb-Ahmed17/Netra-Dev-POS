@@ -302,6 +302,8 @@ export function StoreSettingsView({
                     />
                   </div>
                 </div>
+              </div>
+
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
                 <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
                   {t.paymentBankTransfer}

@@ -462,6 +462,7 @@ export function PosBillingView({
     sellingUnit: NonNullable<OrderLineItem['sellingUnit']>;
     enteredUnit: SellingUnit;
     itemDiscountPercent: number;
+    itemDiscountAmount: number;
     isReturn: boolean;
     availableStock: number;
   })[] = useMemo(() => {
@@ -506,6 +507,7 @@ export function PosBillingView({
           sellingUnit: NonNullable<OrderLineItem['sellingUnit']>;
           enteredUnit: SellingUnit;
           itemDiscountPercent: number;
+          itemDiscountAmount: number;
           isReturn: boolean;
           availableStock: number;
         } => x !== null

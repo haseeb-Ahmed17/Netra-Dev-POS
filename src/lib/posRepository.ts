@@ -1578,7 +1578,7 @@ export async function fetchWorkspaceData(
       const localEmpById = new Map(localCached.employees.map((e) => [e.id, e]));
       const localProdById = new Map(localCached.products.map((p) => [p.id, p]));
 
-      let products = (prodRes.data ?? []).map((raw) => {
+      let products: Product[] = (prodRes.data ?? []).map((raw) => {
         const mapped = mapProductFromRow(raw as Record<string, unknown>);
         const cachedProd = localProdById.get(mapped.id);
         return {
@@ -1625,7 +1625,7 @@ export async function fetchWorkspaceData(
         mapAdjustmentFromRow(row as Record<string, unknown>, productsById)
       );
       let customers = (crmCustRes.data ?? []).map(mapCustomerFromRow);
-      let employees = (empRes.data ?? []).map((raw) => {
+      let employees: Employee[] = (empRes.data ?? []).map((raw) => {
         const mapped = mapEmployeeFromRow(raw as Record<string, unknown>);
         const cachedEmp = localEmpById.get(mapped.id);
         return {

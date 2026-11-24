@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, WifiOff, X } from 'lucide-react';
+import { AuditBackupView } from './components/AuditBackupView';
 import { AuthView } from './components/AuthView';
+import { BranchesView } from './components/BranchesView';
+import { CashDrawerView } from './components/CashDrawerView';
 import { CloudSyncBanner } from './components/CloudSyncBanner';
+import { CustomerDisplayView } from './components/CustomerDisplayView';
 import { CustomersView } from './components/CustomersView';
 import { ExecutiveDashboardView } from './components/ExecutiveDashboardView';
 import { ExpensesView } from './components/ExpensesView';
@@ -10,8 +14,12 @@ import { InventoryView } from './components/InventoryView';
 import {
   PosBillingView,
   type InlineUdhaarCustomerPayload,
+  type PosCheckoutPayload,
 } from './components/PosBillingView';
-import { PurchasesView } from './components/PurchasesView';
+import {
+  PurchasesView,
+  type DraftPurchaseLine,
+} from './components/PurchasesView';
 import { ReceiptModal } from './components/ReceiptModal';
 import { SaasAdminView } from './components/SaasAdminView';
 import { SidebarNav } from './components/SidebarNav';
@@ -28,9 +36,25 @@ import { UdhaarView } from './components/UdhaarView';
 import { VendorsView } from './components/VendorsView';
 import { createDefaultStoreSettings } from './data/initialData';
 import { TRANSLATIONS } from './i18n';
+import type { ImportedProductDraft } from './lib/csvUtils';
+import {
+  broadcastCustomerDisplay,
+  triggerCashDrawerKick,
+} from './lib/hardwareBridge';
+import {
+  buildWorkspaceBackupJson,
+  createDefaultExtendedModules,
+  loadExtendedModulesAsync,
+  loadExtendedModulesSync,
+  parseWorkspaceBackupJson,
+  saveExtendedModules,
+  type ExtendedWorkspaceModules,
+} from './lib/posExtendedStore';
 import {
   adminUpdateSubscription,
+  adminUpdateSubscriptionMeta,
   authorizeServerAction,
+  bulkUpsertProductsRecord,
   checkIsSuperAdmin,
   deleteCustomerRecord,
   deleteEmployeeRecord,
@@ -48,12 +72,14 @@ import {
   insertUdhaarCustomerRecord,
   insertUdhaarEntryRecord,
   resetUserDemoWorkspace,
+  restoreWorkspaceSnapshotLocally,
   saveEmployeeRecord,
   signInShopkeeper,
   signOutShopkeeper,
   signUpShopkeeper,
   syncOfflineQueue,
   updateOrderReturnRecord,
+  updatePurchaseRecordCompat,
   updateUdhaarCustomerRecord,
   upsertCustomerRecord,
   upsertExpenseRecord,
@@ -63,24 +89,38 @@ import {
   verifyStaffPinRecord,
 } from './lib/posRepository';
 import { generateUuid } from './lib/idUtils';
-import { hasRolePermission, type RoleAction } from './lib/rbac';
+import { canAccessTab, hasRolePermission, type RoleAction } from './lib/rbac';
 import {
   isSupabaseConfigured,
   setStaffSessionHeaderToken,
   supabase,
 } from './lib/supabaseClient';
 import {
+  formatQuantityWithUnit,
   normalizeSellingUnit,
   roundCurrency,
   roundQuantity,
 } from './lib/unitUtils';
+import {
+  dispatchWhatsAppMessage,
+  formatWhatsAppReceiptMessage,
+  formatWhatsAppReminderMessage,
+  formatWhatsAppStatementMessage,
+} from './lib/whatsappService';
 import type {
   AdjustmentType,
+  AuditCategory,
+  AuditLogEntry,
+  Branch,
   CartItem,
+  CashDrawerMovement,
+  CashShift,
   Customer,
   Employee,
+  EmployeeActivityLog,
   EmployeeRole,
   ExpenseRecord,
+  HeldBill,
   InventoryAdjustment,
   Language,
   NavTab,
@@ -89,13 +129,18 @@ import type {
   PaymentMethod,
   Product,
   PurchaseItem,
+  PurchaseOrderStatus,
   PurchaseRecord,
+  PurchaseReturnRecord,
   ReminderSchedule,
   SellingUnit,
   ShopkeeperUser,
   StaffSessionInfo,
+  StockTransfer,
   StoreSettings,
+  SubscriptionPaymentEntry,
   SubscriptionRecord,
+  SupplierPayment,
   UdhaarCustomer,
   UdhaarEntry,
   UdhaarEntryType,
@@ -103,36 +148,6 @@ import type {
 } from './types';
 
 const LANG_STORAGE_KEY = 'khaas_pos_lang_v1';
-
-const ROLE_ALLOWED_TABS: Record<EmployeeRole, NavTab[]> = {
-  admin: [
-    'pos',
-    'dashboard',
-    'transactions',
-    'inventory',
-    'inventory_report',
-    'purchases',
-    'vendors',
-    'expenses',
-    'customers',
-    'udhaar',
-    'staff',
-    'settings',
-  ],
-  manager: [
-    'pos',
-    'dashboard',
-    'transactions',
-    'inventory',
-    'inventory_report',
-    'purchases',
-    'vendors',
-    'expenses',
-    'customers',
-    'udhaar',
-  ],
-  cashier: ['pos', 'transactions', 'customers'],
-};
 
 function activeStaffStorageKey(userId: string): string {
   return `khaas_pos_active_staff_${userId}_v1`;
@@ -223,7 +238,13 @@ export default function App() {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [activeReceiptOrder, setActiveReceiptOrder] = useState<OrderRecord | null>(null);
+  const [activeReceiptIsReprint, setActiveReceiptIsReprint] = useState<boolean>(false);
   const [latestNewOrderId, setLatestNewOrderId] = useState<string | null>(null);
+
+  const [extendedModules, setExtendedModules] = useState<ExtendedWorkspaceModules>(() =>
+    createDefaultExtendedModules()
+  );
+  const [showCustomerDisplayPreview, setShowCustomerDisplayPreview] = useState(false);
 
   const [browserOnline, setBrowserOnline] = useState<boolean>(() =>
     typeof navigator === 'undefined' ? true : navigator.onLine !== false
@@ -235,6 +256,10 @@ export default function App() {
   const [offlineSaleNotice, setOfflineSaleNotice] = useState<boolean>(false);
   const [rbacNotice, setRbacNotice] = useState<string | null>(null);
   const syncInFlightRef = useRef<boolean>(false);
+
+  const isStandaloneCustomerDisplay =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('display') === 'customer';
 
   const t = TRANSLATIONS[lang];
   const isEffectiveOnline = browserOnline && networkReachable;
@@ -387,6 +412,19 @@ export default function App() {
     [applyWorkspaceData]
   );
 
+  const updateExtended = useCallback(
+    (updater: (prev: ExtendedWorkspaceModules) => ExtendedWorkspaceModules) => {
+      setExtendedModules((prev) => {
+        const next = updater(prev);
+        if (user) {
+          saveExtendedModules(user.id, next);
+        }
+        return next;
+      });
+    },
+    [user]
+  );
+
   const runOfflineSync = useCallback(
     async (targetUserId: string, targetShopName?: string) => {
       if (syncInFlightRef.current) return;
@@ -402,6 +440,17 @@ export default function App() {
         const res = await syncOfflineQueue(targetUserId);
         setPendingSyncCount(res.remainingCount);
         setNetworkReachable(!res.offlineStill);
+
+        if (res.events && res.events.length > 0) {
+          setExtendedModules((prev) => {
+            const next: ExtendedWorkspaceModules = {
+              ...prev,
+              syncHistory: [...res.events, ...prev.syncHistory].slice(0, 150),
+            };
+            saveExtendedModules(targetUserId, next);
+            return next;
+          });
+        }
 
         if (res.syncError) {
           setCloudSyncError(res.syncError);
@@ -482,7 +531,9 @@ export default function App() {
       setIsScreenLocked(false);
       setCart([]);
       setActiveReceiptOrder(null);
+      setActiveReceiptIsReprint(false);
       setLatestNewOrderId(null);
+      setExtendedModules(createDefaultExtendedModules());
       setCloudSyncError(null);
       setPendingSyncCount(0);
       setOfflineSaleNotice(false);
@@ -490,6 +541,11 @@ export default function App() {
       setRbacNotice(null);
       return;
     }
+
+    setExtendedModules(loadExtendedModulesSync(user.id, user.shopName));
+    void loadExtendedModulesAsync(user.id, user.shopName).then((ext) => {
+      if (active) setExtendedModules(ext);
+    });
 
     const storedSession = loadStoredStaffSession(user.id);
     setStaffSessionHeaderToken(storedSession?.token ?? null);
@@ -559,6 +615,26 @@ export default function App() {
 
   const activeRole: EmployeeRole = activeEmployee?.role ?? staffSession?.role ?? 'cashier';
 
+  const activeBranch = useMemo(
+    () =>
+      extendedModules.branches.find((b) => b.id === extendedModules.activeBranchId) ??
+      extendedModules.branches[0] ??
+      null,
+    [extendedModules.branches, extendedModules.activeBranchId]
+  );
+
+  const activeShift = useMemo(
+    () =>
+      extendedModules.cashShifts.find(
+        (s) =>
+          s.status === 'open' &&
+          (!activeBranch || !s.branchId || s.branchId === activeBranch.id)
+      ) ??
+      extendedModules.cashShifts.find((s) => s.status === 'open') ??
+      null,
+    [extendedModules.cashShifts, activeBranch]
+  );
+
   // Persist selected active employee per shopkeeper user
   useEffect(() => {
     if (!user || !activeEmployee) return;
@@ -569,17 +645,73 @@ export default function App() {
     }
   }, [user, activeEmployee]);
 
-  // Enforce role permissions on activeTab
+  // Enforce role permissions on activeTab using central rbac.canAccessTab
   useEffect(() => {
-    if (activeTab === 'saas_admin') {
-      if (!isSuperAdmin) setActiveTab('pos');
-      return;
-    }
-    const allowed = ROLE_ALLOWED_TABS[activeRole];
-    if (!allowed.includes(activeTab)) {
+    if (!canAccessTab(activeRole, activeTab, isSuperAdmin)) {
       setActiveTab('pos');
     }
   }, [activeRole, activeTab, isSuperAdmin]);
+
+  const recordAudit = useCallback(
+    (
+      category: AuditCategory,
+      action: string,
+      details: string,
+      extra?: {
+        targetId?: string;
+        targetName?: string;
+        previousValue?: string;
+        newValue?: string;
+      }
+    ) => {
+      if (!user) return;
+      const entry: AuditLogEntry = {
+        id: generateUuid(),
+        category,
+        actorId: activeEmployee?.id || user.id,
+        actorName: activeEmployee?.name || user.shopName || 'Store Admin',
+        actorRole: activeRole,
+        action,
+        details,
+        targetId: extra?.targetId,
+        targetName: extra?.targetName,
+        previousValue: extra?.previousValue,
+        newValue: extra?.newValue,
+        branchId: activeBranch?.id,
+        createdAt: new Date().toISOString(),
+      };
+      updateExtended((prev) => ({
+        ...prev,
+        auditLogs: [entry, ...prev.auditLogs].slice(0, 400),
+      }));
+    },
+    [user, activeEmployee, activeRole, activeBranch, updateExtended]
+  );
+
+  const recordEmployeeActivity = useCallback(
+    (
+      employeeId: string,
+      employeeName: string,
+      role: EmployeeRole,
+      eventType: EmployeeActivityLog['eventType']
+    ) => {
+      if (!user) return;
+      const entry: EmployeeActivityLog = {
+        id: generateUuid(),
+        employeeId,
+        employeeName,
+        role,
+        eventType,
+        branchId: activeBranch?.id,
+        createdAt: new Date().toISOString(),
+      };
+      updateExtended((prev) => ({
+        ...prev,
+        employeeActivityLogs: [entry, ...prev.employeeActivityLogs].slice(0, 300),
+      }));
+    },
+    [user, activeBranch, updateExtended]
+  );
 
   const handleRetrySync = async () => {
     if (!user) return;
@@ -616,6 +748,9 @@ export default function App() {
 
   const handleLogout = async () => {
     const prevUserId = user?.id;
+    if (activeEmployee) {
+      recordEmployeeActivity(activeEmployee.id, activeEmployee.name, activeRole, 'logout');
+    }
     await signOutShopkeeper();
     if (prevUserId) {
       saveStoredStaffSession(prevUserId, null);
@@ -630,17 +765,18 @@ export default function App() {
     setMobileMenuOpen(false);
     setCart([]);
     setActiveReceiptOrder(null);
+    setActiveReceiptIsReprint(false);
     setLatestNewOrderId(null);
     setRbacNotice(null);
   };
 
   const guardAction = (action: RoleAction): boolean => {
-    if (!hasRolePermission(activeRole, action)) {
+    if (!hasRolePermission(activeRole, action, activeEmployee?.customPermissions)) {
       setRbacNotice(t.rbacUnauthorizedError);
       return false;
     }
     setRbacNotice(null);
-    void authorizeServerAction(action).then((err) => {
+    void authorizeServerAction(action, activeEmployee?.customPermissions).then((err) => {
       if (err) {
         setCloudSyncError(err);
       }
@@ -708,7 +844,8 @@ export default function App() {
   const handleSetCartQuantity = (
     productId: string,
     quantity: number,
-    isReturn = false
+    isReturn = false,
+    enteredUnit?: SellingUnit
   ) => {
     const product = products.find((p) => p.id === productId);
     const maxStock = product?.stock ?? 0;
@@ -725,11 +862,30 @@ export default function App() {
       return prev
         .map((item) =>
           item.productId === productId && Boolean(item.isReturn) === isReturn
-            ? { ...item, quantity: nextQty }
+            ? {
+                ...item,
+                quantity: nextQty,
+                enteredUnit: enteredUnit ?? item.enteredUnit,
+              }
             : item
         )
         .filter((item) => item.quantity > 0);
     });
+  };
+
+  const handleSetCartItemDiscount = (
+    productId: string,
+    isReturn: boolean,
+    discountPercent: number
+  ) => {
+    const clamped = Math.max(0, Math.min(100, Number(discountPercent) || 0));
+    setCart((prev) =>
+      prev.map((item) =>
+        item.productId === productId && Boolean(item.isReturn) === isReturn
+          ? { ...item, itemDiscountPercent: clamped }
+          : item
+      )
+    );
   };
 
   const handleToggleCartItemReturn = (
@@ -811,26 +967,210 @@ export default function App() {
     setCart([]);
   };
 
+  const handleHoldCurrentBill = (payload: {
+    customerId?: string;
+    customerName: string;
+    discountPercent: number;
+    discountMode: 'percent' | 'fixed';
+    fixedDiscountAmount: number;
+    label?: string;
+  }) => {
+    if (!user || cart.length === 0) return;
+    const held: HeldBill = {
+      id: generateUuid(),
+      label:
+        payload.label?.trim() ||
+        payload.customerName.trim() ||
+        `Hold #${extendedModules.heldBills.length + 1}`,
+      createdAt: new Date().toISOString(),
+      cashierName: activeEmployee?.name || user.shopName || 'Cashier',
+      branchId: activeBranch?.id,
+      cart: [...cart],
+      customerId: payload.customerId,
+      customerName: payload.customerName,
+      discountPercent: payload.discountPercent,
+      discountMode: payload.discountMode,
+      fixedDiscountAmount: payload.fixedDiscountAmount,
+    };
+    updateExtended((prev) => ({
+      ...prev,
+      heldBills: [held, ...prev.heldBills],
+    }));
+    setCart([]);
+  };
+
+  const handleResumeHeldBill = (bill: HeldBill) => {
+    setCart(bill.cart);
+    updateExtended((prev) => ({
+      ...prev,
+      heldBills: prev.heldBills.filter((b) => b.id !== bill.id),
+    }));
+  };
+
+  const handleDiscardHeldBill = (billId: string) => {
+    updateExtended((prev) => ({
+      ...prev,
+      heldBills: prev.heldBills.filter((b) => b.id !== billId),
+    }));
+  };
+
+  const handleSendWhatsAppForCustomer = async (
+    customer: Customer,
+    type: 'reminder' | 'statement'
+  ): Promise<{ manualUrl?: string; statusText?: string }> => {
+    const entriesForCust = udhaarEntries.filter((e) => {
+      const kh = udhaarCustomers.find(
+        (k) =>
+          k.id === e.customerId &&
+          (k.id === customer.id ||
+            (customer.phone && k.phone && k.phone === customer.phone) ||
+            k.name.trim().toLowerCase() === customer.name.trim().toLowerCase())
+      );
+      return Boolean(kh);
+    });
+
+    const content =
+      type === 'statement'
+        ? formatWhatsAppStatementMessage({
+            shopSettings: storeSettings,
+            customer,
+            entries: entriesForCust,
+          })
+        : formatWhatsAppReminderMessage({
+            shopSettings: storeSettings,
+            customer,
+            templateOverride: storeSettings.whatsappTemplateReminder,
+          });
+
+    const res = await dispatchWhatsAppMessage({
+      customerId: customer.id,
+      customerName: customer.name,
+      phone: customer.phone,
+      messageType: type,
+      content,
+      whatsappOptIn: customer.whatsappOptIn !== false,
+    });
+
+    updateExtended((prev) => ({
+      ...prev,
+      whatsappLogs: [res.logEntry, ...prev.whatsappLogs].slice(0, 300),
+    }));
+
+    return {
+      manualUrl: res.manualFallbackUrl,
+      statusText:
+        res.logEntry.status === 'sent_api'
+          ? 'Sent via WhatsApp Cloud API'
+          : res.logEntry.errorMessage,
+    };
+  };
+
+  const handleSendWhatsAppUdhaarReminder = async (
+    customer: UdhaarCustomer,
+    balance: number
+  ): Promise<{ manualUrl?: string; statusText?: string }> => {
+    const content = formatWhatsAppReminderMessage({
+      shopSettings: storeSettings,
+      customer: {
+        name: customer.name,
+        balance,
+        dueDate: customer.dueDate,
+      },
+      templateOverride: storeSettings.whatsappTemplateReminder,
+    });
+
+    const res = await dispatchWhatsAppMessage({
+      customerId: customer.id,
+      customerName: customer.name,
+      phone: customer.phone,
+      messageType: 'reminder',
+      content,
+      whatsappOptIn: customer.whatsappOptIn !== false,
+    });
+
+    updateExtended((prev) => ({
+      ...prev,
+      whatsappLogs: [res.logEntry, ...prev.whatsappLogs].slice(0, 300),
+    }));
+
+    return {
+      manualUrl: res.manualFallbackUrl,
+      statusText:
+        res.logEntry.status === 'sent_api'
+          ? 'Sent via WhatsApp Cloud API'
+          : res.logEntry.errorMessage,
+    };
+  };
+
+  const handleSendWhatsAppForOrder = async (
+    order: OrderRecord
+  ): Promise<{ manualUrl?: string; statusText?: string }> => {
+    const crmCust = order.customerId
+      ? customers.find((c) => c.id === order.customerId)
+      : undefined;
+    const khCust = order.udhaarCustomerId
+      ? udhaarCustomers.find((k) => k.id === order.udhaarCustomerId)
+      : undefined;
+    const phone = crmCust?.phone || khCust?.phone || '';
+    const optIn = (crmCust?.whatsappOptIn ?? khCust?.whatsappOptIn ?? true) !== false;
+    const outstanding = crmCust?.balance ?? 0;
+
+    const content = formatWhatsAppReceiptMessage({
+      shopSettings: storeSettings,
+      order,
+      customerName: order.customerName || 'Walk-in Customer',
+      outstandingBalance: outstanding,
+      templateOverride: storeSettings.whatsappTemplateReceipt,
+    });
+
+    const res = await dispatchWhatsAppMessage({
+      customerId: crmCust?.id || khCust?.id,
+      customerName: order.customerName || 'Walk-in Customer',
+      phone,
+      messageType: order.paymentMethod === 'udhaar' ? 'udhaar_receipt' : 'receipt',
+      content,
+      whatsappOptIn: optIn,
+    });
+
+    updateExtended((prev) => ({
+      ...prev,
+      whatsappLogs: [res.logEntry, ...prev.whatsappLogs].slice(0, 300),
+    }));
+
+    return {
+      manualUrl: res.manualFallbackUrl,
+      statusText:
+        res.logEntry.status === 'sent_api'
+          ? 'Receipt sent via WhatsApp Cloud API'
+          : res.logEntry.errorMessage,
+    };
+  };
+
   const handleCompleteSale = ({
     customerId,
     customerName,
     udhaarCustomerId,
     discountPercent,
+    discountMode = 'percent',
+    fixedDiscountAmount = 0,
+    overrideTaxRate,
     paymentMethod,
+    paymentSplits,
     amountTendered,
     transactionId,
+    clientTxRef,
     inlineNewUdhaarCustomer,
-  }: {
-    customerId?: string;
-    customerName: string;
-    udhaarCustomerId?: string;
-    discountPercent: number;
-    paymentMethod: PaymentMethod;
-    amountTendered: number;
-    transactionId?: string;
-    inlineNewUdhaarCustomer?: InlineUdhaarCustomerPayload;
-  }): OrderRecord | null => {
+  }: PosCheckoutPayload): OrderRecord | null => {
     if (!user || cart.length === 0) return null;
+
+    if (clientTxRef) {
+      const existingByRef = orders.find((o) => o.clientTxRef === clientTxRef);
+      if (existingByRef) {
+        setActiveReceiptIsReprint(false);
+        setActiveReceiptOrder(existingByRef);
+        return existingByRef;
+      }
+    }
 
     const lineItems: OrderLineItem[] = [];
     for (const cartItem of cart) {
@@ -840,8 +1180,17 @@ export default function App() {
       if (!product || qty <= 0 || (!isRet && product.stock + 0.0001 < qty)) continue;
 
       const signedQty = isRet ? -qty : qty;
-      const absLineTotal = roundCurrency(product.price * qty);
-      const signedLineTotal = isRet ? -absLineTotal : absLineTotal;
+      const itemDiscPct = Math.max(0, Math.min(100, cartItem.itemDiscountPercent || 0));
+      const grossLine = roundCurrency(product.price * qty);
+      const itemDiscAmt = roundCurrency(grossLine * (itemDiscPct / 100));
+      const netLine = roundCurrency(grossLine - itemDiscAmt);
+      const signedLineTotal = isRet ? -netLine : netLine;
+      const itemTaxRate =
+        overrideTaxRate !== undefined
+          ? overrideTaxRate
+          : (product.taxRate ?? 0) > 0
+          ? product.taxRate
+          : storeSettings.defaultTaxRate ?? 0;
 
       lineItems.push({
         productId: product.id,
@@ -850,9 +1199,13 @@ export default function App() {
         nameUr: product.nameUr,
         category: product.category,
         sellingUnit: normalizeSellingUnit(product.sellingUnit),
+        enteredUnit: cartItem.enteredUnit
+          ? normalizeSellingUnit(cartItem.enteredUnit)
+          : undefined,
+        itemDiscountAmount: itemDiscAmt > 0 ? itemDiscAmt : undefined,
         unitPrice: product.price,
         unitCost: product.cost,
-        taxRate: product.taxRate ?? 0,
+        taxRate: itemTaxRate,
         quantity: signedQty,
         lineTotal: signedLineTotal,
         isReturn: isRet,
@@ -865,8 +1218,14 @@ export default function App() {
       lineItems.reduce((sum, item) => sum + item.lineTotal, 0)
     );
     const discountAmount =
-      subtotal > 0 ? Math.round(subtotal * (discountPercent / 100)) : 0;
-    const discountFactor = subtotal > 0 ? 1 - discountPercent / 100 : 1;
+      subtotal <= 0
+        ? 0
+        : discountMode === 'fixed'
+        ? Math.min(subtotal, Math.max(0, Math.round(fixedDiscountAmount)))
+        : Math.round(subtotal * (discountPercent / 100));
+    const effectiveDiscountPct =
+      subtotal > 0 ? (discountAmount / subtotal) * 100 : 0;
+    const discountFactor = subtotal > 0 ? 1 - effectiveDiscountPct / 100 : 1;
     const taxAmount = Math.round(
       lineItems.reduce((sum, item) => {
         const discountedLine = item.lineTotal * discountFactor;
@@ -877,16 +1236,63 @@ export default function App() {
     const effectiveTaxRate = taxable !== 0 ? taxAmount / taxable : 0;
     const total = roundCurrency(taxable + taxAmount);
 
-    const effectiveTendered =
-      paymentMethod === 'cash'
-        ? total > 0
-          ? Math.max(total, amountTendered)
-          : total
-        : paymentMethod === 'udhaar'
-        ? 0
-        : total;
+    const activeSplits =
+      Array.isArray(paymentSplits) && paymentSplits.length > 0
+        ? paymentSplits.filter((sp) => sp.amount > 0)
+        : undefined;
+
+    const udhaarPortion = activeSplits
+      ? roundCurrency(
+          activeSplits
+            .filter((sp) => sp.method === 'udhaar')
+            .reduce((s, sp) => s + sp.amount, 0)
+        )
+      : paymentMethod === 'udhaar'
+      ? Math.max(0, total)
+      : 0;
+
+    const cashPortion = activeSplits
+      ? roundCurrency(
+          activeSplits
+            .filter((sp) => sp.method === 'cash')
+            .reduce((s, sp) => s + sp.amount, 0)
+        )
+      : paymentMethod === 'cash'
+      ? total
+      : 0;
+
+    // Enforce Customer Credit Limit before posting Udhaar debt
+    if (udhaarPortion > 0 && !inlineNewUdhaarCustomer) {
+      const targetCrm = customerId ? customers.find((c) => c.id === customerId) : undefined;
+      const targetKh = udhaarCustomerId
+        ? udhaarCustomers.find((k) => k.id === udhaarCustomerId)
+        : undefined;
+      const limit = targetCrm?.creditLimit ?? targetKh?.creditLimit ?? 0;
+      const currentBal = targetCrm?.balance ?? 0;
+      if (limit > 0 && currentBal + udhaarPortion > limit) {
+        setRbacNotice(t.creditLimitExceededMsg);
+        return null;
+      }
+    }
+
+    const paidAmount = activeSplits
+      ? roundCurrency(Math.max(0, total - udhaarPortion))
+      : paymentMethod === 'udhaar'
+      ? 0
+      : Math.max(0, total);
+    const balanceDue = roundCurrency(Math.max(0, udhaarPortion));
+
+    const effectiveTendered = activeSplits
+      ? roundCurrency(activeSplits.reduce((s, sp) => s + sp.amount, 0))
+      : paymentMethod === 'cash'
+      ? total > 0
+        ? Math.max(total, amountTendered)
+        : total
+      : paymentMethod === 'udhaar'
+      ? 0
+      : total;
     const changeDue =
-      paymentMethod === 'cash' && total > 0
+      !activeSplits && paymentMethod === 'cash' && total > 0
         ? Math.max(0, effectiveTendered - total)
         : 0;
 
@@ -901,7 +1307,7 @@ export default function App() {
     let effectiveUdhaarCustomerId = udhaarCustomerId;
     let effectiveCustomerName = customerName;
 
-    if (paymentMethod === 'udhaar') {
+    if (udhaarPortion > 0) {
       if (inlineNewUdhaarCustomer && inlineNewUdhaarCustomer.name.trim()) {
         const inlineName = inlineNewUdhaarCustomer.name.trim();
         const inlinePhone = inlineNewUdhaarCustomer.phone.trim();
@@ -914,6 +1320,7 @@ export default function App() {
           notes: '',
           reminderSchedule: inlineNewUdhaarCustomer.reminderSchedule,
           dueDate: inlineNewUdhaarCustomer.dueDate,
+          whatsappOptIn: true,
           createdAt: nowIso,
         };
         newUdhaarCustomer = createdKhata;
@@ -930,7 +1337,7 @@ export default function App() {
         if (existingCrm) {
           updatedCustomer = {
             ...existingCrm,
-            balance: existingCrm.balance + total,
+            balance: roundCurrency(existingCrm.balance + udhaarPortion),
           };
           effectiveCustomerId = updatedCustomer.id;
           setCustomers((prev) =>
@@ -942,7 +1349,8 @@ export default function App() {
             name: inlineName,
             phone: inlinePhone,
             address: '',
-            balance: Math.max(0, total),
+            balance: Math.max(0, udhaarPortion),
+            whatsappOptIn: true,
             createdAt: nowIso,
           };
           updatedCustomer = createdCrm;
@@ -989,6 +1397,7 @@ export default function App() {
             phone: resolvedCrm?.phone ?? '',
             notes: '',
             reminderSchedule: 'none',
+            whatsappOptIn: true,
             createdAt: nowIso,
           };
           newUdhaarCustomer = createdKhata;
@@ -1002,7 +1411,7 @@ export default function App() {
         if (resolvedCrm) {
           updatedCustomer = {
             ...resolvedCrm,
-            balance: resolvedCrm.balance + total,
+            balance: roundCurrency(resolvedCrm.balance + udhaarPortion),
           };
           effectiveCustomerId = updatedCustomer.id;
           setCustomers((prev) =>
@@ -1014,7 +1423,8 @@ export default function App() {
             name: resolvedKhata.name,
             phone: resolvedKhata.phone,
             address: '',
-            balance: Math.max(0, total),
+            balance: Math.max(0, udhaarPortion),
+            whatsappOptIn: true,
             createdAt: nowIso,
           };
           updatedCustomer = createdCrm;
@@ -1048,22 +1458,36 @@ export default function App() {
     const refundedAmount = hasReturnItems && total < 0 ? Math.abs(total) : 0;
 
     const nextSeq = 1001 + orders.length;
+    const primaryMethod: PaymentMethod = activeSplits
+      ? activeSplits[0].method
+      : paymentMethod;
+
     const newOrder: OrderRecord = {
       id: `ord-${nowTs}`,
       receiptNumber: `KR-2026-${nextSeq}`,
       createdAt: nowIso,
+      branchId: activeBranch?.id,
+      branchName: activeBranch?.name,
+      cashierId: activeEmployee?.id,
+      cashierName: activeEmployee?.name || user.shopName || 'Cashier',
+      shiftId: activeShift?.id,
       customerId: effectiveCustomerId,
       customerName: effectiveCustomerName,
       udhaarCustomerId: effectiveUdhaarCustomerId,
-      paymentMethod,
+      paymentMethod: primaryMethod,
+      paymentSplits: activeSplits,
       transactionId: transactionId?.trim() || undefined,
+      clientTxRef: clientTxRef || generateUuid(),
       items: lineItems,
       subtotal,
-      discountPercent,
+      discountPercent: Math.round(effectiveDiscountPct * 100) / 100,
+      discountMode,
       discountAmount,
       taxRate: effectiveTaxRate,
       taxAmount,
       total,
+      paidAmount,
+      balanceDue,
       amountTendered: effectiveTendered,
       changeDue,
       returnStatus,
@@ -1083,14 +1507,26 @@ export default function App() {
     const updatedProducts = products.map((prod) => {
       const delta = netDeltaByProduct.get(prod.id);
       if (!delta) return prod;
+      const nextStock = Math.max(0, roundQuantity(prod.stock + delta));
+      const nextBranchStock =
+        activeBranch && prod.branchStock
+          ? {
+              ...prod.branchStock,
+              [activeBranch.id]: Math.max(
+                0,
+                roundQuantity((prod.branchStock[activeBranch.id] ?? prod.stock) + delta)
+              ),
+            }
+          : prod.branchStock;
       return {
         ...prod,
-        stock: Math.max(0, roundQuantity(prod.stock + delta)),
+        stock: nextStock,
+        branchStock: nextBranchStock,
       };
     });
 
     let newUdhaarEntry: UdhaarEntry | undefined;
-    if (paymentMethod === 'udhaar' && effectiveUdhaarCustomerId) {
+    if (udhaarPortion > 0 && effectiveUdhaarCustomerId) {
       const summaryLabel = lineItems
         .map((li) => `${li.quantity}x ${lang === 'ur' ? li.nameUr : li.nameEn}`)
         .join(', ');
@@ -1098,7 +1534,7 @@ export default function App() {
         id: `ue-${nowTs}`,
         customerId: effectiveUdhaarCustomerId,
         type: 'credit',
-        amount: total,
+        amount: udhaarPortion,
         note: `POS Bill ${newOrder.receiptNumber} (${summaryLabel})`,
         receiptNumber: newOrder.receiptNumber,
         createdAt: newOrder.createdAt,
@@ -1106,10 +1542,69 @@ export default function App() {
       setUdhaarEntries((prev) => [...prev, newUdhaarEntry!]);
     }
 
+    // Update open cash shift if cash moved
+    if (activeShift && cashPortion !== 0) {
+      const movement: CashDrawerMovement = {
+        id: generateUuid(),
+        shiftId: activeShift.id,
+        branchId: activeBranch?.id,
+        type: cashPortion > 0 ? 'cash_sale' : 'cash_refund',
+        amount: Math.abs(cashPortion),
+        note: `Receipt ${newOrder.receiptNumber}`,
+        employeeId: activeEmployee?.id || user.id,
+        employeeName: activeEmployee?.name || 'Cashier',
+        createdAt: nowIso,
+      };
+      updateExtended((prev) => ({
+        ...prev,
+        cashShifts: prev.cashShifts.map((s) =>
+          s.id !== activeShift.id
+            ? s
+            : {
+                ...s,
+                cashSalesTotal:
+                  s.cashSalesTotal + (cashPortion > 0 ? cashPortion : 0),
+                cashRefundsTotal:
+                  s.cashRefundsTotal + (cashPortion < 0 ? Math.abs(cashPortion) : 0),
+                expectedCash: roundCurrency(s.expectedCash + cashPortion),
+                movements: [movement, ...s.movements],
+              }
+        ),
+      }));
+    }
+
+    if (storeSettings.autoKickDrawer && cashPortion > 0) {
+      void triggerCashDrawerKick();
+    }
+
+    if (storeSettings.showCustomerDisplay !== false) {
+      broadcastCustomerDisplay({
+        storeName: storeSettings.storeName || user.shopName || t.brandName,
+        lang,
+        items: lineItems.map((li) => ({
+          name: lang === 'ur' ? li.nameUr : li.nameEn,
+          qtyLabel: formatQuantityWithUnit(li.quantity, li.sellingUnit || 'piece', lang),
+          lineTotal: li.lineTotal,
+        })),
+        subtotal,
+        discountAmount,
+        taxAmount,
+        grandTotal: total,
+        status: 'completed',
+        lastReceiptNumber: newOrder.receiptNumber,
+        updatedAt: nowIso,
+      });
+    }
+
+    if (storeSettings.whatsappAutoReceipts && (updatedCustomer?.phone || newUdhaarCustomer?.phone)) {
+      void handleSendWhatsAppForOrder(newOrder);
+    }
+
     setProducts(updatedProducts);
     setOrders((prev) => [...prev, newOrder]);
     setCart([]);
     setLatestNewOrderId(newOrder.id);
+    setActiveReceiptIsReprint(false);
     setActiveReceiptOrder(newOrder);
 
     insertOrderRecord(
@@ -1276,7 +1771,138 @@ export default function App() {
     );
     setProducts(updatedProducts);
 
+    if (mode === 'refund' && addedRefundAmount > 0 && activeShift && targetOrder.paymentMethod === 'cash') {
+      const movement: CashDrawerMovement = {
+        id: generateUuid(),
+        shiftId: activeShift.id,
+        branchId: activeBranch?.id,
+        type: 'cash_refund',
+        amount: addedRefundAmount,
+        note: `Refund for ${targetOrder.receiptNumber}`,
+        employeeId: activeEmployee?.id || user.id,
+        employeeName: activeEmployee?.name || 'Staff',
+        createdAt: new Date().toISOString(),
+      };
+      updateExtended((prev) => ({
+        ...prev,
+        cashShifts: prev.cashShifts.map((s) =>
+          s.id !== activeShift.id
+            ? s
+            : {
+                ...s,
+                cashRefundsTotal: s.cashRefundsTotal + addedRefundAmount,
+                expectedCash: Math.max(0, roundCurrency(s.expectedCash - addedRefundAmount)),
+                movements: [movement, ...s.movements],
+              }
+        ),
+      }));
+    }
+
+    recordAudit(
+      'refund',
+      `Processed ${mode} on ${targetOrder.receiptNumber}`,
+      reason || `${totalReturnedNow} unit(s) returned`,
+      {
+        targetId: targetOrder.id,
+        targetName: targetOrder.receiptNumber,
+        previousValue: String(targetOrder.total),
+        newValue: String(updatedOrder.total),
+      }
+    );
+
     updateOrderReturnRecord(user.id, updatedOrder, restockedProducts).then(
+      (syncErr) => {
+        if (syncErr) setCloudSyncError(syncErr);
+      }
+    );
+  };
+
+  const handleCancelOrder = (orderId: string, reason: string) => {
+    if (!user || !guardAction('orders.cancel')) return;
+    const targetOrder = orders.find((o) => o.id === orderId);
+    if (!targetOrder || targetOrder.returnStatus === 'cancelled') return;
+
+    const restockMap = new Map<string, number>();
+    for (const li of targetOrder.items) {
+      if (li.quantity > 0) {
+        const notYetReturned = Math.max(
+          0,
+          roundQuantity(li.quantity - (li.returnedQty ?? 0))
+        );
+        if (notYetReturned > 0) {
+          restockMap.set(
+            li.productId,
+            roundQuantity((restockMap.get(li.productId) ?? 0) + notYetReturned)
+          );
+        }
+      }
+    }
+
+    const restockedProducts: Product[] = [];
+    const updatedProducts = products.map((p) => {
+      const addBack = restockMap.get(p.id) ?? 0;
+      if (addBack <= 0) return p;
+      const next = { ...p, stock: roundQuantity(p.stock + addBack) };
+      restockedProducts.push(next);
+      return next;
+    });
+
+    const cancelledOrder: OrderRecord = {
+      ...targetOrder,
+      returnStatus: 'cancelled',
+      cancellationReason: reason || 'Cancelled by authorized staff',
+      cancelledBy: activeEmployee?.name || 'Admin',
+      cancelledAt: new Date().toISOString(),
+    };
+
+    setOrders((prev) =>
+      prev.map((o) => (o.id === cancelledOrder.id ? cancelledOrder : o))
+    );
+    setProducts(updatedProducts);
+
+    if (activeShift && targetOrder.paymentMethod === 'cash' && targetOrder.total > 0) {
+      const reversal = Math.max(0, targetOrder.total - (targetOrder.refundedAmount ?? 0));
+      if (reversal > 0) {
+        const movement: CashDrawerMovement = {
+          id: generateUuid(),
+          shiftId: activeShift.id,
+          branchId: activeBranch?.id,
+          type: 'cash_refund',
+          amount: reversal,
+          note: `Voided bill ${targetOrder.receiptNumber}`,
+          employeeId: activeEmployee?.id || user.id,
+          employeeName: activeEmployee?.name || 'Admin',
+          createdAt: new Date().toISOString(),
+        };
+        updateExtended((prev) => ({
+          ...prev,
+          cashShifts: prev.cashShifts.map((s) =>
+            s.id !== activeShift.id
+              ? s
+              : {
+                  ...s,
+                  cashRefundsTotal: s.cashRefundsTotal + reversal,
+                  expectedCash: Math.max(0, roundCurrency(s.expectedCash - reversal)),
+                  movements: [movement, ...s.movements],
+                }
+          ),
+        }));
+      }
+    }
+
+    recordAudit(
+      'sale_cancel',
+      `Cancelled receipt ${targetOrder.receiptNumber}`,
+      reason || 'Order voided',
+      {
+        targetId: targetOrder.id,
+        targetName: targetOrder.receiptNumber,
+        previousValue: String(targetOrder.total),
+        newValue: 'cancelled',
+      }
+    );
+
+    updateOrderReturnRecord(user.id, cancelledOrder, restockedProducts).then(
       (syncErr) => {
         if (syncErr) setCloudSyncError(syncErr);
       }
@@ -1310,6 +1936,7 @@ export default function App() {
       ...newProd,
       sellingUnit: normalizeSellingUnit(newProd.sellingUnit),
       stock: Math.max(0, roundQuantity(newProd.stock)),
+      branchId: newProd.branchId ?? activeBranch?.id,
       id: `${user.id.slice(0, 8)}-prod-${Date.now()}`,
     };
     setProducts((prev) => [created, ...prev]);
@@ -1320,11 +1947,25 @@ export default function App() {
 
   const handleUpdateProduct = (updated: Product) => {
     if (!user || !guardAction('inventory.write')) return;
+    const prevProd = products.find((p) => p.id === updated.id);
     const normalized: Product = {
       ...updated,
       sellingUnit: normalizeSellingUnit(updated.sellingUnit),
       stock: Math.max(0, roundQuantity(updated.stock)),
     };
+    if (prevProd && prevProd.price !== normalized.price) {
+      recordAudit(
+        'price_change',
+        `Updated retail price for ${normalized.nameEn}`,
+        `SKU ${normalized.sku}`,
+        {
+          targetId: normalized.id,
+          targetName: normalized.nameEn,
+          previousValue: String(prevProd.price),
+          newValue: String(normalized.price),
+        }
+      );
+    }
     setProducts((prev) =>
       prev.map((prod) => (prod.id === normalized.id ? normalized : prod))
     );
@@ -1342,6 +1983,88 @@ export default function App() {
     });
   };
 
+  const handleBulkImportProducts = (drafts: ImportedProductDraft[]) => {
+    if (!user || drafts.length === 0 || !guardAction('inventory.write')) return;
+    const prefix = user.id.slice(0, 8);
+    const nowTs = Date.now();
+    const existingBySku = new Map(
+      products.map((p) => [p.sku.trim().toLowerCase(), p])
+    );
+
+    const toUpsert: Product[] = drafts.map((d, idx) => {
+      const existing = existingBySku.get(d.sku.trim().toLowerCase());
+      return {
+        id: existing?.id ?? `${prefix}-imp-${nowTs}-${idx}`,
+        sku: d.sku,
+        barcode: d.barcode,
+        qrCode: d.qrCode,
+        nameEn: d.nameEn,
+        nameUr: d.nameUr,
+        category: d.category,
+        brand: d.brand,
+        variant: d.variant,
+        sellingUnit: normalizeSellingUnit(d.sellingUnit),
+        cost: d.cost,
+        price: d.price,
+        wholesalePrice: d.wholesalePrice,
+        taxRate: d.taxRate,
+        stock: roundQuantity(d.stock),
+        minStock: d.minStock ?? existing?.minStock ?? 5,
+        reorderLevel: d.reorderLevel ?? existing?.reorderLevel ?? 10,
+        batchNumber: d.batchNumber,
+        expiryDate: d.expiryDate,
+        branchId: existing?.branchId ?? activeBranch?.id,
+        image: existing?.image || '',
+      };
+    });
+
+    setProducts((prev) => {
+      const mergedMap = new Map(prev.map((p) => [p.id, p]));
+      for (const item of toUpsert) {
+        mergedMap.set(item.id, item);
+      }
+      return Array.from(mergedMap.values());
+    });
+
+    recordAudit(
+      'stock_adjustment',
+      `CSV bulk imported ${toUpsert.length} product(s)`,
+      'Inventory CSV import'
+    );
+
+    bulkUpsertProductsRecord(user.id, toUpsert).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
+  };
+
+  const handleBulkUpdateProducts = (ids: string[], patch: Partial<Product>) => {
+    if (!user || ids.length === 0 || !guardAction('inventory.write')) return;
+    const idSet = new Set(ids);
+    const modified: Product[] = [];
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (!idSet.has(p.id)) return p;
+        const next: Product = {
+          ...p,
+          ...patch,
+          stock: patch.stock !== undefined ? Math.max(0, roundQuantity(patch.stock)) : p.stock,
+        };
+        modified.push(next);
+        return next;
+      })
+    );
+    recordAudit(
+      'price_change',
+      `Bulk updated ${modified.length} product(s)`,
+      Object.keys(patch).join(', ')
+    );
+    if (modified.length > 0) {
+      bulkUpsertProductsRecord(user.id, modified).then((syncErr) => {
+        if (syncErr) setCloudSyncError(syncErr);
+      });
+    }
+  };
+
   // Udhaar / Khata Handlers
   const handleAddUdhaarCustomer = ({
     name,
@@ -1350,6 +2073,9 @@ export default function App() {
     openingBalance,
     reminderSchedule,
     dueDate,
+    creditLimit,
+    discountPercent,
+    whatsappOptIn,
   }: {
     name: string;
     phone: string;
@@ -1357,6 +2083,9 @@ export default function App() {
     openingBalance: number;
     reminderSchedule?: ReminderSchedule;
     dueDate?: string;
+    creditLimit?: number;
+    discountPercent?: number;
+    whatsappOptIn?: boolean;
   }): UdhaarCustomer => {
     const nowIso = new Date().toISOString();
     const prefix = user?.id.slice(0, 8) ?? 'shop';
@@ -1365,8 +2094,11 @@ export default function App() {
       name,
       phone,
       notes,
+      creditLimit,
+      discountPercent,
       reminderSchedule: reminderSchedule ?? 'none',
       dueDate: dueDate || undefined,
+      whatsappOptIn: whatsappOptIn !== false,
       createdAt: nowIso,
     };
     setUdhaarCustomers((prev) => [customer, ...prev]);
@@ -1479,18 +2211,40 @@ export default function App() {
     }
   };
 
-  const handleRecordVendorPayment = (vendorId: string, amount: number) => {
+  const handleRecordVendorPayment = (
+    vendorId: string,
+    amount: number,
+    paymentMethod: SupplierPayment['paymentMethod'] = 'cash',
+    note = '',
+    purchaseId?: string
+  ) => {
     if (!guardAction('vendors.write')) return;
     const target = vendors.find((v) => v.id === vendorId);
     if (!target || amount <= 0) return;
 
     const updated: Vendor = {
       ...target,
-      balance: Math.max(0, target.balance - amount),
+      balance: Math.max(0, roundCurrency(target.balance - amount)),
     };
     setVendors((prev) =>
       prev.map((v) => (v.id === vendorId ? updated : v))
     );
+
+    const paymentEntry: SupplierPayment = {
+      id: generateUuid(),
+      vendorId,
+      purchaseId,
+      amount: roundCurrency(amount),
+      paymentMethod,
+      note: note.trim() || `Payment to ${target.name}`,
+      employeeName: activeEmployee?.name || 'Admin',
+      createdAt: new Date().toISOString(),
+    };
+    updateExtended((prev) => ({
+      ...prev,
+      supplierPayments: [paymentEntry, ...prev.supplierPayments],
+    }));
+
     if (user) {
       upsertVendorRecord(user.id, updated).then((syncErr) => {
         if (syncErr) setCloudSyncError(syncErr);
@@ -1503,20 +2257,15 @@ export default function App() {
     invoiceNumber,
     paidAmount,
     note,
+    status = 'received',
     lines,
   }: {
     vendorId: string;
     invoiceNumber: string;
     paidAmount: number;
     note: string;
-    lines: {
-      productId: string;
-      productName: string;
-      sku: string;
-      sellingUnit?: SellingUnit;
-      quantity: number;
-      unitCost: number;
-    }[];
+    status?: PurchaseOrderStatus;
+    lines: DraftPurchaseLine[];
   }): PurchaseRecord | null => {
     if (!user || lines.length === 0 || !guardAction('purchases.write')) return null;
     const vendor = vendors.find((v) => v.id === vendorId);
@@ -1538,6 +2287,8 @@ export default function App() {
         quantity: qty,
         unitCost: line.unitCost,
         lineTotal: roundCurrency(qty * line.unitCost),
+        batchNumber: line.batchNumber,
+        expiryDate: line.expiryDate,
       };
     });
 
@@ -1554,6 +2305,8 @@ export default function App() {
         ? `${vendor.name} (${vendor.company})`
         : vendor.name,
       invoiceNumber,
+      status,
+      branchId: activeBranch?.id,
       totalAmount,
       paidAmount: cleanPaid,
       balanceDue,
@@ -1562,14 +2315,19 @@ export default function App() {
       createdAt: nowIso,
     };
 
+    const shouldReceiveStockNow = status === 'received' || status === 'partial';
     const qtyByProd = new Map<string, number>();
     const costByProd = new Map<string, number>();
+    const batchByProd = new Map<string, string | undefined>();
+    const expiryByProd = new Map<string, string | undefined>();
     for (const item of items) {
       qtyByProd.set(
         item.productId,
         roundQuantity((qtyByProd.get(item.productId) ?? 0) + item.quantity)
       );
       costByProd.set(item.productId, item.unitCost);
+      if (item.batchNumber) batchByProd.set(item.productId, item.batchNumber);
+      if (item.expiryDate) expiryByProd.set(item.productId, item.expiryDate);
     }
 
     const updatedProducts = products.map((prod) => {
@@ -1578,8 +2336,12 @@ export default function App() {
       const latestCost = costByProd.get(prod.id) ?? prod.cost;
       return {
         ...prod,
-        stock: roundQuantity(prod.stock + addedQty),
+        stock: shouldReceiveStockNow
+          ? roundQuantity(prod.stock + addedQty)
+          : prod.stock,
         cost: latestCost,
+        batchNumber: batchByProd.get(prod.id) ?? prod.batchNumber,
+        expiryDate: expiryByProd.get(prod.id) ?? prod.expiryDate,
       };
     });
 
@@ -1594,6 +2356,23 @@ export default function App() {
       prev.map((v) => (v.id === updatedVendor.id ? updatedVendor : v))
     );
 
+    if (cleanPaid > 0) {
+      const paymentEntry: SupplierPayment = {
+        id: generateUuid(),
+        vendorId: vendor.id,
+        purchaseId: purchase.id,
+        amount: cleanPaid,
+        paymentMethod: 'cash',
+        note: `Advance/payment on ${invoiceNumber}`,
+        employeeName: activeEmployee?.name || 'Admin',
+        createdAt: nowIso,
+      };
+      updateExtended((prev) => ({
+        ...prev,
+        supplierPayments: [paymentEntry, ...prev.supplierPayments],
+      }));
+    }
+
     insertPurchaseRecord(user.id, purchase, updatedProducts, updatedVendor).then(
       (syncErr) => {
         if (syncErr) setCloudSyncError(syncErr);
@@ -1601,6 +2380,159 @@ export default function App() {
     );
 
     return purchase;
+  };
+
+  const handleUpdatePurchaseStatus = (
+    purchaseId: string,
+    nextStatus: PurchaseOrderStatus
+  ) => {
+    if (!user || !guardAction('purchases.write')) return;
+    const target = purchases.find((p) => p.id === purchaseId);
+    if (!target) return;
+
+    const wasOrdered = target.status === 'ordered';
+    const becomesReceived = nextStatus === 'received';
+    let modifiedProducts: Product[] | undefined;
+
+    if (wasOrdered && becomesReceived) {
+      const qtyMap = new Map<string, number>();
+      for (const item of target.items) {
+        qtyMap.set(
+          item.productId,
+          roundQuantity((qtyMap.get(item.productId) ?? 0) + item.quantity)
+        );
+      }
+      modifiedProducts = products.map((p) => {
+        const added = qtyMap.get(p.id);
+        if (!added) return p;
+        return { ...p, stock: roundQuantity(p.stock + added) };
+      });
+      setProducts(modifiedProducts);
+    }
+
+    const updatedPurchase: PurchaseRecord = {
+      ...target,
+      status: nextStatus,
+    };
+    setPurchases((prev) =>
+      prev.map((p) => (p.id === purchaseId ? updatedPurchase : p))
+    );
+    updatePurchaseRecordCompat(
+      user.id,
+      updatedPurchase,
+      modifiedProducts?.filter((p) =>
+        target.items.some((it) => it.productId === p.id)
+      )
+    ).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
+  };
+
+  const handlePurchaseReturn = ({
+    purchaseId,
+    items,
+    reason,
+  }: {
+    purchaseId: string;
+    items: { productId: string; quantity: number }[];
+    reason: string;
+  }) => {
+    if (!user || !guardAction('purchases.write')) return;
+    const target = purchases.find((p) => p.id === purchaseId);
+    if (!target) return;
+
+    const reqMap = new Map(
+      items.filter((i) => i.quantity > 0).map((i) => [i.productId, i.quantity])
+    );
+    if (reqMap.size === 0) return;
+
+    const returnedItems: PurchaseItem[] = [];
+    let returnValue = 0;
+
+    for (const pi of target.items) {
+      const reqQty = roundQuantity(reqMap.get(pi.productId) ?? 0);
+      const qtyToReturn = Math.min(pi.quantity, reqQty);
+      if (qtyToReturn <= 0) continue;
+      const lineAmt = roundCurrency(qtyToReturn * pi.unitCost);
+      returnValue = roundCurrency(returnValue + lineAmt);
+      returnedItems.push({
+        ...pi,
+        quantity: qtyToReturn,
+        lineTotal: lineAmt,
+      });
+    }
+    if (returnedItems.length === 0) return;
+
+    const deductMap = new Map(
+      returnedItems.map((it) => [it.productId, it.quantity])
+    );
+    const updatedProducts = products.map((p) => {
+      const sub = deductMap.get(p.id) ?? 0;
+      if (sub <= 0) return p;
+      return { ...p, stock: Math.max(0, roundQuantity(p.stock - sub)) };
+    });
+
+    const targetVendor = vendors.find((v) => v.id === target.vendorId);
+    const updatedVendor = targetVendor
+      ? {
+          ...targetVendor,
+          balance: Math.max(0, roundCurrency(targetVendor.balance - returnValue)),
+        }
+      : undefined;
+
+    const updatedPurchase: PurchaseRecord = {
+      ...target,
+      status: 'returned',
+      returnedAmount: roundCurrency((target.returnedAmount ?? 0) + returnValue),
+      balanceDue: Math.max(0, roundCurrency(target.balanceDue - returnValue)),
+    };
+
+    const returnRecord: PurchaseReturnRecord = {
+      id: generateUuid(),
+      purchaseId: target.id,
+      vendorId: target.vendorId,
+      vendorName: target.vendorName,
+      invoiceNumber: target.invoiceNumber,
+      branchId: activeBranch?.id,
+      items: returnedItems,
+      totalAmount: returnValue,
+      reason: reason || 'Supplier return',
+      employeeName: activeEmployee?.name || 'Admin',
+      createdAt: new Date().toISOString(),
+    };
+
+    setPurchases((prev) =>
+      prev.map((p) => (p.id === purchaseId ? updatedPurchase : p))
+    );
+    setProducts(updatedProducts);
+    if (updatedVendor) {
+      setVendors((prev) =>
+        prev.map((v) => (v.id === updatedVendor.id ? updatedVendor : v))
+      );
+    }
+    updateExtended((prev) => ({
+      ...prev,
+      purchaseReturns: [returnRecord, ...prev.purchaseReturns],
+    }));
+
+    recordAudit(
+      'stock_adjustment',
+      `Returned supplier items on PO ${target.invoiceNumber}`,
+      reason || `Value Rs. ${returnValue}`,
+      {
+        targetId: target.id,
+        targetName: target.invoiceNumber,
+      }
+    );
+
+    updatePurchaseRecordCompat(
+      user.id,
+      updatedPurchase,
+      updatedProducts.filter((p) => deductMap.has(p.id)),
+      updatedVendor
+    ).then((syncErr) => {
+      if (syncErr) setCloudSyncError(syncErr);
+    });
   };
 
   const handleRecordInventoryAdjustment = ({
@@ -1633,11 +2565,13 @@ export default function App() {
       productName: lang === 'ur' ? product.nameUr : product.nameEn,
       sku: product.sku,
       sellingUnit: normalizeSellingUnit(product.sellingUnit),
+      branchId: activeBranch?.id,
       adjustmentType,
       quantityChange: actualDelta,
       previousStock,
       newStock,
       reason,
+      actorName: activeEmployee?.name || 'Admin',
       createdAt: new Date().toISOString(),
     };
 
@@ -1645,6 +2579,18 @@ export default function App() {
       prev.map((p) => (p.id === updatedProduct.id ? updatedProduct : p))
     );
     setInventoryAdjustments((prev) => [adjustment, ...prev]);
+
+    recordAudit(
+      'stock_adjustment',
+      `${adjustmentType}: ${product.nameEn}`,
+      `${previousStock} → ${newStock} (${reason})`,
+      {
+        targetId: product.id,
+        targetName: product.nameEn,
+        previousValue: String(previousStock),
+        newValue: String(newStock),
+      }
+    );
 
     insertInventoryAdjustmentRecord(user.id, adjustment, updatedProduct).then(
       (syncErr) => {
@@ -1659,11 +2605,17 @@ export default function App() {
     phone,
     address,
     balance,
+    creditLimit,
+    discountPercent,
+    whatsappOptIn,
   }: {
     name: string;
     phone: string;
     address: string;
     balance: number;
+    creditLimit?: number;
+    discountPercent?: number;
+    whatsappOptIn?: boolean;
   }): Customer => {
     const created: Customer = {
       id: generateUuid(),
@@ -1671,6 +2623,9 @@ export default function App() {
       phone,
       address,
       balance: Math.max(0, balance),
+      creditLimit,
+      discountPercent,
+      whatsappOptIn: whatsappOptIn !== false,
       createdAt: new Date().toISOString(),
     };
     setCustomers((prev) => [created, ...prev]);
@@ -1707,7 +2662,7 @@ export default function App() {
 
     const updated: Customer = {
       ...target,
-      balance: Math.max(0, target.balance - amount),
+      balance: Math.max(0, roundCurrency(target.balance - amount)),
     };
     setCustomers((prev) =>
       prev.map((c) => (c.id === customerId ? updated : c))
@@ -1726,6 +2681,9 @@ export default function App() {
     role,
     pin,
     isActive,
+    branchId,
+    shiftAssignment,
+    customPermissions,
   }: {
     id?: string;
     name: string;
@@ -1733,9 +2691,17 @@ export default function App() {
     role: EmployeeRole;
     pin?: string;
     isActive: boolean;
+    branchId?: string;
+    shiftAssignment?: string;
+    customPermissions?: string[];
   }): Promise<string | null> => {
     if (!user) return 'Not signed in.';
     if (!guardAction('staff.manage')) return t.rbacUnauthorizedError;
+
+    const maxEmployeesLimit = subscription?.maxEmployees ?? 15;
+    if (!id && employees.length >= maxEmployeesLimit) {
+      return t.employeeLimitReachedMsg;
+    }
 
     const prefix = user.id.slice(0, 8);
     const existing = id ? employees.find((e) => e.id === id) : undefined;
@@ -1749,11 +2715,27 @@ export default function App() {
       role,
       pin,
       isActive,
+      branchId,
+      shiftAssignment,
+      customPermissions,
       createdAt,
     });
 
     if (error || !employee) {
       return error || 'Failed to save staff member.';
+    }
+
+    if (
+      existing &&
+      JSON.stringify(existing.customPermissions ?? []) !==
+        JSON.stringify(customPermissions ?? [])
+    ) {
+      recordAudit(
+        'permission_change',
+        `Updated custom permissions for ${employee.name}`,
+        (customPermissions ?? []).join(', ') || 'Default role permissions',
+        { targetId: employee.id, targetName: employee.name }
+      );
     }
 
     setEmployees((prev) =>
@@ -1788,21 +2770,70 @@ export default function App() {
     if (!user || !guardAction('expenses.write')) return;
     const created: ExpenseRecord = {
       ...payload,
+      branchId: payload.branchId ?? activeBranch?.id,
+      approvalStatus:
+        payload.approvalStatus ?? (activeRole === 'admin' ? 'approved' : 'pending'),
+      approvedBy:
+        payload.approvalStatus === 'approved' || activeRole === 'admin'
+          ? activeEmployee?.name || 'Admin'
+          : undefined,
       id: generateUuid(),
       createdAt: new Date().toISOString(),
     };
     setExpenses((prev) => [created, ...prev]);
+
+    if (created.paidFromDrawer && activeShift && created.amount > 0) {
+      const movement: CashDrawerMovement = {
+        id: generateUuid(),
+        shiftId: activeShift.id,
+        branchId: activeBranch?.id,
+        type: 'expense',
+        amount: created.amount,
+        note: created.title,
+        employeeId: activeEmployee?.id || user.id,
+        employeeName: activeEmployee?.name || 'Staff',
+        createdAt: new Date().toISOString(),
+      };
+      updateExtended((prev) => ({
+        ...prev,
+        cashShifts: prev.cashShifts.map((s) =>
+          s.id !== activeShift.id
+            ? s
+            : {
+                ...s,
+                expenseTotal: roundCurrency(s.expenseTotal + created.amount),
+                expectedCash: Math.max(0, roundCurrency(s.expectedCash - created.amount)),
+                movements: [movement, ...s.movements],
+              }
+        ),
+      }));
+    }
+
     upsertExpenseRecord(user.id, created).then((syncErr) => {
       if (syncErr) setCloudSyncError(syncErr);
     });
   };
 
   const handleUpdateExpense = (updated: ExpenseRecord) => {
-    if (!user || !guardAction('expenses.write')) return;
+    if (!user) return;
+    const prevExp = expenses.find((e) => e.id === updated.id);
+    const isApprovalAction =
+      prevExp && prevExp.approvalStatus !== updated.approvalStatus;
+    if (isApprovalAction) {
+      if (!guardAction('expenses.approve')) return;
+    } else if (!guardAction('expenses.write')) {
+      return;
+    }
+    const finalUpdated: ExpenseRecord = isApprovalAction
+      ? {
+          ...updated,
+          approvedBy: activeEmployee?.name || 'Manager',
+        }
+      : updated;
     setExpenses((prev) =>
-      prev.map((e) => (e.id === updated.id ? updated : e))
+      prev.map((e) => (e.id === finalUpdated.id ? finalUpdated : e))
     );
-    upsertExpenseRecord(user.id, updated).then((syncErr) => {
+    upsertExpenseRecord(user.id, finalUpdated).then((syncErr) => {
       if (syncErr) setCloudSyncError(syncErr);
     });
   };
@@ -1813,6 +2844,328 @@ export default function App() {
     deleteExpenseRecord(user.id, expenseId).then((syncErr) => {
       if (syncErr) setCloudSyncError(syncErr);
     });
+  };
+
+  // Phase 2 & 10 & 15: Cash Drawer Shifts, Multi-Branch Transfers & Backup/Restore
+  const handleOpenShift = (openingCash: number, branchId?: string) => {
+    if (!user || !guardAction('shifts.manage')) return;
+    if (activeShift) return;
+    const nowIso = new Date().toISOString();
+    const shiftId = generateUuid();
+    const cleanOpening = Math.max(0, roundCurrency(openingCash));
+    const openingMovement: CashDrawerMovement = {
+      id: generateUuid(),
+      shiftId,
+      branchId: branchId || activeBranch?.id,
+      type: 'opening',
+      amount: cleanOpening,
+      note: 'Shift opening float',
+      employeeId: activeEmployee?.id || user.id,
+      employeeName: activeEmployee?.name || 'Cashier',
+      createdAt: nowIso,
+    };
+    const newShift: CashShift = {
+      id: shiftId,
+      branchId: branchId || activeBranch?.id,
+      cashierId: activeEmployee?.id || user.id,
+      cashierName: activeEmployee?.name || user.shopName || 'Cashier',
+      startedAt: nowIso,
+      status: 'open',
+      openingCash: cleanOpening,
+      expectedCash: cleanOpening,
+      cashSalesTotal: 0,
+      cashRefundsTotal: 0,
+      cashInTotal: 0,
+      cashOutTotal: 0,
+      expenseTotal: 0,
+      movements: [openingMovement],
+    };
+    updateExtended((prev) => ({
+      ...prev,
+      cashShifts: [newShift, ...prev.cashShifts],
+    }));
+    recordAudit(
+      'shift',
+      `Opened cash shift with float Rs. ${cleanOpening}`,
+      newShift.cashierName
+    );
+  };
+
+  const handleDrawerMovement = (
+    type: 'cash_in' | 'cash_out',
+    amount: number,
+    note: string
+  ) => {
+    if (!user || !activeShift || amount <= 0 || !guardAction('shifts.manage')) return;
+    const cleanAmount = roundCurrency(amount);
+    const movement: CashDrawerMovement = {
+      id: generateUuid(),
+      shiftId: activeShift.id,
+      branchId: activeShift.branchId,
+      type,
+      amount: cleanAmount,
+      note: note.trim() || (type === 'cash_in' ? 'Cash added' : 'Cash removed'),
+      employeeId: activeEmployee?.id || user.id,
+      employeeName: activeEmployee?.name || 'Cashier',
+      createdAt: new Date().toISOString(),
+    };
+    updateExtended((prev) => ({
+      ...prev,
+      cashShifts: prev.cashShifts.map((s) =>
+        s.id !== activeShift.id
+          ? s
+          : {
+              ...s,
+              cashInTotal:
+                type === 'cash_in' ? roundCurrency(s.cashInTotal + cleanAmount) : s.cashInTotal,
+              cashOutTotal:
+                type === 'cash_out' ? roundCurrency(s.cashOutTotal + cleanAmount) : s.cashOutTotal,
+              expectedCash: Math.max(
+                0,
+                roundCurrency(
+                  type === 'cash_in' ? s.expectedCash + cleanAmount : s.expectedCash - cleanAmount
+                )
+              ),
+              movements: [movement, ...s.movements],
+            }
+      ),
+    }));
+    recordAudit(
+      'drawer_movement',
+      `${type === 'cash_in' ? 'Cash In' : 'Cash Out'}: Rs. ${cleanAmount}`,
+      movement.note
+    );
+  };
+
+  const handleCloseShift = (actualCash: number, note: string) => {
+    if (!user || !activeShift || !guardAction('shifts.close')) return;
+    const cleanActual = Math.max(0, roundCurrency(actualCash));
+    const diff = roundCurrency(cleanActual - activeShift.expectedCash);
+    const nowIso = new Date().toISOString();
+    const closingMove: CashDrawerMovement = {
+      id: generateUuid(),
+      shiftId: activeShift.id,
+      branchId: activeShift.branchId,
+      type: 'closing',
+      amount: cleanActual,
+      note: note.trim() || `Shift closed (diff Rs. ${diff})`,
+      employeeId: activeEmployee?.id || user.id,
+      employeeName: activeEmployee?.name || 'Manager',
+      createdAt: nowIso,
+    };
+    updateExtended((prev) => ({
+      ...prev,
+      cashShifts: prev.cashShifts.map((s) =>
+        s.id !== activeShift.id
+          ? s
+          : {
+              ...s,
+              status: 'closed',
+              closedAt: nowIso,
+              actualCash: cleanActual,
+              cashDifference: diff,
+              closedById: activeEmployee?.id || user.id,
+              closedByName: activeEmployee?.name || 'Manager',
+              closingNote: note.trim(),
+              movements: [closingMove, ...s.movements],
+            }
+      ),
+    }));
+    recordAudit(
+      'shift',
+      `Closed shift (${activeShift.cashierName})`,
+      `Expected Rs. ${activeShift.expectedCash}, Counted Rs. ${cleanActual}, Diff Rs. ${diff}`
+    );
+  };
+
+  const handleSelectBranch = (branchId: string) => {
+    updateExtended((prev) => ({ ...prev, activeBranchId: branchId }));
+  };
+
+  const handleSaveBranch = (
+    payload: Omit<Branch, 'id' | 'createdAt'> & { id?: string }
+  ) => {
+    if (!user || !guardAction('branches.manage')) return;
+    const limit = subscription?.maxBranches ?? 3;
+    if (!payload.id && extendedModules.branches.length >= limit) {
+      setRbacNotice(t.branchLimitReachedMsg);
+      return;
+    }
+    if (payload.id) {
+      updateExtended((prev) => ({
+        ...prev,
+        branches: prev.branches.map((b) =>
+          b.id === payload.id ? { ...b, ...payload } : b
+        ),
+      }));
+    } else {
+      const created: Branch = {
+        ...payload,
+        id: generateUuid(),
+        createdAt: new Date().toISOString(),
+      };
+      updateExtended((prev) => ({
+        ...prev,
+        branches: [...prev.branches, created],
+      }));
+    }
+  };
+
+  const handleCreateTransfer = (payload: {
+    fromBranchId: string;
+    toBranchId: string;
+    productId: string;
+    quantity: number;
+    note: string;
+  }) => {
+    if (!user) return;
+    const prod = products.find((p) => p.id === payload.productId);
+    const fromBr = extendedModules.branches.find((b) => b.id === payload.fromBranchId);
+    const toBr = extendedModules.branches.find((b) => b.id === payload.toBranchId);
+    if (!prod || !fromBr || !toBr || payload.quantity <= 0) return;
+
+    const transfer: StockTransfer = {
+      id: generateUuid(),
+      fromBranchId: fromBr.id,
+      fromBranchName: fromBr.name,
+      toBranchId: toBr.id,
+      toBranchName: toBr.name,
+      status: 'pending',
+      items: [
+        {
+          productId: prod.id,
+          sku: prod.sku,
+          nameEn: prod.nameEn,
+          nameUr: prod.nameUr,
+          quantity: roundQuantity(payload.quantity),
+          sellingUnit: normalizeSellingUnit(prod.sellingUnit),
+        },
+      ],
+      requestedBy: activeEmployee?.name || 'Staff',
+      note: payload.note,
+      createdAt: new Date().toISOString(),
+    };
+    updateExtended((prev) => ({
+      ...prev,
+      stockTransfers: [transfer, ...prev.stockTransfers],
+    }));
+    recordAudit(
+      'transfer',
+      `Requested stock transfer ${fromBr.name} → ${toBr.name}`,
+      `${payload.quantity} ${prod.sellingUnit} ${prod.nameEn}`
+    );
+  };
+
+  const handleUpdateTransferStatus = (
+    transferId: string,
+    status: 'completed' | 'rejected'
+  ) => {
+    if (!user || !guardAction('transfers.approve')) return;
+    const target = extendedModules.stockTransfers.find((tr) => tr.id === transferId);
+    if (!target || target.status !== 'pending') return;
+
+    const nowIso = new Date().toISOString();
+    if (status === 'completed') {
+      const updatedProducts: Product[] = products.map((p) => {
+        const line = target.items.find((it) => it.productId === p.id);
+        if (!line) return p;
+        const currentMap = { ...(p.branchStock || { [target.fromBranchId]: p.stock }) };
+        const fromAvail = currentMap[target.fromBranchId] ?? p.stock;
+        const toAvail = currentMap[target.toBranchId] ?? 0;
+        currentMap[target.fromBranchId] = Math.max(
+          0,
+          roundQuantity(fromAvail - line.quantity)
+        );
+        currentMap[target.toBranchId] = roundQuantity(toAvail + line.quantity);
+        return {
+          ...p,
+          branchStock: currentMap,
+        };
+      });
+      setProducts(updatedProducts);
+      const changed = updatedProducts.filter((p) =>
+        target.items.some((it) => it.productId === p.id)
+      );
+      if (changed.length > 0) {
+        void bulkUpsertProductsRecord(user.id, changed);
+      }
+    }
+
+    updateExtended((prev) => ({
+      ...prev,
+      stockTransfers: prev.stockTransfers.map((tr) =>
+        tr.id === transferId
+          ? {
+              ...tr,
+              status,
+              approvedBy: activeEmployee?.name || 'Manager',
+              completedAt: status === 'completed' ? nowIso : undefined,
+            }
+          : tr
+      ),
+    }));
+    recordAudit(
+      'transfer',
+      `Stock transfer ${status}`,
+      `${target.fromBranchName} → ${target.toBranchName}`
+    );
+  };
+
+  const handleDownloadBackup = () => {
+    if (!user || !guardAction('backup.manage')) return;
+    const json = buildWorkspaceBackupJson({
+      userId: user.id,
+      shopName: storeSettings.storeName || user.shopName || 'Khaas Retail',
+      workspace: {
+        products,
+        orders,
+        udhaarCustomers,
+        udhaarEntries,
+        vendors,
+        purchases,
+        inventoryAdjustments,
+        customers,
+        employees,
+        expenses,
+        storeSettings,
+      },
+      extended: extendedModules,
+    });
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `smartbitz-pos-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    recordAudit('backup', 'Exported full POS JSON backup', `${products.length} products, ${orders.length} orders`);
+  };
+
+  const handleRestoreBackupJson = (
+    rawJson: string
+  ): { ok: boolean; error?: string } => {
+    if (!user || !guardAction('backup.manage')) {
+      return { ok: false, error: t.rbacUnauthorizedError };
+    }
+    const parsed = parseWorkspaceBackupJson(rawJson);
+    if (!parsed.valid) {
+      return { ok: false, error: parsed.error };
+    }
+    const restoredWs = restoreWorkspaceSnapshotLocally(
+      user.id,
+      parsed.payload.workspace
+    );
+    applyWorkspaceData(user.id, restoredWs);
+    saveExtendedModules(user.id, parsed.payload.extended);
+    setExtendedModules(parsed.payload.extended);
+    recordAudit(
+      'backup',
+      'Restored workspace snapshot from JSON backup',
+      `Exported at ${parsed.payload.exportedAt}`
+    );
+    return { ok: true };
   };
 
   const handleRefreshSubscriptionStatus = async () => {
@@ -1863,6 +3216,31 @@ export default function App() {
     }
   };
 
+  const handleAdminUpdateSubscriptionMeta = async (
+    sub: SubscriptionRecord,
+    patch: {
+      planName?: string;
+      maxBranches?: number;
+      maxEmployees?: number;
+      paymentEntry?: SubscriptionPaymentEntry;
+    }
+  ) => {
+    if (!user || !isSuperAdmin) return;
+    setUpdatingSubUserId(sub.userId);
+    try {
+      const res = await adminUpdateSubscriptionMeta(sub.userId, patch, sub);
+      setAllSubscriptions((prev) =>
+        prev.map((item) => (item.userId === sub.userId ? res.updated : item))
+      );
+      if (sub.userId === user.id) {
+        setSubscription(res.updated);
+      }
+      if (res.error) setCloudSyncError(res.error);
+    } finally {
+      setUpdatingSubUserId(null);
+    }
+  };
+
   const handleVerifyStaffPin = async (
     pin: string,
     targetEmployeeId?: string
@@ -1887,17 +3265,26 @@ export default function App() {
     setShowStaffModal(false);
     setRbacNotice(null);
 
-    if (activeTab === 'saas_admin') {
-      if (!isSuperAdmin) setActiveTab('pos');
-      return { ok: true };
+    const switchedEmp = employees.find((e) => e.id === result.employeeId);
+    if (switchedEmp) {
+      recordEmployeeActivity(
+        switchedEmp.id,
+        switchedEmp.name,
+        result.role,
+        activeEmployee ? 'pin_switch' : 'login'
+      );
     }
-    if (!ROLE_ALLOWED_TABS[result.role].includes(activeTab)) {
+
+    if (!canAccessTab(result.role, activeTab, isSuperAdmin)) {
       setActiveTab('pos');
     }
     return { ok: true };
   };
 
   const handleLockScreen = () => {
+    if (activeEmployee) {
+      recordEmployeeActivity(activeEmployee.id, activeEmployee.name, activeRole, 'lock');
+    }
     if (user) {
       saveStoredStaffSession(user.id, null);
     }
@@ -1916,6 +3303,7 @@ export default function App() {
         applyWorkspaceData(user.id, ws);
         setCart([]);
         setLatestNewOrderId(null);
+        setActiveReceiptIsReprint(false);
         setActiveReceiptOrder(null);
       })
       .finally(() => setLoadingData(false));
@@ -1962,6 +3350,15 @@ export default function App() {
 
     return { crmCustomer, khataCustomer };
   };
+
+  if (isStandaloneCustomerDisplay) {
+    return (
+      <CustomerDisplayView
+        fallbackLang={lang}
+        fallbackStoreName={storeSettings.storeName || user?.shopName || t.brandName}
+      />
+    );
+  }
 
   if (!authReady) {
     return (
@@ -2102,15 +3499,28 @@ export default function App() {
                 udhaarCustomers={udhaarCustomers}
                 udhaarEntries={udhaarEntries}
                 storeSettings={storeSettings}
-                canViewDashboard={activeRole !== 'cashier'}
+                heldBills={extendedModules.heldBills}
+                activeBranchName={activeBranch?.name}
+                canViewDashboard={hasRolePermission(activeRole, 'dashboard.view', activeEmployee?.customPermissions)}
                 onRefreshUdhaarCustomers={handleRefreshCustomersForPos}
                 onCreateInlineKhataCustomer={handleCreateInlineKhataCustomer}
                 onAddToCart={handleAddToCart}
                 onUpdateQuantity={handleUpdateQuantity}
                 onSetQuantity={handleSetCartQuantity}
+                onSetCartItemDiscount={handleSetCartItemDiscount}
                 onToggleReturn={handleToggleCartItemReturn}
                 onRemoveFromCart={handleRemoveFromCart}
                 onClearCart={handleClearCart}
+                onHoldCurrentBill={handleHoldCurrentBill}
+                onResumeHeldBill={handleResumeHeldBill}
+                onDiscardHeldBill={handleDiscardHeldBill}
+                onOpenCustomerDisplay={() => {
+                  if (window.smartbitzDesktop?.openCustomerDisplay) {
+                    void window.smartbitzDesktop.openCustomerDisplay();
+                  } else {
+                    setShowCustomerDisplayPreview(true);
+                  }
+                }}
                 onCompleteSale={handleCompleteSale}
                 onGoToDashboard={() => setActiveTab('dashboard')}
                 lastCompletedOrder={latestCompletedOrder}
@@ -2118,142 +3528,217 @@ export default function App() {
                   Boolean(activeReceiptOrder) ||
                   showStaffModal ||
                   isScreenLocked ||
-                  isSubscriptionLocked
+                  isSubscriptionLocked ||
+                  showCustomerDisplayPreview
                 }
                 lang={lang}
                 t={t}
               />
             )}
 
-            {activeTab === 'dashboard' && activeRole !== 'cashier' && (
-              <ExecutiveDashboardView
-                storeName={activeStoreName}
-                orders={orders}
-                expenses={expenses}
-                products={products}
-                purchases={purchases}
-                latestNewOrderId={latestNewOrderId}
-                canResetDemo={activeRole === 'admin'}
-                suppressPrint={Boolean(activeReceiptOrder)}
-                isLoading={loadingData}
-                error={cloudSyncError}
-                onRetry={handleRetrySync}
-                onPrintReceipt={(order) => setActiveReceiptOrder(order)}
-                onGoToPos={() => setActiveTab('pos')}
-                onGoToInventory={() => setActiveTab('inventory')}
-                onResetDemo={handleResetDemo}
-                lang={lang}
-                t={t}
-              />
-            )}
+            {activeTab === 'dashboard' &&
+              hasRolePermission(activeRole, 'dashboard.view', activeEmployee?.customPermissions) && (
+                <ExecutiveDashboardView
+                  storeName={activeStoreName}
+                  orders={orders}
+                  expenses={expenses}
+                  products={products}
+                  purchases={purchases}
+                  cashShifts={extendedModules.cashShifts}
+                  branches={extendedModules.branches}
+                  latestNewOrderId={latestNewOrderId}
+                  canResetDemo={activeRole === 'admin'}
+                  suppressPrint={Boolean(activeReceiptOrder)}
+                  isLoading={loadingData}
+                  error={cloudSyncError}
+                  onRetry={handleRetrySync}
+                  onPrintReceipt={(order) => {
+                    setActiveReceiptIsReprint(true);
+                    setActiveReceiptOrder(order);
+                  }}
+                  onGoToPos={() => setActiveTab('pos')}
+                  onGoToInventory={() => setActiveTab('inventory')}
+                  onResetDemo={handleResetDemo}
+                  lang={lang}
+                  t={t}
+                />
+              )}
 
             {activeTab === 'transactions' && (
               <TransactionsView
                 orders={orders}
-                onPrintReceipt={(order) => setActiveReceiptOrder(order)}
+                canCancelOrders={hasRolePermission(activeRole, 'orders.cancel', activeEmployee?.customPermissions)}
+                onPrintReceipt={(order, isReprint) => {
+                  setActiveReceiptIsReprint(Boolean(isReprint ?? true));
+                  setActiveReceiptOrder(order);
+                }}
                 onProcessReturn={handleProcessOrderReturn}
+                onCancelOrder={handleCancelOrder}
+                onSendWhatsApp={(order) => {
+                  setActiveReceiptIsReprint(true);
+                  setActiveReceiptOrder(order);
+                }}
                 lang={lang}
                 t={t}
               />
             )}
 
-            {activeTab === 'inventory' && activeRole !== 'cashier' && (
-              <InventoryView
-                userId={user.id}
-                shopName={activeStoreName}
-                products={products}
-                adjustments={inventoryAdjustments}
-                canDelete={activeRole === 'admin' || activeRole === 'manager'}
-                onAdjustStock={handleAdjustStock}
-                onRecordAdjustment={handleRecordInventoryAdjustment}
-                onAddProduct={handleAddProduct}
-                onUpdateProduct={handleUpdateProduct}
-                onDeleteProduct={handleDeleteProduct}
+            {activeTab === 'shifts' && (
+              <CashDrawerView
+                shifts={extendedModules.cashShifts}
+                activeShift={activeShift}
+                activeEmployee={activeEmployee}
+                branches={extendedModules.branches}
+                selectedBranchId={extendedModules.activeBranchId}
+                canCloseShift={hasRolePermission(activeRole, 'shifts.close', activeEmployee?.customPermissions)}
+                onOpenShift={handleOpenShift}
+                onDrawerMovement={handleDrawerMovement}
+                onCloseShift={handleCloseShift}
                 lang={lang}
                 t={t}
               />
             )}
 
-            {activeTab === 'inventory_report' && activeRole !== 'cashier' && (
-              <InventoryReportView
-                storeName={activeStoreName}
-                products={products}
-                adjustments={inventoryAdjustments}
-                suppressPrint={Boolean(activeReceiptOrder)}
-                lang={lang}
-                t={t}
-              />
-            )}
+            {activeTab === 'inventory' &&
+              hasRolePermission(activeRole, 'inventory.write', activeEmployee?.customPermissions) && (
+                <InventoryView
+                  userId={user.id}
+                  shopName={activeStoreName}
+                  products={products}
+                  adjustments={inventoryAdjustments}
+                  canDelete={activeRole === 'admin' || activeRole === 'manager'}
+                  onAdjustStock={handleAdjustStock}
+                  onRecordAdjustment={handleRecordInventoryAdjustment}
+                  onAddProduct={handleAddProduct}
+                  onUpdateProduct={handleUpdateProduct}
+                  onDeleteProduct={handleDeleteProduct}
+                  onBulkImportProducts={handleBulkImportProducts}
+                  onBulkUpdateProducts={handleBulkUpdateProducts}
+                  lang={lang}
+                  t={t}
+                />
+              )}
 
-            {activeTab === 'purchases' && activeRole !== 'cashier' && (
-              <PurchasesView
-                vendors={vendors}
-                products={products}
-                purchases={purchases}
-                onReceiveInventory={handleReceiveInventory}
-                onGoToVendors={() => setActiveTab('vendors')}
-                lang={lang}
-                t={t}
-              />
-            )}
+            {activeTab === 'inventory_report' &&
+              hasRolePermission(activeRole, 'reports.view', activeEmployee?.customPermissions) && (
+                <InventoryReportView
+                  storeName={activeStoreName}
+                  products={products}
+                  adjustments={inventoryAdjustments}
+                  suppressPrint={Boolean(activeReceiptOrder)}
+                  lang={lang}
+                  t={t}
+                />
+              )}
 
-            {activeTab === 'vendors' && activeRole !== 'cashier' && (
-              <VendorsView
-                vendors={vendors}
-                purchases={purchases}
-                onAddVendor={handleAddVendor}
-                onUpdateVendor={handleUpdateVendor}
-                onRecordVendorPayment={handleRecordVendorPayment}
-                lang={lang}
-                t={t}
-              />
-            )}
+            {activeTab === 'purchases' &&
+              hasRolePermission(activeRole, 'purchases.write', activeEmployee?.customPermissions) && (
+                <PurchasesView
+                  vendors={vendors}
+                  products={products}
+                  purchases={purchases}
+                  onReceiveInventory={handleReceiveInventory}
+                  onUpdatePurchaseStatus={handleUpdatePurchaseStatus}
+                  onPurchaseReturn={handlePurchaseReturn}
+                  onGoToVendors={() => setActiveTab('vendors')}
+                  lang={lang}
+                  t={t}
+                />
+              )}
+
+            {activeTab === 'vendors' &&
+              hasRolePermission(activeRole, 'vendors.write', activeEmployee?.customPermissions) && (
+                <VendorsView
+                  vendors={vendors}
+                  purchases={purchases}
+                  supplierPayments={extendedModules.supplierPayments}
+                  storeName={activeStoreName}
+                  onAddVendor={handleAddVendor}
+                  onUpdateVendor={handleUpdateVendor}
+                  onRecordVendorPayment={handleRecordVendorPayment}
+                  lang={lang}
+                  t={t}
+                />
+              )}
 
             {activeTab === 'customers' && (
               <CustomersView
                 storeName={activeStoreName}
                 customers={customers}
                 orders={orders}
+                entries={udhaarEntries}
+                storeSettings={storeSettings}
                 canDelete={activeRole === 'admin'}
                 onAddCustomer={handleAddCustomer}
                 onUpdateCustomer={handleUpdateCustomer}
                 onDeleteCustomer={handleDeleteCustomer}
                 onRecordPayment={handleRecordCustomerPayment}
-                onPrintReceipt={(order) => setActiveReceiptOrder(order)}
+                onPrintReceipt={(order) => {
+                  setActiveReceiptIsReprint(true);
+                  setActiveReceiptOrder(order);
+                }}
+                onSendWhatsAppMessage={handleSendWhatsAppForCustomer}
                 lang={lang}
                 t={t}
               />
             )}
 
-            {activeTab === 'expenses' && activeRole !== 'cashier' && (
-              <ExpensesView
-                expenses={expenses}
-                canDelete={activeRole === 'admin'}
-                onAddExpense={handleAddExpense}
-                onUpdateExpense={handleUpdateExpense}
-                onDeleteExpense={handleDeleteExpense}
-                lang={lang}
-                t={t}
-              />
-            )}
+            {activeTab === 'expenses' &&
+              hasRolePermission(activeRole, 'expenses.write', activeEmployee?.customPermissions) && (
+                <ExpensesView
+                  expenses={expenses}
+                  canDelete={activeRole === 'admin'}
+                  activeShiftOpen={Boolean(activeShift)}
+                  canApproveExpenses={hasRolePermission(activeRole, 'expenses.approve', activeEmployee?.customPermissions)}
+                  onAddExpense={handleAddExpense}
+                  onUpdateExpense={handleUpdateExpense}
+                  onDeleteExpense={handleDeleteExpense}
+                  lang={lang}
+                  t={t}
+                />
+              )}
 
-            {activeTab === 'udhaar' && activeRole !== 'cashier' && (
-              <UdhaarView
-                storeName={activeStoreName}
-                customers={udhaarCustomers}
-                entries={udhaarEntries}
-                onAddCustomer={handleAddUdhaarCustomer}
-                onUpdateCustomer={handleUpdateUdhaarCustomer}
-                onAddEntry={handleAddUdhaarEntry}
-                lang={lang}
-                t={t}
-              />
-            )}
+            {activeTab === 'udhaar' &&
+              hasRolePermission(activeRole, 'udhaar.write', activeEmployee?.customPermissions) && (
+                <UdhaarView
+                  storeName={activeStoreName}
+                  customers={udhaarCustomers}
+                  entries={udhaarEntries}
+                  onAddCustomer={handleAddUdhaarCustomer}
+                  onUpdateCustomer={handleUpdateUdhaarCustomer}
+                  onAddEntry={handleAddUdhaarEntry}
+                  onSendWhatsAppReminder={handleSendWhatsAppUdhaarReminder}
+                  lang={lang}
+                  t={t}
+                />
+              )}
+
+            {activeTab === 'branches' &&
+              canAccessTab(activeRole, 'branches', isSuperAdmin) && (
+                <BranchesView
+                  branches={extendedModules.branches}
+                  activeBranchId={extendedModules.activeBranchId}
+                  maxBranchesAllowed={subscription?.maxBranches ?? 3}
+                  products={products}
+                  orders={orders}
+                  transfers={extendedModules.stockTransfers}
+                  canManageBranches={hasRolePermission(activeRole, 'branches.manage', activeEmployee?.customPermissions)}
+                  canApproveTransfers={hasRolePermission(activeRole, 'transfers.approve', activeEmployee?.customPermissions)}
+                  onSelectBranch={handleSelectBranch}
+                  onSaveBranch={handleSaveBranch}
+                  onCreateTransfer={handleCreateTransfer}
+                  onUpdateTransferStatus={handleUpdateTransferStatus}
+                  lang={lang}
+                  t={t}
+                />
+              )}
 
             {activeTab === 'staff' && activeRole === 'admin' && (
               <StaffView
                 employees={employees}
                 activeEmployeeId={activeEmployee?.id ?? null}
+                branches={extendedModules.branches}
+                maxEmployees={subscription?.maxEmployees ?? 15}
                 onSaveEmployee={handleSaveEmployee}
                 onDeleteEmployee={handleDeleteEmployee}
                 onRequestSwitchEmployee={(empId) => {
@@ -2272,6 +3757,22 @@ export default function App() {
               />
             )}
 
+            {activeTab === 'audit_logs' &&
+              hasRolePermission(activeRole, 'audit.view', activeEmployee?.customPermissions) && (
+                <AuditBackupView
+                  auditLogs={extendedModules.auditLogs}
+                  activityLogs={extendedModules.employeeActivityLogs}
+                  syncHistory={extendedModules.syncHistory}
+                  offlineQueue={getOfflineQueue(user.id)}
+                  whatsappLogs={extendedModules.whatsappLogs}
+                  canManageBackup={hasRolePermission(activeRole, 'backup.manage', activeEmployee?.customPermissions)}
+                  onDownloadBackup={handleDownloadBackup}
+                  onRestoreBackupJson={handleRestoreBackupJson}
+                  onRetrySyncNow={() => void runOfflineSync(user.id, user.shopName)}
+                  t={t}
+                />
+              )}
+
             {activeTab === 'saas_admin' && isSuperAdmin && (
               <SaasAdminView
                 subscriptions={allSubscriptions}
@@ -2280,6 +3781,9 @@ export default function App() {
                 onRefresh={() => void handleRefreshAllSubscriptions()}
                 onAdminAction={(sub, action) =>
                   void handleAdminSubscriptionAction(sub, action)
+                }
+                onUpdateSubscriptionMeta={(sub, patch) =>
+                  void handleAdminUpdateSubscriptionMeta(sub, patch)
                 }
                 lang={lang}
                 t={t}
@@ -2294,10 +3798,25 @@ export default function App() {
         order={activeReceiptOrder}
         storeSettings={storeSettings}
         cashierName={activeEmployee?.name}
-        onClose={() => setActiveReceiptOrder(null)}
+        isReprint={activeReceiptIsReprint}
+        onSendWhatsApp={handleSendWhatsAppForOrder}
+        onClose={() => {
+          setActiveReceiptOrder(null);
+          setActiveReceiptIsReprint(false);
+        }}
         lang={lang}
         t={t}
       />
+
+      {showCustomerDisplayPreview && (
+        <div className="fixed inset-0 z-50">
+          <CustomerDisplayView
+            fallbackLang={lang}
+            fallbackStoreName={activeStoreName}
+            onClose={() => setShowCustomerDisplayPreview(false)}
+          />
+        </div>
+      )}
 
       {!isSubscriptionLocked && (
         <StaffPinModal
