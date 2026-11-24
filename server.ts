@@ -6,11 +6,26 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createServer as createViteServer } from 'vite';
 import { hasRolePermission, type RoleAction } from './src/lib/rbac';
 import {
+  hashPinAsync,
   isValidPinFormat,
   isStoredPinHash,
   REDACTED_PIN_SENTINEL,
+  verifyPinHashAsync,
 } from './src/lib/pinSecurity';
 import type { EmployeeRole } from './src/types';
+
+function isRpcMissingError(message?: string | null): boolean {
+  return /PGRST202|Could not find the function/i.test(message || '');
+}
+
+function rowHasConfiguredPin(row: Record<string, unknown>): boolean {
+  const pinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
+  const pinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
+  return (
+    isStoredPinHash(pinHash) ||
+    (pinCode !== '' && pinCode !== REDACTED_PIN_SENTINEL)
+  );
+}
 
 const PORT = Number(process.env.PORT || 3000);
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
@@ -305,7 +320,190 @@ export function createPosExpressApp() {
     return res.json({ ok: true });
   });
 
-  // Verify staff PIN securely via Postgres pgcrypto RPC (no plaintext PIN returned or exposed)
+  // First-time Admin onboarding: allowed ONLY when the authenticated store owner has no active Admin with a configured PIN.
+  app.post('/api/staff/bootstrap-admin', async (req: Request, res: Response) => {
+    const user = await authenticateSupabaseRequest(req);
+    if (!user) {
+      return res.status(401).json({ ok: false, error: 'Authentication required.' });
+    }
+
+    const body = req.body as {
+      name?: string;
+      phone?: string;
+      pin?: string;
+    };
+    const cleanName = String(body.name || '').trim();
+    const cleanPhone = String(body.phone || '').trim();
+    const cleanPin = String(body.pin || '').trim();
+
+    if (!cleanName || cleanName.length > 80) {
+      return res.status(400).json({ ok: false, error: 'Valid Admin name (1-80 characters) is required.' });
+    }
+    if (!isValidPinFormat(cleanPin)) {
+      return res.status(400).json({ ok: false, error: 'PIN must be exactly 4 numeric digits.' });
+    }
+    if (isStoredPinHash(cleanPin)) {
+      return res.status(400).json({ ok: false, error: 'Send raw 4-digit PIN only over TLS; never pass precomputed hash.' });
+    }
+
+    const userClient = createUserScopedSupabase(user.jwt);
+    const dbClient = adminSupabase ?? userClient;
+    if (!userClient || !dbClient) {
+      return res.status(503).json({ ok: false, error: 'Supabase client unavailable.' });
+    }
+
+    const { data: existingData, error: existingErr } = await dbClient
+      .from('employees')
+      .select('id, name, phone, role, is_active, pin_hash, pin_code, created_at')
+      .eq('user_id', user.id);
+
+    if (existingErr) {
+      return res.status(500).json({ ok: false, error: existingErr.message });
+    }
+
+    const existingRows = (existingData || []) as Array<Record<string, unknown>>;
+    const alreadyConfigured = existingRows.some(
+      (r) => r.role === 'admin' && r.is_active !== false && rowHasConfiguredPin(r)
+    );
+    if (alreadyConfigured) {
+      return res.status(409).json({
+        ok: false,
+        error: 'An active Store Admin PIN is already configured. Sign in with your Admin PIN to manage staff.',
+      });
+    }
+
+    // Reuse an existing unconfigured Admin row if one exists so no employee records are deleted
+    const unconfiguredAdmin = existingRows.find(
+      (r) => r.role === 'admin' && r.is_active !== false && !rowHasConfiguredPin(r)
+    );
+    const targetEmployeeId =
+      typeof unconfiguredAdmin?.id === 'string' && unconfiguredAdmin.id
+        ? unconfiguredAdmin.id
+        : `${user.id.slice(0, 8)}-emp-admin`;
+    const nowIso = new Date().toISOString();
+    const createdAt =
+      typeof unconfiguredAdmin?.created_at === 'string' && unconfiguredAdmin.created_at
+        ? unconfiguredAdmin.created_at
+        : nowIso;
+
+    // Primary path: Postgres pgcrypto RPC (sets bcrypt pin_hash + verifies into staff_sessions)
+    const { error: setRpcErr } = await userClient.rpc('set_staff_pin', {
+      p_employee_id: targetEmployeeId,
+      p_name: cleanName,
+      p_role: 'admin',
+      p_phone: cleanPhone,
+      p_pin: cleanPin,
+      p_is_active: true,
+    });
+
+    if (!setRpcErr) {
+      const { data: verifyData, error: verifyRpcErr } = await userClient.rpc('verify_staff_pin', {
+        p_pin: cleanPin,
+        p_employee_id: targetEmployeeId,
+      });
+      const verified = (verifyData || {}) as {
+        ok?: boolean;
+        token?: string;
+        employeeId?: string;
+        role?: EmployeeRole;
+        expiresAt?: string;
+      };
+      const signedToken = signStaffToken({
+        uid: user.id,
+        empId: targetEmployeeId,
+        role: 'admin',
+        exp: Date.now() + 12 * 60 * 60 * 1000,
+      });
+      if (!verifyRpcErr && verified.ok && verified.token && verified.expiresAt) {
+        return res.json({
+          ok: true,
+          employee: {
+            id: targetEmployeeId,
+            name: cleanName,
+            phone: cleanPhone,
+            role: 'admin',
+            hasPin: true,
+            isActive: true,
+            createdAt,
+          },
+          session: {
+            token: verified.token,
+            employeeId: targetEmployeeId,
+            role: 'admin',
+            expiresAt: verified.expiresAt,
+            signedToken,
+          },
+        });
+      }
+    }
+
+    // Fallback when RPC is not deployed (PGRST202) OR an unconfigured row existed and adminSupabase is available
+    const canFallback =
+      !setRpcErr ||
+      isRpcMissingError(setRpcErr.message) ||
+      (setRpcErr.code === '42501' && Boolean(adminSupabase));
+    if (!canFallback) {
+      const status = setRpcErr?.code === '42501' ? 403 : 400;
+      return res.status(status).json({ ok: false, error: setRpcErr?.message || 'Unable to create initial Admin.' });
+    }
+
+    const pbkdf2Hash = await hashPinAsync(cleanPin);
+    const { error: upsertErr } = await dbClient
+      .from('employees')
+      .upsert(
+        {
+          id: targetEmployeeId,
+          user_id: user.id,
+          name: cleanName,
+          phone: cleanPhone,
+          role: 'admin',
+          pin_code: REDACTED_PIN_SENTINEL,
+          pin_hash: pbkdf2Hash,
+          pin_updated_at: nowIso,
+          is_active: true,
+          created_at: createdAt,
+        },
+        { onConflict: 'id' }
+      );
+
+    if (upsertErr) {
+      return res.status(upsertErr.code === '42501' ? 403 : 400).json({
+        ok: false,
+        error: upsertErr.message,
+      });
+    }
+
+    const expiresMs = Date.now() + 12 * 60 * 60 * 1000;
+    const expiresAt = new Date(expiresMs).toISOString();
+    const signedToken = signStaffToken({
+      uid: user.id,
+      empId: targetEmployeeId,
+      role: 'admin',
+      exp: expiresMs,
+    });
+
+    return res.json({
+      ok: true,
+      employee: {
+        id: targetEmployeeId,
+        name: cleanName,
+        phone: cleanPhone,
+        role: 'admin',
+        hasPin: true,
+        isActive: true,
+        createdAt,
+      },
+      session: {
+        token: signedToken,
+        employeeId: targetEmployeeId,
+        role: 'admin',
+        expiresAt,
+        signedToken,
+      },
+    });
+  });
+
+  // Verify staff PIN securely via Postgres pgcrypto RPC (or PBKDF2 hash fallback when RPC is absent)
   app.post('/api/staff/verify-pin', async (req: Request, res: Response) => {
     const user = await authenticateSupabaseRequest(req);
     if (!user) {
@@ -328,10 +526,6 @@ export function createPosExpressApp() {
       p_employee_id: employeeId || null,
     });
 
-    if (error) {
-      return res.status(400).json({ ok: false, error: error.message });
-    }
-
     const result = (data || {}) as {
       ok?: boolean;
       token?: string;
@@ -342,30 +536,70 @@ export function createPosExpressApp() {
       error?: string;
     };
 
-    if (!result.ok || !result.token || !result.employeeId || !result.role) {
-      return res.status(401).json({
-        ok: false,
-        error: result.error || 'Invalid or inactive staff PIN.',
+    if (!error && result.ok && result.token && result.employeeId && result.role) {
+      return res.json({
+        ok: true,
+        token: result.token,
+        employeeId: result.employeeId,
+        name: result.name,
+        role: result.role,
+        expiresAt: result.expiresAt,
+        signedToken: signStaffToken({
+          uid: user.id,
+          empId: result.employeeId,
+          role: result.role,
+          exp: Date.now() + 12 * 60 * 60 * 1000,
+        }),
       });
     }
 
-    return res.json({
-      ok: true,
-      token: result.token,
-      employeeId: result.employeeId,
-      name: result.name,
-      role: result.role,
-      expiresAt: result.expiresAt,
-      signedToken: signStaffToken({
-        uid: user.id,
-        empId: result.employeeId,
-        role: result.role,
-        exp: Date.now() + 12 * 60 * 60 * 1000,
-      }),
+    // Check PBKDF2 pin_hash records (used if Postgres pgcrypto RPC was unavailable during setup)
+    const dbClient = adminSupabase ?? userClient;
+    let query = dbClient
+      .from('employees')
+      .select('id, name, role, pin_hash, is_active')
+      .eq('user_id', user.id)
+      .eq('is_active', true);
+    if (employeeId) {
+      query = query.eq('id', employeeId);
+    }
+    const { data: empRows } = await query;
+    for (const row of (empRows || []) as Array<Record<string, unknown>>) {
+      const storedHash = typeof row.pin_hash === 'string' ? row.pin_hash : '';
+      if (storedHash.startsWith('pbkdf2_sha256$') && (await verifyPinHashAsync(cleanPin, storedHash))) {
+        const empId = String(row.id);
+        const empRole = row.role as EmployeeRole;
+        const empName = String(row.name || '');
+        const expMs = Date.now() + 12 * 60 * 60 * 1000;
+        const signedToken = signStaffToken({
+          uid: user.id,
+          empId,
+          role: empRole,
+          exp: expMs,
+        });
+        return res.json({
+          ok: true,
+          token: signedToken,
+          employeeId: empId,
+          name: empName,
+          role: empRole,
+          expiresAt: new Date(expMs).toISOString(),
+          signedToken,
+        });
+      }
+    }
+
+    if (error && !isRpcMissingError(error.message)) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
+
+    return res.status(401).json({
+      ok: false,
+      error: result.error || 'Invalid or inactive staff PIN.',
     });
   });
 
-  // Create or update staff employee (enforces Admin role server-side & hashes PIN via DB RPC)
+  // Create or update staff employee (enforces Admin role server-side & hashes PIN)
   app.post('/api/staff/save-employee', async (req: Request, res: Response) => {
     const user = await authenticateSupabaseRequest(req);
     if (!user) {
@@ -390,6 +624,9 @@ export function createPosExpressApp() {
     if (!body.id || !body.name || !body.role) {
       return res.status(400).json({ error: 'Employee id, name, and role are required.' });
     }
+    if (!['admin', 'manager', 'cashier'].includes(body.role)) {
+      return res.status(400).json({ error: 'Invalid employee role.' });
+    }
     if (body.pin && body.pin !== REDACTED_PIN_SENTINEL && !isValidPinFormat(body.pin)) {
       return res.status(400).json({ error: 'PIN must be exactly 4 numeric digits.' });
     }
@@ -406,11 +643,71 @@ export function createPosExpressApp() {
       p_is_active: typeof body.isActive === 'boolean' ? body.isActive : true,
     });
 
-    if (error) {
+    if (!error) {
+      return res.json(data || { ok: true });
+    }
+
+    if (!isRpcMissingError(error.message)) {
       const status = error.code === '42501' ? 403 : error.code === '23505' ? 409 : 400;
       return res.status(status).json({ error: error.message });
     }
-    return res.json(data || { ok: true });
+
+    // Fallback when Postgres RPC is not yet deployed: verify Admin staff session server-side
+    const staff = await resolveVerifiedStaffRole(req, user);
+    if (staff.role !== 'admin') {
+      return res.status(403).json({ error: 'Only an authenticated Admin can manage staff accounts.' });
+    }
+
+    const dbClient = adminSupabase ?? userClient;
+    const { data: existingList, error: fetchErr } = await dbClient
+      .from('employees')
+      .select('id, pin_hash')
+      .eq('user_id', user.id);
+    if (fetchErr) {
+      return res.status(500).json({ error: fetchErr.message });
+    }
+    const existingRow = (existingList || []).find((r) => String(r.id) === body.id);
+    const cleanPin = body.pin && body.pin !== REDACTED_PIN_SENTINEL ? body.pin.trim() : '';
+    if (!existingRow && !cleanPin) {
+      return res.status(400).json({ error: 'A 4-digit PIN is required when adding a new employee.' });
+    }
+    if (cleanPin) {
+      for (const other of existingList || []) {
+        if (String(other.id) !== body.id && typeof other.pin_hash === 'string') {
+          if (other.pin_hash.startsWith('pbkdf2_sha256$') && (await verifyPinHashAsync(cleanPin, other.pin_hash))) {
+            return res.status(409).json({ error: 'This 4-digit PIN is already assigned to another staff member.' });
+          }
+        }
+      }
+    }
+
+    const nextHash = cleanPin
+      ? await hashPinAsync(cleanPin)
+      : typeof existingRow?.pin_hash === 'string'
+      ? existingRow.pin_hash
+      : undefined;
+
+    const payload: Record<string, unknown> = {
+      id: body.id,
+      user_id: user.id,
+      name: body.name.trim(),
+      phone: (body.phone || '').trim(),
+      role: body.role,
+      pin_code: REDACTED_PIN_SENTINEL,
+      is_active: typeof body.isActive === 'boolean' ? body.isActive : true,
+    };
+    if (nextHash) {
+      payload.pin_hash = nextHash;
+      payload.pin_updated_at = new Date().toISOString();
+    }
+
+    const { error: upsertErr } = await dbClient
+      .from('employees')
+      .upsert(payload, { onConflict: 'id' });
+    if (upsertErr) {
+      return res.status(upsertErr.code === '42501' ? 403 : 400).json({ error: upsertErr.message });
+    }
+    return res.json({ ok: true, id: body.id, role: body.role, hasPin: Boolean(nextHash) });
   });
 
   // Delete staff employee (enforces Admin role server-side)
@@ -426,15 +723,33 @@ export function createPosExpressApp() {
       return res.status(503).json({ error: 'Supabase client unavailable.' });
     }
 
+    const targetId = String(req.params.id || '').trim();
     const { data, error } = await userClient.rpc('delete_staff_member', {
-      p_employee_id: String(req.params.id || '').trim(),
+      p_employee_id: targetId,
     });
 
-    if (error) {
+    if (!error) {
+      return res.json(data || { ok: true });
+    }
+    if (!isRpcMissingError(error.message)) {
       const status = error.code === '42501' ? 403 : 400;
       return res.status(status).json({ error: error.message });
     }
-    return res.json(data || { ok: true });
+
+    const staff = await resolveVerifiedStaffRole(req, user);
+    if (staff.role !== 'admin') {
+      return res.status(403).json({ error: 'Only an authenticated Admin can remove staff accounts.' });
+    }
+    const dbClient = adminSupabase ?? userClient;
+    const { error: delErr } = await dbClient
+      .from('employees')
+      .delete()
+      .eq('id', targetId)
+      .eq('user_id', user.id);
+    if (delErr) {
+      return res.status(400).json({ error: delErr.message });
+    }
+    return res.json({ ok: true });
   });
 
   // Server-side RBAC authorization preflight check for privileged POS mutations

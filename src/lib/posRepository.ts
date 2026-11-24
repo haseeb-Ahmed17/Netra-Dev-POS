@@ -23,6 +23,7 @@ import type {
   PurchaseRecord,
   ReminderSchedule,
   ShopkeeperUser,
+  StaffSessionInfo,
   StoreSettings,
   SubscriptionRecord,
   SyncHistoryEntry,
@@ -34,7 +35,9 @@ import { deterministicDemoUuid, generateUuid } from './idUtils';
 import { idbSetItem } from './indexedDbStore';
 import {
   DEMO_PIN_HASHES,
+  hasConfiguredAdmin,
   hashPinAsync,
+  isStoredPinHash,
   isValidPinFormat,
   REDACTED_PIN_SENTINEL,
   stripPlaintextPin,
@@ -275,20 +278,6 @@ function buildStarterProducts(userId: string): Product[] {
   }));
 }
 
-function buildDefaultAdminEmployee(userId: string): Employee {
-  const prefix = userId.slice(0, 8);
-  return {
-    id: `${prefix}-emp-admin`,
-    name: 'Store Owner (Admin)',
-    phone: '',
-    role: 'admin',
-    pinHash: DEMO_PIN_HASHES['1234'],
-    hasPin: true,
-    isActive: true,
-    createdAt: new Date().toISOString(),
-  };
-}
-
 export function buildStarterWorkspace(
   userId: string,
   includeDemoOrders: boolean,
@@ -307,7 +296,7 @@ export function buildStarterWorkspace(
       purchases: [],
       inventoryAdjustments: [],
       customers: [],
-      employees: [buildDefaultAdminEmployee(userId)],
+      employees: [],
       expenses: [],
       storeSettings: defaultSettings,
     };
@@ -459,12 +448,12 @@ function loadLocalWorkspace(userId: string, shopName?: string): ShopkeeperWorksp
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<ShopkeeperWorkspaceData>;
       const isDemo = userId === 'demo-shopkeeper-1';
-      const fallbackEmployees = isDemo
+      const fallbackEmployees: Employee[] = isDemo
         ? createInitialEmployees().map((emp) => ({
             ...emp,
             id: `${userId.slice(0, 8)}-${emp.id}`,
           }))
-        : [buildDefaultAdminEmployee(userId)];
+        : [];
       const fallbackCustomers = isDemo
         ? createInitialCustomers().map((c) => ({
             ...c,
@@ -482,10 +471,11 @@ function loadLocalWorkspace(userId: string, shopName?: string): ShopkeeperWorksp
         sellingUnit: normalizeSellingUnit(p.sellingUnit),
         stock: roundQuantity(Number(p.stock ?? 0)),
       }));
-      const normalizedEmployees =
-        Array.isArray(parsed.employees) && parsed.employees.length > 0
+      const normalizedEmployees = Array.isArray(parsed.employees)
+        ? parsed.employees.length > 0
           ? parsed.employees.map((emp) => normalizeEmployeeRecord(emp))
-          : fallbackEmployees;
+          : fallbackEmployees
+        : fallbackEmployees;
       return {
         products: normalizedProducts,
         orders: parsed.orders ?? [],
@@ -1241,8 +1231,9 @@ function mapCustomerToRow(
 
 function mapEmployeeFromRow(row: Record<string, unknown>): Employee {
   const rawPinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
+  const rawPinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
   const hasPin =
-    Boolean(row.pin_hash) ||
+    isStoredPinHash(rawPinHash) ||
     (rawPinCode !== '' && rawPinCode !== REDACTED_PIN_SENTINEL);
   return {
     id: String(row.id),
@@ -1645,7 +1636,7 @@ export async function fetchWorkspaceData(
       };
 
       let seedError: string | null = null;
-      let wasEmployeesBootstrapped = false;
+      const wasEmployeesBootstrapped = false;
 
       // Seed starter catalog on first login for a brand-new shopkeeper
       if (products.length === 0 && orders.length === 0) {
@@ -1655,33 +1646,6 @@ export async function fetchWorkspaceData(
         if (seedRes.error) {
           seedError = seedRes.error.message;
         }
-      }
-
-      // Ensure at least one Admin employee exists (hashed PIN via RPC)
-      if (employees.length === 0) {
-        wasEmployeesBootstrapped = true;
-        const defaultAdmin = buildDefaultAdminEmployee(userId);
-        const { error: rpcErr } = await supabase.rpc('set_staff_pin', {
-          p_employee_id: defaultAdmin.id,
-          p_name: defaultAdmin.name,
-          p_role: defaultAdmin.role,
-          p_phone: defaultAdmin.phone,
-          p_pin: '1234',
-          p_is_active: true,
-        });
-        if (rpcErr && /PGRST202|Could not find the function/i.test(rpcErr.message)) {
-          const { error: empSeedErr } = await supabase
-            .from('employees')
-            .upsert(mapEmployeeToRow(defaultAdmin, userId), {
-              onConflict: 'id',
-            });
-          if (empSeedErr && !seedError) {
-            seedError = empSeedErr.message;
-          }
-        } else if (rpcErr && !seedError) {
-          seedError = rpcErr.message;
-        }
-        employees = [defaultAdmin];
       }
 
       // Seed default store settings row if missing
@@ -2776,6 +2740,34 @@ export async function verifyStaffPinRecord(
       p_pin: cleanPin,
       p_employee_id: targetEmployeeId ?? null,
     });
+    if (error && /PGRST202|Could not find the function/i.test(error.message)) {
+      let query = supabase
+        .from('employees')
+        .select('id, name, role, pin_hash, is_active')
+        .eq('user_id', userId)
+        .eq('is_active', true);
+      if (targetEmployeeId) {
+        query = query.eq('id', targetEmployeeId);
+      }
+      const { data: rows } = await query;
+      for (const row of (rows ?? []) as Array<Record<string, unknown>>) {
+        const storedHash = typeof row.pin_hash === 'string' ? row.pin_hash : '';
+        if (storedHash.startsWith('pbkdf2_sha256$') && (await verifyPinHashAsync(cleanPin, storedHash))) {
+          const token = `sbz_local_${String(row.role)}_${Date.now()}_${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
+          const expiresAt = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
+          setStaffSessionHeaderToken(token);
+          return {
+            ok: true,
+            token,
+            employeeId: String(row.id),
+            role: row.role as Employee['role'],
+            expiresAt,
+          };
+        }
+      }
+    }
     if (error) {
       return { ok: false, error: error.message };
     }
@@ -2809,6 +2801,221 @@ export async function verifyStaffPinRecord(
     }
   }
   return { ok: false, error: 'Invalid or inactive staff PIN.' };
+}
+
+export interface SetupInitialAdminResult {
+  ok: boolean;
+  employee?: Employee;
+  session?: StaffSessionInfo;
+  error?: string;
+}
+
+export async function setupInitialAdminRecord(
+  userId: string,
+  input: { name: string; phone?: string; pin: string }
+): Promise<SetupInitialAdminResult> {
+  const cleanName = input.name.trim();
+  const cleanPhone = (input.phone ?? '').trim();
+  const cleanPin = input.pin.trim();
+
+  if (!cleanName || cleanName.length > 80) {
+    return { ok: false, error: 'Please enter a valid Admin name.' };
+  }
+  if (!isValidPinFormat(cleanPin)) {
+    return { ok: false, error: 'PIN must be exactly 4 numeric digits.' };
+  }
+
+  const ws = loadLocalWorkspace(userId);
+  if (hasConfiguredAdmin(ws.employees)) {
+    return {
+      ok: false,
+      error: 'An active Store Admin PIN is already configured. Sign in with your Admin PIN.',
+    };
+  }
+
+  const browserOffline =
+    typeof navigator !== 'undefined' && navigator.onLine === false;
+
+  if (isSupabaseConfigured && supabase && !browserOffline) {
+    const accessToken = await getSupabaseAccessToken();
+    if (accessToken && typeof fetch === 'function') {
+      try {
+        const resp = await fetch('/api/staff/bootstrap-admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            name: cleanName,
+            phone: cleanPhone,
+            pin: cleanPin,
+          }),
+        });
+        if (resp.status !== 404) {
+          const data = (await resp.json().catch(() => ({}))) as {
+            ok?: boolean;
+            employee?: Employee;
+            session?: StaffSessionInfo;
+            error?: string;
+          };
+          if (resp.ok && data.ok && data.employee && data.session) {
+            const createdEmp: Employee = { ...data.employee, pinHash: '', hasPin: true };
+            const existsLocally = ws.employees.some((e) => e.id === createdEmp.id);
+            ws.employees = existsLocally
+              ? ws.employees.map((e) => (e.id === createdEmp.id ? createdEmp : e))
+              : [...ws.employees, createdEmp];
+            saveLocalWorkspace(userId, ws);
+            setStaffSessionHeaderToken(data.session.token);
+            return { ok: true, employee: createdEmp, session: data.session };
+          }
+          return {
+            ok: false,
+            error: data.error || 'Failed to save initial Admin PIN.',
+          };
+        }
+      } catch {
+        // Fallback to direct RPC / Supabase check below
+      }
+    }
+
+    // Direct Supabase fallback if Express route is unavailable
+    const { data: liveEmps, error: liveErr } = await supabase
+      .from('employees')
+      .select('id, role, is_active, pin_hash, pin_code, created_at')
+      .eq('user_id', userId);
+    if (liveErr) {
+      return { ok: false, error: liveErr.message };
+    }
+    const mappedLive = (liveEmps ?? []).map((r) =>
+      mapEmployeeFromRow(r as Record<string, unknown>)
+    );
+    if (hasConfiguredAdmin(mappedLive)) {
+      return {
+        ok: false,
+        error: 'An active Store Admin PIN is already configured. Sign in with your Admin PIN.',
+      };
+    }
+
+    const existingUnpinnedAdmin = mappedLive.find(
+      (e) => e.role === 'admin' && e.isActive && !e.hasPin
+    );
+    const targetId = existingUnpinnedAdmin?.id || `${userId.slice(0, 8)}-emp-admin`;
+    const createdAt = existingUnpinnedAdmin?.createdAt || new Date().toISOString();
+
+    const { error: setErr } = await supabase.rpc('set_staff_pin', {
+      p_employee_id: targetId,
+      p_name: cleanName,
+      p_role: 'admin',
+      p_phone: cleanPhone,
+      p_pin: cleanPin,
+      p_is_active: true,
+    });
+    if (setErr) {
+      if (!/PGRST202|Could not find the function/i.test(setErr.message)) {
+        return { ok: false, error: setErr.message };
+      }
+      const pbkdf2Hash = await hashPinAsync(cleanPin);
+      const { error: upErr } = await supabase.from('employees').upsert(
+        {
+          id: targetId,
+          user_id: userId,
+          name: cleanName,
+          phone: cleanPhone,
+          role: 'admin',
+          pin_code: REDACTED_PIN_SENTINEL,
+          pin_hash: pbkdf2Hash,
+          pin_updated_at: new Date().toISOString(),
+          is_active: true,
+          created_at: createdAt,
+        },
+        { onConflict: 'id' }
+      );
+      if (upErr) return { ok: false, error: upErr.message };
+      const empRecord: Employee = {
+        id: targetId,
+        name: cleanName,
+        phone: cleanPhone,
+        role: 'admin',
+        pinHash: '',
+        hasPin: true,
+        isActive: true,
+        createdAt,
+      };
+      const session: StaffSessionInfo = {
+        token: `sbz_local_admin_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        employeeId: targetId,
+        role: 'admin',
+        expiresAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
+      };
+      ws.employees = ws.employees.some((e) => e.id === targetId)
+        ? ws.employees.map((e) => (e.id === targetId ? empRecord : e))
+        : [...ws.employees, empRecord];
+      saveLocalWorkspace(userId, ws);
+      setStaffSessionHeaderToken(session.token);
+      return { ok: true, employee: empRecord, session };
+    }
+
+    const verified = await verifyStaffPinRecord(userId, cleanPin, targetId);
+    if (!verified.ok || !verified.token || !verified.employeeId || !verified.role || !verified.expiresAt) {
+      return { ok: false, error: verified.error || 'Admin PIN created, but failed to verify session.' };
+    }
+    const empRecord: Employee = {
+      id: targetId,
+      name: cleanName,
+      phone: cleanPhone,
+      role: 'admin',
+      pinHash: '',
+      hasPin: true,
+      isActive: true,
+      createdAt,
+    };
+    const session: StaffSessionInfo = {
+      token: verified.token,
+      employeeId: verified.employeeId,
+      role: verified.role,
+      expiresAt: verified.expiresAt,
+    };
+    ws.employees = ws.employees.some((e) => e.id === targetId)
+      ? ws.employees.map((e) => (e.id === targetId ? empRecord : e))
+      : [...ws.employees, empRecord];
+    saveLocalWorkspace(userId, ws);
+    setStaffSessionHeaderToken(session.token);
+    return { ok: true, employee: empRecord, session };
+  }
+
+  // Local / Offline mode: verify no Admin PIN exists, hash PIN with PBKDF2, and store without removing existing employees
+  const existingUnpinnedAdmin = ws.employees.find(
+    (e) => e.role === 'admin' && e.isActive && !e.hasPin
+  );
+  const targetId = existingUnpinnedAdmin?.id || `${userId.slice(0, 8)}-emp-admin`;
+  const createdAt = existingUnpinnedAdmin?.createdAt || new Date().toISOString();
+  const pinHash = await hashPinAsync(cleanPin);
+
+  const nextAdmin: Employee = {
+    id: targetId,
+    name: cleanName,
+    phone: cleanPhone,
+    role: 'admin',
+    pinHash,
+    hasPin: true,
+    isActive: true,
+    createdAt,
+  };
+
+  ws.employees = existingUnpinnedAdmin
+    ? ws.employees.map((e) => (e.id === targetId ? nextAdmin : e))
+    : [...ws.employees, nextAdmin];
+  saveLocalWorkspace(userId, ws);
+
+  const session: StaffSessionInfo = {
+    token: `local_admin_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    employeeId: targetId,
+    role: 'admin',
+    expiresAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
+  };
+  setStaffSessionHeaderToken(session.token);
+  return { ok: true, employee: nextAdmin, session };
 }
 
 export interface SaveEmployeeInput {

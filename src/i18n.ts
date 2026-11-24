@@ -384,6 +384,17 @@ export interface TranslationStrings {
   quickSwitchStaffLabel: string;
   lastAdminNotice: string;
   pinTakenError: string;
+  firstAdminSetupBadge: string;
+  firstAdminSetupTitle: string;
+  firstAdminSetupSubtitle: string;
+  adminFullNameLabel: string;
+  adminPhoneOptionalLabel: string;
+  newPinLabel: string;
+  confirmPinLabel: string;
+  pinMismatchError: string;
+  adminNameRequiredError: string;
+  createAdminSaveBtn: string;
+  firstAdminSecurityNote: string;
 
   // Phase 3: Store Settings & Thermal Receipt Width
   storeSettingsTitle: string;
@@ -1081,6 +1092,17 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     quickSwitchStaffLabel: 'Select Active Staff Member',
     lastAdminNotice: 'At least one active Admin account must remain active.',
     pinTakenError: 'Another staff member is already using this 4-digit PIN.',
+    firstAdminSetupBadge: 'First-Time Setup',
+    firstAdminSetupTitle: 'Create Your Store Admin PIN',
+    firstAdminSetupSubtitle: 'No Admin PIN has been configured for this store yet. Create your initial Admin profile and choose a 4-digit PIN to secure your register.',
+    adminFullNameLabel: 'Admin Full Name',
+    adminPhoneOptionalLabel: 'Phone Number (Optional)',
+    newPinLabel: 'New 4-Digit PIN',
+    confirmPinLabel: 'Confirm 4-Digit PIN',
+    pinMismatchError: 'PIN and confirmation PIN do not match.',
+    adminNameRequiredError: 'Please enter the Admin full name.',
+    createAdminSaveBtn: 'Save Admin PIN & Enter POS',
+    firstAdminSecurityNote: 'Your PIN is encrypted before saving. No existing PIN is needed for initial setup.',
 
     storeSettingsTitle: 'Business & Store Settings',
     storeSettingsSubtitle: 'Configure your store identity, contact info, tax/NTN number, and printed receipt footer',
@@ -1769,6 +1791,17 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     quickSwitchStaffLabel: 'فعال اسٹاف ممبر منتخب کریں',
     lastAdminNotice: 'کم از کم ایک فعال ایڈمن اکاؤنٹ رہنا ضروری ہے۔',
     pinTakenError: 'یہ 4 ہندسوں کا PIN کوڈ کسی اور اسٹاف کے پاس موجود ہے۔',
+    firstAdminSetupBadge: 'پہلی بار سیٹ اپ',
+    firstAdminSetupTitle: 'اپنا پہلا اسٹور ایڈمن PIN بنائیں',
+    firstAdminSetupSubtitle: 'اس اسٹور کے لیے ابھی تک کوئی ایڈمن PIN سیٹ نہیں کیا گیا۔ رجسٹر محفوظ بنانے کے لیے اپنا ایڈمن نام اور 4 ہندسوں کا PIN منتخب کریں۔',
+    adminFullNameLabel: 'ایڈمن کا پورا نام',
+    adminPhoneOptionalLabel: 'فون نمبر (اختیاری)',
+    newPinLabel: 'نیا 4 ہندسوں کا PIN',
+    confirmPinLabel: 'PIN کی تصدیق کریں',
+    pinMismatchError: 'دونوں PIN کوڈ ایک جیسے نہیں ہیں۔',
+    adminNameRequiredError: 'براہ کرم ایڈمن کا نام درج کریں۔',
+    createAdminSaveBtn: 'ایڈمن PIN محفوظ کریں اور POS شروع کریں',
+    firstAdminSecurityNote: 'محفوظ کرنے سے پہلے آپ کا PIN انکرپٹ کیا جاتا ہے۔ پہلی بار سیٹ اپ کے لیے پرانے PIN کی ضرورت نہیں۔',
 
     storeSettingsTitle: 'کاروبار اور اسٹور کی ترتیبات',
     storeSettingsSubtitle: 'اسٹور کا نام، فون، پتہ، ٹیکس/NTN نمبر اور رسید کا فٹر سیٹ کریں',

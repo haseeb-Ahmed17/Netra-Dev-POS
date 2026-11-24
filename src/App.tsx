@@ -74,6 +74,7 @@ import {
   resetUserDemoWorkspace,
   restoreWorkspaceSnapshotLocally,
   saveEmployeeRecord,
+  setupInitialAdminRecord,
   signInShopkeeper,
   signOutShopkeeper,
   signUpShopkeeper,
@@ -88,6 +89,7 @@ import {
   upsertVendorRecord,
   verifyStaffPinRecord,
 } from './lib/posRepository';
+import { hasConfiguredAdmin } from './lib/pinSecurity';
 import { generateUuid } from './lib/idUtils';
 import { canAccessTab, hasRolePermission, type RoleAction } from './lib/rbac';
 import {
@@ -348,10 +350,23 @@ export default function App() {
       setPendingSyncCount(getOfflineQueue(userId).length);
 
       const activeList = ws.employees.filter((e) => e.isActive);
+      const adminConfigured = hasConfiguredAdmin(ws.employees);
+
+      if (!adminConfigured) {
+        saveStoredStaffSession(userId, null);
+        setStaffSession(null);
+        setActiveEmployeeId(null);
+        setPendingSwitchEmployeeId(null);
+        setIsScreenLocked(true);
+        return;
+      }
+
       const candidateSession =
         ws.refreshedStaffSession ?? loadStoredStaffSession(userId);
       const sessionEmployee = candidateSession
-        ? activeList.find((e) => e.id === candidateSession.employeeId)
+        ? activeList.find(
+            (e) => e.id === candidateSession.employeeId && e.hasPin !== false
+          )
         : undefined;
 
       if (candidateSession && sessionEmployee) {
@@ -368,38 +383,8 @@ export default function App() {
 
       saveStoredStaffSession(userId, null);
       setStaffSession(null);
-
-      const fallbackAdmin =
-        activeList.find((e) => e.role === 'admin') ?? activeList[0] ?? null;
-
-      if (ws.wasEmployeesBootstrapped && fallbackAdmin) {
-        void verifyStaffPinRecord(userId, '1234', fallbackAdmin.id).then((res) => {
-          if (res.ok && res.token && res.employeeId && res.role && res.expiresAt) {
-            const newSession: StaffSessionInfo = {
-              token: res.token,
-              employeeId: res.employeeId,
-              role: res.role,
-              expiresAt: res.expiresAt,
-            };
-            saveStoredStaffSession(userId, newSession);
-            setStaffSession(newSession);
-            setActiveEmployeeId(res.employeeId);
-            setIsScreenLocked(false);
-          } else {
-            setActiveEmployeeId(null);
-            setIsScreenLocked(true);
-          }
-        });
-        return;
-      }
-
-      if (activeList.length > 0) {
-        setActiveEmployeeId(null);
-        setIsScreenLocked(true);
-      } else {
-        setActiveEmployeeId(null);
-        setIsScreenLocked(false);
-      }
+      setActiveEmployeeId(null);
+      setIsScreenLocked(true);
     },
     []
   );
@@ -3281,6 +3266,45 @@ export default function App() {
     return { ok: true };
   };
 
+  const handleSetupInitialAdmin = async (payload: {
+    name: string;
+    phone: string;
+    pin: string;
+  }): Promise<{ ok: boolean; error?: string }> => {
+    if (!user) return { ok: false, error: 'Not signed in.' };
+    const result = await setupInitialAdminRecord(user.id, payload);
+    if (!result.ok || !result.employee || !result.session) {
+      return { ok: false, error: result.error || 'Failed to create initial Admin PIN.' };
+    }
+
+    const createdEmployee = result.employee;
+    const nextSession = result.session;
+
+    setEmployees((prev) =>
+      prev.some((e) => e.id === createdEmployee.id)
+        ? prev.map((e) => (e.id === createdEmployee.id ? createdEmployee : e))
+        : [...prev, createdEmployee]
+    );
+    saveStoredStaffSession(user.id, nextSession);
+    setStaffSession(nextSession);
+    setActiveEmployeeId(createdEmployee.id);
+    setPendingSwitchEmployeeId(null);
+    setIsScreenLocked(false);
+    setShowStaffModal(false);
+    setRbacNotice(null);
+    recordEmployeeActivity(createdEmployee.id, createdEmployee.name, 'admin', 'login');
+    recordAudit(
+      'permission_change',
+      'Initial Store Admin PIN configured',
+      createdEmployee.name,
+      {
+        targetId: createdEmployee.id,
+        targetName: createdEmployee.name,
+      }
+    );
+    return { ok: true };
+  };
+
   const handleLockScreen = () => {
     if (activeEmployee) {
       recordEmployeeActivity(activeEmployee.id, activeEmployee.name, activeRole, 'lock');
@@ -3822,11 +3846,20 @@ export default function App() {
         <StaffPinModal
           isOpen={showStaffModal}
           isLocked={isScreenLocked}
+          needsInitialAdminSetup={Boolean(
+            user && !loadingData && !hasConfiguredAdmin(employees)
+          )}
+          defaultAdminName={
+            employees.find((e) => e.role === 'admin' && e.isActive)?.name ||
+            (user?.shopName ? `${user.shopName} Owner` : '')
+          }
+          userEmail={user?.email}
           employees={employees}
           activeEmployee={activeEmployee}
           initialTargetEmployeeId={pendingSwitchEmployeeId}
           shopName={activeStoreName}
           onVerifyPin={handleVerifyStaffPin}
+          onSetupInitialAdmin={handleSetupInitialAdmin}
           onLockScreen={handleLockScreen}
           onClose={() => {
             setPendingSwitchEmployeeId(null);

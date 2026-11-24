@@ -27,8 +27,17 @@ import {
   parseWorkspaceBackupJson,
 } from '../src/lib/posExtendedStore';
 import {
+  hasConfiguredAdmin,
+  isStoredPinHash,
+} from '../src/lib/pinSecurity';
+import {
+  buildStarterWorkspace,
   enqueueOfflineSale,
+  fetchWorkspaceData,
   getOfflineQueue,
+  saveEmployeeRecord,
+  setupInitialAdminRecord,
+  verifyStaffPinRecord,
 } from '../src/lib/posRepository';
 import {
   calculateUnitAwarePrice,
@@ -389,6 +398,17 @@ async function runTests(): Promise<void> {
       401,
       '/api/whatsapp/send must require authentication even when WhatsApp env is unset'
     );
+
+    const bootstrapUnauth = await fetch(`${baseUrl}/api/staff/bootstrap-admin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Owner', pin: '4829' }),
+    });
+    assertEqual(
+      bootstrapUnauth.status,
+      401,
+      '/api/staff/bootstrap-admin must require authentication'
+    );
   } finally {
     if (prevWaToken !== undefined) process.env.WHATSAPP_ACCESS_TOKEN = prevWaToken;
     if (prevWaPhone !== undefined) process.env.WHATSAPP_PHONE_NUMBER_ID = prevWaPhone;
@@ -437,6 +457,127 @@ async function runTests(): Promise<void> {
     const restoredProds = parsedBackup.payload.workspace.products as Product[];
     assertEqual(restoredProds.length, 1, 'Backup preserves products array');
   }
+
+  // -------------------------------------------------------------------------
+  // 8. First-Time Admin Onboarding & Subsequent Staff PIN Login Flow
+  // -------------------------------------------------------------------------
+  const freshOwnerId = 'owner-first-time-setup-test';
+  const freshStarter = buildStarterWorkspace(freshOwnerId, false, 'Bismillah Mart');
+  assertEqual(
+    freshStarter.employees.length,
+    0,
+    'New non-demo store workspace must NOT seed a hardcoded default Admin PIN'
+  );
+  assertEqual(
+    hasConfiguredAdmin(freshStarter.employees),
+    false,
+    'Empty employees triggers first-time Admin setup'
+  );
+
+  // Also confirm unconfigured Admin rows (hasPin=false) still trigger first-time setup
+  assertEqual(
+    hasConfiguredAdmin([
+      { role: 'admin', isActive: true, hasPin: false, pinHash: '' },
+    ]),
+    false,
+    'Unconfigured Admin row without PIN hash still requires first-time Admin setup'
+  );
+
+  // Even if an existing workspace already had a non-admin cashier, no Admin is configured yet
+  const loadedFresh = await fetchWorkspaceData(freshOwnerId, 'Bismillah Mart');
+  assertEqual(loadedFresh.employees.length, 0, 'Fresh workspace starts with 0 employees');
+
+  // Seed a pre-existing cashier row without deleting it during Admin setup
+  const cashierSeedRes = await saveEmployeeRecord(freshOwnerId, {
+    id: 'existing-cashier-1',
+    name: 'Existing Cashier',
+    phone: '0311-5550000',
+    role: 'cashier',
+    pin: '7777',
+    isActive: true,
+    createdAt: new Date().toISOString(),
+  });
+  assertEqual(cashierSeedRes.error, null, 'Pre-existing cashier saves cleanly');
+
+  const beforeAdminSetup = await fetchWorkspaceData(freshOwnerId, 'Bismillah Mart');
+  assertEqual(
+    hasConfiguredAdmin(beforeAdminSetup.employees),
+    false,
+    'Cashier-only workspace still requires first-time Admin setup'
+  );
+
+  // First-time Admin setup requires NO existing PIN and hashes chosen 4-digit PIN
+  const setupRes = await setupInitialAdminRecord(freshOwnerId, {
+    name: 'Hamza Store Owner',
+    phone: '0300-9988776',
+    pin: '4829',
+  });
+  assertEqual(setupRes.ok, true, 'First-time Admin setup succeeds without existing PIN');
+  assert(Boolean(setupRes.employee), 'Setup returns created Admin employee');
+  assert(Boolean(setupRes.session?.token), 'Setup returns authenticated Admin staff session');
+  assertEqual(setupRes.session?.role, 'admin', 'Setup issues admin role session');
+  if (setupRes.employee) {
+    assert(
+      isStoredPinHash(setupRes.employee.pinHash),
+      'Local Admin PIN must be stored as PBKDF2 hash'
+    );
+    assert(
+      setupRes.employee.pinHash !== '4829',
+      'Stored PIN hash must never equal plaintext PIN'
+    );
+  }
+
+  // Subsequent bootstrap attempts MUST fail once an Admin PIN is configured (no auth bypass)
+  const secondBootstrap = await setupInitialAdminRecord(freshOwnerId, {
+    name: 'Attacker Admin',
+    phone: '',
+    pin: '9999',
+  });
+  assertEqual(
+    secondBootstrap.ok,
+    false,
+    'Second first-time Admin setup attempt must be blocked once Admin PIN is configured'
+  );
+
+  // Reload workspace and confirm existing cashier was preserved alongside the new Admin
+  const afterSetupWs = await fetchWorkspaceData(freshOwnerId, 'Bismillah Mart');
+  assertEqual(
+    hasConfiguredAdmin(afterSetupWs.employees),
+    true,
+    'Configured Admin persists across workspace reload'
+  );
+  assert(
+    afterSetupWs.employees.some((e) => e.id === 'existing-cashier-1'),
+    'Existing employees must not be deleted during initial Admin setup'
+  );
+
+  // Normal PIN authentication rejects wrong PINs and accepts the owner-chosen PIN
+  const wrongPinCheck = await verifyStaffPinRecord(freshOwnerId, '1234');
+  assertEqual(wrongPinCheck.ok, false, 'Default 1234 PIN must be rejected');
+
+  const validPinCheck = await verifyStaffPinRecord(freshOwnerId, '4829');
+  assertEqual(validPinCheck.ok, true, 'Owner-chosen 4-digit PIN authenticates cleanly');
+  assertEqual(validPinCheck.role, 'admin', 'Authenticated session role is admin');
+
+  const repoSource = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/lib/posRepository.ts'),
+    'utf8'
+  );
+  assert(
+    !repoSource.includes('buildDefaultAdminEmployee'),
+    'posRepository.ts must not contain buildDefaultAdminEmployee hardcoded PIN helper'
+  );
+
+  const pinModalSource = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/StaffPinModal.tsx'),
+    'utf8'
+  );
+  assert(
+    pinModalSource.includes('needsInitialAdminSetup') &&
+      pinModalSource.includes('initial-admin-pin') &&
+      pinModalSource.includes('initial-admin-confirm-pin'),
+    'StaffPinModal must provide dedicated First-Time Admin Setup flow'
+  );
 
   console.log('ALL_COMMERCIAL_POS_SUITE_TESTS_PASSED');
 }

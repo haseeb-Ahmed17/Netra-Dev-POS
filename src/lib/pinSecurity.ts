@@ -133,3 +133,20 @@ export function stripPlaintextPin<T extends object>(
   delete copy.pin_code;
   return copy as Omit<T, 'pinCode' | 'pin_code'>;
 }
+
+export function hasConfiguredAdmin(
+  employees: ReadonlyArray<{
+    role: string;
+    isActive: boolean;
+    hasPin?: boolean;
+    pinHash?: string;
+  }>
+): boolean {
+  return employees.some(
+    (emp) =>
+      emp.role === 'admin' &&
+      emp.isActive !== false &&
+      (emp.hasPin === true || isStoredPinHash(emp.pinHash))
+  );
+}
+
