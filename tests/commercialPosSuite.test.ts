@@ -33,8 +33,10 @@ import {
 import {
   buildStarterWorkspace,
   enqueueOfflineSale,
+  fetchEmployeesWithSchemaFallback,
   fetchWorkspaceData,
   getOfflineQueue,
+  mapEmployeeFromRow,
   saveEmployeeRecord,
   setupInitialAdminRecord,
   verifyStaffPinRecord,
@@ -640,13 +642,94 @@ async function runTests(): Promise<void> {
     'App.tsx must wait for workspaceLoadedUserId & bootstrap-admin check before rendering StaffPinModal'
   );
   assert(
-    repoSource.includes('isJsonApiResponse'),
-    'posRepository.ts must verify JSON content-type so static SPA HTML responses fall back cleanly'
+    repoSource.includes('isJsonApiResponse') &&
+      repoSource.includes('fetchEmployeesWithSchemaFallback') &&
+      repoSource.includes('isMissingEmployeeColumnError'),
+    'posRepository.ts must verify JSON content-type and fall back when employees.pin_hash column does not exist yet (42703)'
+  );
+  const serverAppSource = fs.readFileSync(
+    path.resolve(process.cwd(), 'serverApp.ts'),
+    'utf8'
   );
   assert(
-    fs.existsSync(path.resolve(process.cwd(), 'api/index.ts')) &&
+    serverAppSource.includes('selectEmployeesWithSchemaFallback') &&
+      !serverAppSource.includes("from 'vite'") &&
+      !serverAppSource.includes("import('vite')"),
+    'serverApp.ts must support missing pin_hash column fallback and contain zero Vite imports for Vercel serverless compatibility'
+  );
+  assert(
+    fs.existsSync(path.resolve(process.cwd(), 'api/package.json')) &&
       fs.existsSync(path.resolve(process.cwd(), 'vercel.json')),
-    'Vercel serverless API adapter and vercel.json must exist for /api/staff/* routing'
+    'Vercel CJS serverless config (api/package.json) and vercel.json must exist for /api/staff/* routing'
+  );
+
+  // Runtime simulation of live pre-migration DB (missing employees.pin_hash -> 42703)
+  // returning PAPUDA HOTEL's active Cashier row on legacy fallback select.
+  const simulatedSupabaseClient = {
+    from(table: string) {
+      assertEqual(table, 'employees', 'Fallback helper queries employees table');
+      return {
+        select(cols: string) {
+          const includesPinHash = cols.includes('pin_hash');
+          const chain = {
+            eq() {
+              return chain;
+            },
+            order: async () => {
+              if (includesPinHash) {
+                return {
+                  data: null,
+                  error: {
+                    code: '42703',
+                    message: 'column employees.pin_hash does not exist',
+                  },
+                };
+              }
+              return {
+                data: [
+                  {
+                    id: 'papuda-live-cashier',
+                    user_id: papudaOwnerId,
+                    name: 'Cashier',
+                    phone: '',
+                    role: 'cashier',
+                    is_active: true,
+                    pin_code: '1111',
+                    created_at: '2026-11-20T00:00:00.000Z',
+                  },
+                ],
+                error: null,
+              };
+            },
+          };
+          return chain;
+        },
+      };
+    },
+  } as unknown as Parameters<typeof fetchEmployeesWithSchemaFallback>[0];
+
+  const liveSchemaFallback = await fetchEmployeesWithSchemaFallback(
+    simulatedSupabaseClient,
+    papudaOwnerId
+  );
+  assertEqual(
+    liveSchemaFallback.error,
+    null,
+    'Missing pin_hash column (42703) must cleanly fall back to legacy employees query'
+  );
+  assertEqual(
+    liveSchemaFallback.supportsPinHashColumn,
+    false,
+    'Fallback helper must record supportsPinHashColumn=false when pin_hash column is absent'
+  );
+  const mappedPapudaEmployees = (liveSchemaFallback.data ?? []).map((r) =>
+    mapEmployeeFromRow(r)
+  );
+  assertEqual(mappedPapudaEmployees.length, 1, 'PAPUDA HOTEL live Cashier loads cleanly');
+  assertEqual(
+    hasConfiguredAdmin(mappedPapudaEmployees),
+    false,
+    'PAPUDA HOTEL live Cashier-only workspace triggers Create Your Store Admin PIN even before 20261123 migration'
   );
 
   console.log('ALL_COMMERCIAL_POS_SUITE_TESTS_PASSED');

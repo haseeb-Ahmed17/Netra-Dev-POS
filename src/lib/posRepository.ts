@@ -67,6 +67,61 @@ function isJsonApiResponse(resp: Response): boolean {
   return contentType.includes('application/json');
 }
 
+function isMissingEmployeeColumnError(
+  err?: { code?: string; message?: string } | null
+): boolean {
+  if (!err) return false;
+  return (
+    err.code === '42703' ||
+    /column .* does not exist|Could not find the .* column/i.test(err.message || '')
+  );
+}
+
+export async function fetchEmployeesWithSchemaFallback(
+  client: NonNullable<typeof supabase>,
+  userId: string,
+  options?: { employeeId?: string; activeOnly?: boolean }
+): Promise<{
+  data: Array<Record<string, unknown>> | null;
+  error: { code?: string; message: string } | null;
+  supportsPinHashColumn: boolean;
+}> {
+  let query = client
+    .from('employees')
+    .select('id, user_id, name, phone, role, is_active, created_at, pin_hash, pin_code')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: true });
+  if (options?.activeOnly) query = query.eq('is_active', true);
+  if (options?.employeeId) query = query.eq('id', options.employeeId);
+
+  const primary = await query;
+  if (!primary.error) {
+    return {
+      data: (primary.data ?? []) as Array<Record<string, unknown>>,
+      error: null,
+      supportsPinHashColumn: true,
+    };
+  }
+  if (!isMissingEmployeeColumnError(primary.error)) {
+    return { data: null, error: primary.error, supportsPinHashColumn: true };
+  }
+
+  let legacyQuery = client
+    .from('employees')
+    .select('id, user_id, name, phone, role, is_active, created_at, pin_code')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: true });
+  if (options?.activeOnly) legacyQuery = legacyQuery.eq('is_active', true);
+  if (options?.employeeId) legacyQuery = legacyQuery.eq('id', options.employeeId);
+
+  const legacy = await legacyQuery;
+  return {
+    data: (legacy.data ?? null) as Array<Record<string, unknown>> | null,
+    error: legacy.error,
+    supportsPinHashColumn: false,
+  };
+}
+
 export async function checkIsSuperAdmin(userId: string): Promise<boolean> {
   if (!userId || !isSupabaseConfigured || !supabase) {
     return false;
@@ -1234,7 +1289,7 @@ function mapCustomerToRow(
   };
 }
 
-function mapEmployeeFromRow(row: Record<string, unknown>): Employee {
+export function mapEmployeeFromRow(row: Record<string, unknown>): Employee {
   const rawPinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
   const rawPinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
   const hasPin =
@@ -1523,11 +1578,7 @@ export async function fetchWorkspaceData(
           .select('*')
           .eq('user_id', userId)
           .order('created_at', { ascending: false }),
-        supabase
-          .from('employees')
-          .select('id, user_id, name, phone, role, is_active, created_at, pin_hash, pin_code')
-          .eq('user_id', userId)
-          .order('created_at', { ascending: true }),
+        fetchEmployeesWithSchemaFallback(supabase, userId),
         supabase
           .from('expenses')
           .select('*')
@@ -1556,6 +1607,19 @@ export async function fetchWorkspaceData(
 
       if (firstError) {
         const localFallback = loadLocalWorkspace(userId, shopName);
+        if (!empRes.error && empRes.data) {
+          const localEmpById = new Map(localFallback.employees.map((e) => [e.id, e]));
+          localFallback.employees = empRes.data.map((raw) => {
+            const mapped = mapEmployeeFromRow(raw);
+            const cachedEmp = localEmpById.get(mapped.id);
+            return {
+              ...mapped,
+              branchId: mapped.branchId ?? cachedEmp?.branchId,
+              shiftAssignment: mapped.shiftAssignment ?? cachedEmp?.shiftAssignment,
+              customPermissions: mapped.customPermissions ?? cachedEmp?.customPermissions,
+            };
+          });
+        }
         if (isNetworkLossError(firstError.message)) {
           return {
             ...localFallback,
@@ -2746,18 +2810,22 @@ export async function verifyStaffPinRecord(
       p_employee_id: targetEmployeeId ?? null,
     });
     if (error && /PGRST202|Could not find the function/i.test(error.message)) {
-      let query = supabase
-        .from('employees')
-        .select('id, name, role, pin_hash, is_active')
-        .eq('user_id', userId)
-        .eq('is_active', true);
-      if (targetEmployeeId) {
-        query = query.eq('id', targetEmployeeId);
-      }
-      const { data: rows } = await query;
-      for (const row of (rows ?? []) as Array<Record<string, unknown>>) {
-        const storedHash = typeof row.pin_hash === 'string' ? row.pin_hash : '';
-        if (storedHash.startsWith('pbkdf2_sha256$') && (await verifyPinHashAsync(cleanPin, storedHash))) {
+      const empLookup = await fetchEmployeesWithSchemaFallback(supabase, userId, {
+        employeeId: targetEmployeeId,
+        activeOnly: true,
+      });
+      for (const row of empLookup.data ?? []) {
+        const storedHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
+        const storedPinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
+        const hashCandidate = storedHash.startsWith('pbkdf2_sha256$')
+          ? storedHash
+          : storedPinCode.startsWith('pbkdf2_sha256$')
+          ? storedPinCode
+          : '';
+        const matched = hashCandidate
+          ? await verifyPinHashAsync(cleanPin, hashCandidate)
+          : isValidPinFormat(storedPinCode) && storedPinCode === cleanPin;
+        if (matched) {
           const token = `sbz_local_${String(row.role)}_${Date.now()}_${Math.random()
             .toString(36)
             .slice(2, 10)}`;
@@ -2772,6 +2840,7 @@ export async function verifyStaffPinRecord(
           };
         }
       }
+      return { ok: false, error: 'Invalid or inactive staff PIN.' };
     }
     if (error) {
       return { ok: false, error: error.message };
@@ -2831,13 +2900,6 @@ export async function setupInitialAdminRecord(
   }
 
   const ws = loadLocalWorkspace(userId);
-  if (hasConfiguredAdmin(ws.employees)) {
-    return {
-      ok: false,
-      error: 'An active Store Admin PIN is already configured. Sign in with your Admin PIN.',
-    };
-  }
-
   const browserOffline =
     typeof navigator !== 'undefined' && navigator.onLine === false;
 
@@ -2885,14 +2947,11 @@ export async function setupInitialAdminRecord(
     }
 
     // Direct Supabase fallback if Express route is unavailable
-    const { data: liveEmps, error: liveErr } = await supabase
-      .from('employees')
-      .select('id, role, is_active, pin_hash, pin_code, created_at')
-      .eq('user_id', userId);
-    if (liveErr) {
-      return { ok: false, error: liveErr.message };
+    const liveLookup = await fetchEmployeesWithSchemaFallback(supabase, userId);
+    if (liveLookup.error) {
+      return { ok: false, error: liveLookup.error.message };
     }
-    const mappedLive = (liveEmps ?? []).map((r) =>
+    const mappedLive = (liveLookup.data ?? []).map((r) =>
       mapEmployeeFromRow(r as Record<string, unknown>)
     );
     if (hasConfiguredAdmin(mappedLive)) {
@@ -2928,21 +2987,41 @@ export async function setupInitialAdminRecord(
         return { ok: false, error: setErr.message };
       }
       const pbkdf2Hash = await hashPinAsync(cleanPin);
-      const { error: upErr } = await supabase.from('employees').upsert(
-        {
-          id: targetId,
-          user_id: userId,
-          name: cleanName,
-          phone: cleanPhone,
-          role: 'admin',
-          pin_code: REDACTED_PIN_SENTINEL,
-          pin_hash: pbkdf2Hash,
-          pin_updated_at: new Date().toISOString(),
-          is_active: true,
-          created_at: createdAt,
-        },
-        { onConflict: 'id' }
-      );
+      let upErr: { code?: string; message: string } | null = null;
+      if (liveLookup.supportsPinHashColumn) {
+        const resUp = await supabase.from('employees').upsert(
+          {
+            id: targetId,
+            user_id: userId,
+            name: cleanName,
+            phone: cleanPhone,
+            role: 'admin',
+            pin_code: REDACTED_PIN_SENTINEL,
+            pin_hash: pbkdf2Hash,
+            pin_updated_at: new Date().toISOString(),
+            is_active: true,
+            created_at: createdAt,
+          },
+          { onConflict: 'id' }
+        );
+        upErr = resUp.error;
+      }
+      if (!liveLookup.supportsPinHashColumn || isMissingEmployeeColumnError(upErr)) {
+        const legacyUp = await supabase.from('employees').upsert(
+          {
+            id: targetId,
+            user_id: userId,
+            name: cleanName,
+            phone: cleanPhone,
+            role: 'admin',
+            pin_code: pbkdf2Hash,
+            is_active: true,
+            created_at: createdAt,
+          },
+          { onConflict: 'id' }
+        );
+        upErr = legacyUp.error;
+      }
       if (upErr) return { ok: false, error: upErr.message };
       const empRecord: Employee = {
         id: targetId,
@@ -2997,6 +3076,12 @@ export async function setupInitialAdminRecord(
   }
 
   // Local / Offline mode: verify no Admin PIN exists, hash PIN with PBKDF2, and store without removing existing employees
+  if (hasConfiguredAdmin(ws.employees)) {
+    return {
+      ok: false,
+      error: 'An active Store Admin PIN is already configured. Sign in with your Admin PIN.',
+    };
+  }
   const existingUnpinnedAdmin = ws.employees.find(
     (e) => e.role === 'admin' && e.isActive && !e.hasPin
   );
@@ -3133,7 +3218,57 @@ export async function saveEmployeeRecord(
       p_is_active: nextEmployee.isActive,
     });
     if (rpcErr) {
-      return { error: rpcErr.message };
+      if (!/PGRST202|Could not find the function/i.test(rpcErr.message)) {
+        return { error: rpcErr.message };
+      }
+      if (!cleanPin && existing) {
+        const { error: patchErr } = await supabase
+          .from('employees')
+          .update({
+            name: nextEmployee.name,
+            phone: nextEmployee.phone,
+            role: nextEmployee.role,
+            is_active: nextEmployee.isActive,
+          })
+          .eq('id', nextEmployee.id)
+          .eq('user_id', userId);
+        if (patchErr) return { error: patchErr.message };
+      } else {
+        const resUp = await supabase.from('employees').upsert(
+          {
+            id: nextEmployee.id,
+            user_id: userId,
+            name: nextEmployee.name,
+            phone: nextEmployee.phone,
+            role: nextEmployee.role,
+            pin_code: REDACTED_PIN_SENTINEL,
+            pin_hash: nextPinHash,
+            pin_updated_at: new Date().toISOString(),
+            is_active: nextEmployee.isActive,
+            created_at: nextEmployee.createdAt,
+          },
+          { onConflict: 'id' }
+        );
+        if (resUp.error) {
+          if (!isMissingEmployeeColumnError(resUp.error)) {
+            return { error: resUp.error.message };
+          }
+          const legacyUp = await supabase.from('employees').upsert(
+            {
+              id: nextEmployee.id,
+              user_id: userId,
+              name: nextEmployee.name,
+              phone: nextEmployee.phone,
+              role: nextEmployee.role,
+              pin_code: nextPinHash,
+              is_active: nextEmployee.isActive,
+              created_at: nextEmployee.createdAt,
+            },
+            { onConflict: 'id' }
+          );
+          if (legacyUp.error) return { error: legacyUp.error.message };
+        }
+      }
     }
   }
 
@@ -3187,7 +3322,17 @@ export async function deleteEmployeeRecord(
     const { error: rpcErr } = await supabase.rpc('delete_staff_member', {
       p_employee_id: employeeId,
     });
-    if (rpcErr) return rpcErr.message;
+    if (rpcErr) {
+      if (!/PGRST202|Could not find the function/i.test(rpcErr.message)) {
+        return rpcErr.message;
+      }
+      const { error: delErr } = await supabase
+        .from('employees')
+        .delete()
+        .eq('id', employeeId)
+        .eq('user_id', userId);
+      if (delErr) return delErr.message;
+    }
   }
 
   ws.employees = ws.employees.filter((e) => e.id !== employeeId);
