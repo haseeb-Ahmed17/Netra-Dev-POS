@@ -56,11 +56,24 @@ import {
 } from './supabaseClient';
 import { normalizeSellingUnit, roundQuantity } from './unitUtils';
 
-async function getSupabaseAccessToken(): Promise<string | null> {
+async function getSupabaseAccessToken(forceRefresh = false): Promise<string | null> {
   if (!isSupabaseConfigured || !supabase) return null;
   try {
+    if (forceRefresh) {
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      if (refreshed.session?.access_token) {
+        return refreshed.session.access_token;
+      }
+    }
     const { data } = await supabase.auth.getSession();
-    return data.session?.access_token ?? null;
+    const session = data.session;
+    if (!session?.access_token) return null;
+    const expiresAtMs = (session.expires_at ?? 0) * 1000;
+    if (expiresAtMs > 0 && expiresAtMs <= Date.now() + 60_000) {
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      return refreshed.session?.access_token ?? session.access_token;
+    }
+    return session.access_token;
   } catch {
     return null;
   }
@@ -206,25 +219,59 @@ export async function checkIsSuperAdmin(userId: string): Promise<boolean> {
     return false;
   }
 
-  const accessToken = await getSupabaseAccessToken();
+  let accessToken = await getSupabaseAccessToken();
   if (accessToken && typeof fetch === 'function') {
     try {
-      const resp = await fetch('/api/admin/me', {
+      let resp = await fetch('/api/admin/me', {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
       });
+      if (resp.status === 401) {
+        const refreshedToken = await getSupabaseAccessToken(true);
+        if (refreshedToken && refreshedToken !== accessToken) {
+          accessToken = refreshedToken;
+          resp = await fetch('/api/admin/me', {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          });
+        }
+      }
       if (resp.ok && isJsonApiResponse(resp)) {
-        const body = (await resp.json()) as { isSuperAdmin?: boolean };
-        return Boolean(body.isSuperAdmin);
+        const body = (await resp.json()) as {
+          isSuperAdmin?: boolean;
+          diagnostics?: Record<string, unknown>;
+        };
+        if (typeof console !== 'undefined' && typeof console.info === 'function') {
+          console.info('[SmartBitz Admin]', {
+            httpStatus: resp.status,
+            isSuperAdmin: Boolean(body.isSuperAdmin),
+            diagnostics: body.diagnostics ?? null,
+          });
+        }
+        if (body.isSuperAdmin) {
+          return true;
+        }
+      } else if (typeof console !== 'undefined' && typeof console.info === 'function') {
+        console.info('[SmartBitz Admin]', {
+          httpStatus: resp.status,
+          isSuperAdmin: false,
+          fallbackToClientRls: true,
+        });
       }
     } catch {
-      // Static build / offline fallback handled via RLS-protected table lookup below
+      // Static build / offline fallback handled via RLS-protected RPC/table lookup below
     }
   }
 
   try {
+    const { data: rpcOk, error: rpcErr } = await supabase.rpc('is_super_admin');
+    if (!rpcErr && rpcOk === true) {
+      return true;
+    }
     const { data, error } = await supabase
       .from('super_admins')
       .select('user_id')

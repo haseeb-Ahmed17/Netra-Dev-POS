@@ -339,47 +339,72 @@ async function authenticateSupabaseRequest(req) {
   return {
     id: data.user.id,
     email: (data.user.email || "").trim().toLowerCase(),
-    emailConfirmed: Boolean(data.user.email_confirmed_at),
+    emailConfirmed: Boolean(
+      data.user.email_confirmed_at || data.user.confirmed_at
+    ),
     appMetadataRole: rawRole,
     jwt
   };
 }
-async function verifyIsExplicitSuperAdmin(user) {
-  if (SUPER_ADMIN_USER_IDS.has(user.id)) {
-    return true;
-  }
-  if (user.appMetadataRole === "super_admin") {
-    return true;
+async function verifyIsExplicitSuperAdminWithDiagnostics(user) {
+  const diagnostics = {
+    hasServiceRole: Boolean(adminSupabase),
+    allowlistMatched: SUPER_ADMIN_USER_IDS.has(user.id),
+    jwtAppMetadataIsSuperAdmin: user.appMetadataRole === "super_admin",
+    authAdminLookupSucceeded: false,
+    authAdminAppMetadataIsSuperAdmin: false,
+    superAdminsTableAvailable: false,
+    inSuperAdminsTable: false,
+    emailMatchesFounder: false,
+    emailConfirmed: user.emailConfirmed,
+    founderProvisioningAttempted: false,
+    founderProvisionedNow: false,
+    founderProvisioningBlockedReason: null,
+    rpcFallbackIsSuperAdmin: false
+  };
+  if (diagnostics.allowlistMatched || diagnostics.jwtAppMetadataIsSuperAdmin) {
+    return { isSuperAdmin: true, diagnostics };
   }
   if (adminSupabase) {
-    const { data: authLookup, error: authErr } = await adminSupabase.auth.admin.getUserById(user.id);
-    const authUser = !authErr ? authLookup?.user : null;
-    if (authUser?.app_metadata?.role === "super_admin") {
-      return true;
+    let authUser = null;
+    try {
+      const { data: authLookup, error: authErr } = await adminSupabase.auth.admin.getUserById(user.id);
+      if (!authErr && authLookup?.user) {
+        diagnostics.authAdminLookupSucceeded = true;
+        authUser = authLookup.user;
+        if (authUser?.app_metadata?.role === "super_admin") {
+          diagnostics.authAdminAppMetadataIsSuperAdmin = true;
+          return { isSuperAdmin: true, diagnostics };
+        }
+      }
+    } catch {
+      diagnostics.authAdminLookupSucceeded = false;
     }
     const saLookup = await adminSupabase.from("super_admins").select("user_id").eq("user_id", user.id).maybeSingle();
+    diagnostics.superAdminsTableAvailable = !isTableMissingError(saLookup.error);
     if (!saLookup.error && saLookup.data?.user_id) {
-      return true;
+      diagnostics.inSuperAdminsTable = true;
+      if (diagnostics.authAdminLookupSucceeded && authUser?.app_metadata?.role !== "super_admin") {
+        await adminSupabase.auth.admin.updateUserById(user.id, {
+          app_metadata: {
+            ...authUser?.app_metadata || {},
+            role: "super_admin",
+            super_admin_provisioned_at: (/* @__PURE__ */ new Date()).toISOString()
+          }
+        }).catch(() => void 0);
+      }
+      return { isSuperAdmin: true, diagnostics };
     }
-    const confirmedEmail = Boolean(authUser?.email_confirmed_at ?? user.emailConfirmed);
     const verifiedEmail = (authUser?.email || user.email || "").trim().toLowerCase();
-    if (confirmedEmail && verifiedEmail === INITIAL_FOUNDER_EMAIL) {
-      let existingSuperAdminFound = false;
-      if (!saLookup.error) {
-        const anySa = await adminSupabase.from("super_admins").select("user_id").limit(1);
-        if (!anySa.error && (anySa.data?.length ?? 0) > 0) {
-          existingSuperAdminFound = true;
-        }
-      }
-      if (!existingSuperAdminFound) {
-        const usersList = await adminSupabase.auth.admin.listUsers({ page: 1, perPage: 200 });
-        if (!usersList.error && Array.isArray(usersList.data?.users)) {
-          existingSuperAdminFound = usersList.data.users.some(
-            (u) => u.id !== user.id && u.app_metadata?.role === "super_admin"
-          );
-        }
-      }
-      if (!existingSuperAdminFound) {
+    diagnostics.emailConfirmed = Boolean(
+      authUser?.email_confirmed_at || authUser?.confirmed_at || user.emailConfirmed
+    );
+    diagnostics.emailMatchesFounder = Boolean(
+      INITIAL_FOUNDER_EMAIL && verifiedEmail === INITIAL_FOUNDER_EMAIL
+    );
+    if (diagnostics.emailMatchesFounder) {
+      diagnostics.founderProvisioningAttempted = true;
+      try {
         const { error: metaErr } = await adminSupabase.auth.admin.updateUserById(user.id, {
           app_metadata: {
             ...authUser?.app_metadata || {},
@@ -388,11 +413,18 @@ async function verifyIsExplicitSuperAdmin(user) {
           }
         });
         if (!metaErr) {
-          if (!isTableMissingError(saLookup.error)) {
-            await adminSupabase.from("super_admins").upsert(
+          diagnostics.founderProvisionedNow = true;
+          if (diagnostics.superAdminsTableAvailable) {
+            const byEmailUpsert = await adminSupabase.from("super_admins").upsert(
               { user_id: user.id, email: verifiedEmail },
-              { onConflict: "user_id" }
+              { onConflict: "email" }
             );
+            if (byEmailUpsert.error) {
+              await adminSupabase.from("super_admins").upsert(
+                { user_id: user.id, email: verifiedEmail },
+                { onConflict: "user_id" }
+              );
+            }
           }
           await recordSaasAuditLog(adminSupabase, {
             actor_user_id: user.id,
@@ -403,23 +435,39 @@ async function verifyIsExplicitSuperAdmin(user) {
             action: "founder_provisioned",
             previous_status: "unassigned",
             new_status: "super_admin",
-            details: "Secure one-time initial Super Admin claim verified on server."
+            details: "Server-verified Founder Super Admin provisioning succeeded."
           });
-          return true;
+          return { isSuperAdmin: true, diagnostics };
         }
+        diagnostics.founderProvisioningBlockedReason = "auth_admin_update_failed";
+      } catch {
+        diagnostics.founderProvisioningBlockedReason = "auth_admin_update_exception";
       }
+    } else {
+      diagnostics.founderProvisioningBlockedReason = "email_mismatch";
     }
-    return false;
+  } else {
+    diagnostics.founderProvisioningBlockedReason = "service_role_unavailable";
   }
   const userClient = createUserScopedSupabase(user.jwt);
-  if (!userClient) return false;
-  const { data: rpcOk, error: rpcErr } = await userClient.rpc("is_super_admin");
-  if (!rpcErr && rpcOk === true) {
-    return true;
+  if (userClient) {
+    const { data: rpcOk, error: rpcErr } = await userClient.rpc("is_super_admin");
+    if (!rpcErr && rpcOk === true) {
+      diagnostics.rpcFallbackIsSuperAdmin = true;
+      return { isSuperAdmin: true, diagnostics };
+    }
+    const { data, error } = await userClient.from("super_admins").select("user_id").eq("user_id", user.id).maybeSingle();
+    if (!error && data?.user_id) {
+      diagnostics.inSuperAdminsTable = true;
+      diagnostics.superAdminsTableAvailable = true;
+      return { isSuperAdmin: true, diagnostics };
+    }
   }
-  const { data, error } = await userClient.from("super_admins").select("user_id").eq("user_id", user.id).maybeSingle();
-  if (error) return false;
-  return Boolean(data?.user_id);
+  return { isSuperAdmin: false, diagnostics };
+}
+async function verifyIsExplicitSuperAdmin(user) {
+  const result = await verifyIsExplicitSuperAdminWithDiagnostics(user);
+  return result.isSuperAdmin;
 }
 async function checkTenantOperationalAccess(user) {
   const client = adminSupabase ?? createUserScopedSupabase(user.jwt);
@@ -544,8 +592,12 @@ function createPosExpressApp() {
     if (!user) {
       return res.status(401).json({ error: "Authentication required.", isSuperAdmin: false });
     }
-    const isSuperAdmin = await verifyIsExplicitSuperAdmin(user);
-    return res.json({ isSuperAdmin, userId: user.id });
+    const result = await verifyIsExplicitSuperAdminWithDiagnostics(user);
+    return res.json({
+      isSuperAdmin: result.isSuperAdmin,
+      userId: user.id,
+      diagnostics: result.diagnostics
+    });
   });
   app.get("/api/admin/subscriptions", async (req, res) => {
     const user = await authenticateSupabaseRequest(req);

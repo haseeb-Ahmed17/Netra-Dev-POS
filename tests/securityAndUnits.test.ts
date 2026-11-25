@@ -135,6 +135,27 @@ async function runTests(): Promise<void> {
     '20261125 migration must define saas_audit_logs and subscriptions.status'
   );
 
+  const serverAppSource = readRepoFile('serverApp.ts');
+  assert(
+    serverAppSource.includes('verifyIsExplicitSuperAdminWithDiagnostics') &&
+      serverAppSource.includes('diagnostics: result.diagnostics') &&
+      serverAppSource.includes("onConflict: 'email'"),
+    'serverApp.ts must expose verifyIsExplicitSuperAdminWithDiagnostics, safe boolean diagnostics on /api/admin/me, and conflict-safe founder upsert'
+  );
+  assert(
+    !serverAppSource.includes('existingSuperAdminFound'),
+    'serverApp.ts must not block founder provisioning due to stale/legacy super_admins rows'
+  );
+  assert(
+    repoSource.includes('getSupabaseAccessToken(true)') &&
+      repoSource.includes('[SmartBitz Admin]'),
+    'posRepository.ts must refresh expired JWTs on 401 and log safe boolean diagnostics'
+  );
+  assert(
+    appSource.includes('authSessionRefreshTick'),
+    'src/App.tsx must re-verify Super Admin status when Supabase refreshes JWT sessions'
+  );
+
   // -------------------------------------------------------------------------
   // 2. Staff PIN Cryptographic Hashing & Plaintext Leakage Removal
   // -------------------------------------------------------------------------

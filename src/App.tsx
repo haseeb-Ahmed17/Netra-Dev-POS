@@ -227,6 +227,7 @@ export default function App() {
   );
 
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [authSessionRefreshTick, setAuthSessionRefreshTick] = useState(0);
   const [subscription, setSubscription] = useState<SubscriptionRecord | null>(null);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [allSubscriptions, setAllSubscriptions] = useState<SubscriptionRecord[]>([]);
@@ -301,6 +302,7 @@ export default function App() {
       needsInitialAdminSetup,
       isScreenLocked,
       showStaffModal,
+      isSuperAdmin,
       isSubscriptionLocked,
       employeesSummary: employees.map((e) => ({
         id: e.id,
@@ -356,7 +358,7 @@ export default function App() {
     if (isSupabaseConfigured && supabase) {
       const {
         data: { subscription },
-      } = supabase.auth.onAuthStateChange((_event, session) => {
+      } = supabase.auth.onAuthStateChange((event, session) => {
         if (!mounted) return;
         if (session?.user) {
           const nextId = session.user.id;
@@ -375,6 +377,13 @@ export default function App() {
                   shopName: nextShop,
                 }
           );
+          if (
+            event === 'TOKEN_REFRESHED' ||
+            event === 'USER_UPDATED' ||
+            event === 'SIGNED_IN'
+          ) {
+            setAuthSessionRefreshTick((prev) => prev + 1);
+          }
         } else {
           setUser(null);
         }
@@ -623,7 +632,40 @@ export default function App() {
         if (active) setCheckingSubscription(false);
       });
 
-    checkIsSuperAdmin(user.id).then((adminOk) => {
+    fetchWorkspaceData(user.id, user.shopName)
+      .then((ws) => {
+        if (!active) return;
+        applyWorkspaceData(user.id, ws);
+        setWorkspaceLoadedUserId(user.id);
+        if (
+          !ws.isOffline &&
+          (typeof navigator === 'undefined' || navigator.onLine !== false) &&
+          getOfflineQueue(user.id).length > 0
+        ) {
+          void runOfflineSync(user.id, user.shopName);
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingData(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [user, applyWorkspaceData, runOfflineSync]);
+
+  // Verify explicit Super Admin role from server / DB on sign-in and whenever JWT refreshes
+  useEffect(() => {
+    let active = true;
+    const targetUserId = user?.id;
+    if (!targetUserId) {
+      setIsSuperAdmin(false);
+      setAllSubscriptions([]);
+      setSaasAuditLogs([]);
+      return;
+    }
+
+    checkIsSuperAdmin(targetUserId).then((adminOk) => {
       if (!active) return;
       setIsSuperAdmin(adminOk);
       if (adminOk) {
@@ -646,27 +688,10 @@ export default function App() {
       }
     });
 
-    fetchWorkspaceData(user.id, user.shopName)
-      .then((ws) => {
-        if (!active) return;
-        applyWorkspaceData(user.id, ws);
-        setWorkspaceLoadedUserId(user.id);
-        if (
-          !ws.isOffline &&
-          (typeof navigator === 'undefined' || navigator.onLine !== false) &&
-          getOfflineQueue(user.id).length > 0
-        ) {
-          void runOfflineSync(user.id, user.shopName);
-        }
-      })
-      .finally(() => {
-        if (active) setLoadingData(false);
-      });
-
     return () => {
       active = false;
     };
-  }, [user, applyWorkspaceData, runOfflineSync]);
+  }, [user?.id, authSessionRefreshTick]);
 
   const activeEmployee = useMemo(() => {
     const activeList = employees.filter((e) => e.isActive);

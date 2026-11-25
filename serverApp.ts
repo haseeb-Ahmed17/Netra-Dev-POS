@@ -245,27 +245,79 @@ async function authenticateSupabaseRequest(req: Request): Promise<VerifiedSupaba
   return {
     id: data.user.id,
     email: (data.user.email || '').trim().toLowerCase(),
-    emailConfirmed: Boolean(data.user.email_confirmed_at),
+    emailConfirmed: Boolean(
+      data.user.email_confirmed_at ||
+        (data.user as { confirmed_at?: string | null }).confirmed_at
+    ),
     appMetadataRole: rawRole,
     jwt,
   };
 }
 
-async function verifyIsExplicitSuperAdmin(user: VerifiedSupabaseUser): Promise<boolean> {
+interface SuperAdminDiagnostics {
+  hasServiceRole: boolean;
+  allowlistMatched: boolean;
+  jwtAppMetadataIsSuperAdmin: boolean;
+  authAdminLookupSucceeded: boolean;
+  authAdminAppMetadataIsSuperAdmin: boolean;
+  superAdminsTableAvailable: boolean;
+  inSuperAdminsTable: boolean;
+  emailMatchesFounder: boolean;
+  emailConfirmed: boolean;
+  founderProvisioningAttempted: boolean;
+  founderProvisionedNow: boolean;
+  founderProvisioningBlockedReason: string | null;
+  rpcFallbackIsSuperAdmin: boolean;
+}
+
+async function verifyIsExplicitSuperAdminWithDiagnostics(
+  user: VerifiedSupabaseUser
+): Promise<{ isSuperAdmin: boolean; diagnostics: SuperAdminDiagnostics }> {
+  const diagnostics: SuperAdminDiagnostics = {
+    hasServiceRole: Boolean(adminSupabase),
+    allowlistMatched: SUPER_ADMIN_USER_IDS.has(user.id),
+    jwtAppMetadataIsSuperAdmin: user.appMetadataRole === 'super_admin',
+    authAdminLookupSucceeded: false,
+    authAdminAppMetadataIsSuperAdmin: false,
+    superAdminsTableAvailable: false,
+    inSuperAdminsTable: false,
+    emailMatchesFounder: false,
+    emailConfirmed: user.emailConfirmed,
+    founderProvisioningAttempted: false,
+    founderProvisionedNow: false,
+    founderProvisioningBlockedReason: null,
+    rpcFallbackIsSuperAdmin: false,
+  };
+
   // 1. Explicit UUID allowlist or server-controlled app_metadata claim
-  if (SUPER_ADMIN_USER_IDS.has(user.id)) {
-    return true;
-  }
-  if (user.appMetadataRole === 'super_admin') {
-    return true;
+  if (diagnostics.allowlistMatched || diagnostics.jwtAppMetadataIsSuperAdmin) {
+    return { isSuperAdmin: true, diagnostics };
   }
 
   if (adminSupabase) {
     // 2. Authoritative Supabase Auth admin lookup (app_metadata is server-only)
-    const { data: authLookup, error: authErr } = await adminSupabase.auth.admin.getUserById(user.id);
-    const authUser = !authErr ? authLookup?.user : null;
-    if (authUser?.app_metadata?.role === 'super_admin') {
-      return true;
+    interface AuthAdminUserRecord {
+      id?: string;
+      email?: string | null;
+      email_confirmed_at?: string | null;
+      confirmed_at?: string | null;
+      app_metadata?: Record<string, unknown>;
+      user_metadata?: Record<string, unknown>;
+    }
+    let authUser: AuthAdminUserRecord | null = null;
+    try {
+      const { data: authLookup, error: authErr } =
+        await adminSupabase.auth.admin.getUserById(user.id);
+      if (!authErr && authLookup?.user) {
+        diagnostics.authAdminLookupSucceeded = true;
+        authUser = authLookup.user as unknown as AuthAdminUserRecord;
+        if (authUser?.app_metadata?.role === 'super_admin') {
+          diagnostics.authAdminAppMetadataIsSuperAdmin = true;
+          return { isSuperAdmin: true, diagnostics };
+        }
+      }
+    } catch {
+      diagnostics.authAdminLookupSucceeded = false;
     }
 
     // 3. Authoritative public.super_admins table check (if migrated)
@@ -274,37 +326,38 @@ async function verifyIsExplicitSuperAdmin(user: VerifiedSupabaseUser): Promise<b
       .select('user_id')
       .eq('user_id', user.id)
       .maybeSingle();
+    diagnostics.superAdminsTableAvailable = !isTableMissingError(saLookup.error);
     if (!saLookup.error && saLookup.data?.user_id) {
-      return true;
+      diagnostics.inSuperAdminsTable = true;
+      // Best-effort sync to app_metadata so future JWT claims include role=super_admin
+      if (diagnostics.authAdminLookupSucceeded && authUser?.app_metadata?.role !== 'super_admin') {
+        await adminSupabase.auth.admin
+          .updateUserById(user.id, {
+            app_metadata: {
+              ...(authUser?.app_metadata || {}),
+              role: 'super_admin',
+              super_admin_provisioned_at: new Date().toISOString(),
+            },
+          })
+          .catch(() => undefined);
+      }
+      return { isSuperAdmin: true, diagnostics };
     }
 
-    // 4. Secure one-time initial Founder provisioning:
-    // Only when NO other super admin exists yet AND verified server email matches INITIAL_FOUNDER_EMAIL
-    const confirmedEmail = Boolean(authUser?.email_confirmed_at ?? user.emailConfirmed);
+    // 4. Authoritative Server-Verified Founder Provisioning:
+    // Matches the exact authenticated user email from Supabase Auth against server-only INITIAL_FOUNDER_EMAIL.
+    // Never blocked by stale/legacy rows in super_admins or unconfirmed-login Supabase configurations.
     const verifiedEmail = (authUser?.email || user.email || '').trim().toLowerCase();
-    if (confirmedEmail && verifiedEmail === INITIAL_FOUNDER_EMAIL) {
-      let existingSuperAdminFound = false;
+    diagnostics.emailConfirmed = Boolean(
+      authUser?.email_confirmed_at || authUser?.confirmed_at || user.emailConfirmed
+    );
+    diagnostics.emailMatchesFounder = Boolean(
+      INITIAL_FOUNDER_EMAIL && verifiedEmail === INITIAL_FOUNDER_EMAIL
+    );
 
-      if (!saLookup.error) {
-        const anySa = await adminSupabase
-          .from('super_admins')
-          .select('user_id')
-          .limit(1);
-        if (!anySa.error && (anySa.data?.length ?? 0) > 0) {
-          existingSuperAdminFound = true;
-        }
-      }
-
-      if (!existingSuperAdminFound) {
-        const usersList = await adminSupabase.auth.admin.listUsers({ page: 1, perPage: 200 });
-        if (!usersList.error && Array.isArray(usersList.data?.users)) {
-          existingSuperAdminFound = usersList.data.users.some(
-            (u) => u.id !== user.id && u.app_metadata?.role === 'super_admin'
-          );
-        }
-      }
-
-      if (!existingSuperAdminFound) {
+    if (diagnostics.emailMatchesFounder) {
+      diagnostics.founderProvisioningAttempted = true;
+      try {
         const { error: metaErr } = await adminSupabase.auth.admin.updateUserById(user.id, {
           app_metadata: {
             ...(authUser?.app_metadata || {}),
@@ -313,13 +366,22 @@ async function verifyIsExplicitSuperAdmin(user: VerifiedSupabaseUser): Promise<b
           },
         });
         if (!metaErr) {
-          if (!isTableMissingError(saLookup.error)) {
-            await adminSupabase
+          diagnostics.founderProvisionedNow = true;
+          if (diagnostics.superAdminsTableAvailable) {
+            const byEmailUpsert = await adminSupabase
               .from('super_admins')
               .upsert(
                 { user_id: user.id, email: verifiedEmail },
-                { onConflict: 'user_id' }
+                { onConflict: 'email' }
               );
+            if (byEmailUpsert.error) {
+              await adminSupabase
+                .from('super_admins')
+                .upsert(
+                  { user_id: user.id, email: verifiedEmail },
+                  { onConflict: 'user_id' }
+                );
+            }
           }
           await recordSaasAuditLog(adminSupabase, {
             actor_user_id: user.id,
@@ -330,32 +392,48 @@ async function verifyIsExplicitSuperAdmin(user: VerifiedSupabaseUser): Promise<b
             action: 'founder_provisioned',
             previous_status: 'unassigned',
             new_status: 'super_admin',
-            details: 'Secure one-time initial Super Admin claim verified on server.',
+            details: 'Server-verified Founder Super Admin provisioning succeeded.',
           });
-          return true;
+          return { isSuperAdmin: true, diagnostics };
         }
+        diagnostics.founderProvisioningBlockedReason = 'auth_admin_update_failed';
+      } catch {
+        diagnostics.founderProvisioningBlockedReason = 'auth_admin_update_exception';
       }
+    } else {
+      diagnostics.founderProvisioningBlockedReason = 'email_mismatch';
+    }
+  } else {
+    diagnostics.founderProvisioningBlockedReason = 'service_role_unavailable';
+  }
+
+  // 5. Postgres RLS / RPC fallback (runs even if adminSupabase failed, e.g. invalid service key)
+  const userClient = createUserScopedSupabase(user.jwt);
+  if (userClient) {
+    const { data: rpcOk, error: rpcErr } = await userClient.rpc('is_super_admin');
+    if (!rpcErr && rpcOk === true) {
+      diagnostics.rpcFallbackIsSuperAdmin = true;
+      return { isSuperAdmin: true, diagnostics };
     }
 
-    return false;
+    const { data, error } = await userClient
+      .from('super_admins')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (!error && data?.user_id) {
+      diagnostics.inSuperAdminsTable = true;
+      diagnostics.superAdminsTableAvailable = true;
+      return { isSuperAdmin: true, diagnostics };
+    }
   }
 
-  // Fallback when service role key is unavailable: verify via Postgres RLS / RPC
-  const userClient = createUserScopedSupabase(user.jwt);
-  if (!userClient) return false;
+  return { isSuperAdmin: false, diagnostics };
+}
 
-  const { data: rpcOk, error: rpcErr } = await userClient.rpc('is_super_admin');
-  if (!rpcErr && rpcOk === true) {
-    return true;
-  }
-
-  const { data, error } = await userClient
-    .from('super_admins')
-    .select('user_id')
-    .eq('user_id', user.id)
-    .maybeSingle();
-  if (error) return false;
-  return Boolean(data?.user_id);
+async function verifyIsExplicitSuperAdmin(user: VerifiedSupabaseUser): Promise<boolean> {
+  const result = await verifyIsExplicitSuperAdminWithDiagnostics(user);
+  return result.isSuperAdmin;
 }
 
 async function checkTenantOperationalAccess(
@@ -553,8 +631,12 @@ export function createPosExpressApp() {
     if (!user) {
       return res.status(401).json({ error: 'Authentication required.', isSuperAdmin: false });
     }
-    const isSuperAdmin = await verifyIsExplicitSuperAdmin(user);
-    return res.json({ isSuperAdmin, userId: user.id });
+    const result = await verifyIsExplicitSuperAdminWithDiagnostics(user);
+    return res.json({
+      isSuperAdmin: result.isSuperAdmin,
+      userId: user.id,
+      diagnostics: result.diagnostics,
+    });
   });
 
   // List all registered shops, owners, subscriptions, staff counts & audit logs (Super Admin only)
