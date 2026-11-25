@@ -4,16 +4,27 @@ import express, { type Request, type Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { hasRolePermission, type RoleAction } from './src/lib/rbac';
 import {
+  classifyEmployeePin,
   hashPinAsync,
+  isDemoFixturePinHash,
   isValidPinFormat,
   isStoredPinHash,
   REDACTED_PIN_SENTINEL,
   verifyPinHashAsync,
 } from './src/lib/pinSecurity';
-import type { EmployeeRole } from './src/types';
+import type { EmployeeRole, ShopSubscriptionStatus } from './src/types';
 
 function isRpcMissingError(message?: string | null): boolean {
   return /PGRST202|Could not find the function/i.test(message || '');
+}
+
+function isTableMissingError(err?: { code?: string; message?: string } | null): boolean {
+  if (!err) return false;
+  return (
+    err.code === 'PGRST205' ||
+    err.code === '42P01' ||
+    /Could not find the table|relation .* does not exist/i.test(err.message || '')
+  );
 }
 
 function isMissingColumnError(err?: { code?: string; message?: string } | null): boolean {
@@ -42,6 +53,9 @@ function normalizeEmployeeRole(value: unknown): EmployeeRole {
 function rowHasConfiguredPin(row: Record<string, unknown>): boolean {
   const pinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
   const pinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
+  if (isDemoFixturePinHash(pinHash) || isDemoFixturePinHash(pinCode)) {
+    return false;
+  }
   return (
     isStoredPinHash(pinHash) ||
     isStoredPinHash(pinCode) ||
@@ -49,16 +63,13 @@ function rowHasConfiguredPin(row: Record<string, unknown>): boolean {
   );
 }
 
-function classifyPinState(row: Record<string, unknown>): 'hashed' | 'legacy_4digit' | 'unconfigured' {
-  const pinHash = typeof row.pin_hash === 'string' ? row.pin_hash.trim() : '';
-  const pinCode = typeof row.pin_code === 'string' ? row.pin_code.trim() : '';
-  if (isStoredPinHash(pinHash) || isStoredPinHash(pinCode)) {
-    return 'hashed';
-  }
-  if (isValidPinFormat(pinCode)) {
-    return 'legacy_4digit';
-  }
-  return 'unconfigured';
+function classifyPinState(
+  row: Record<string, unknown>
+): 'hashed' | 'demo_fixture' | 'legacy_4digit' | 'unconfigured' {
+  return classifyEmployeePin({
+    pinHash: typeof row.pin_hash === 'string' ? row.pin_hash : undefined,
+    pinCode: typeof row.pin_code === 'string' ? row.pin_code : undefined,
+  });
 }
 
 async function selectEmployeesWithSchemaFallback(
@@ -150,9 +161,68 @@ function extractBearerToken(req: Request): string | null {
   return match ? match[1].trim() : null;
 }
 
+const INITIAL_FOUNDER_EMAIL = (
+  process.env.INITIAL_FOUNDER_EMAIL || 'bc260436573mha@vu.edu.pk'
+)
+  .trim()
+  .toLowerCase();
+
+const SUPER_ADMIN_USER_IDS = new Set(
+  (process.env.SUPER_ADMIN_USER_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+interface ServerSaasAuditLog {
+  id: string;
+  actor_user_id?: string | null;
+  actor_email: string;
+  target_user_id: string;
+  target_email: string;
+  target_shop_name: string;
+  action: string;
+  previous_status?: string | null;
+  new_status?: string | null;
+  details: string;
+  created_at: string;
+}
+
+const platformAuditMemoryLog: ServerSaasAuditLog[] = [];
+const unmigratedStatusOverlay = new Map<
+  string,
+  { status: ShopSubscriptionStatus; suspendedReason?: string; suspendedAt?: string }
+>();
+
+async function recordSaasAuditLog(
+  client: SupabaseClient | null,
+  entry: Omit<ServerSaasAuditLog, 'id' | 'created_at'>
+): Promise<ServerSaasAuditLog> {
+  const full: ServerSaasAuditLog = {
+    id: `saas-audit-${crypto.randomUUID()}`,
+    ...entry,
+    created_at: new Date().toISOString(),
+  };
+  platformAuditMemoryLog.unshift(full);
+  if (platformAuditMemoryLog.length > 200) {
+    platformAuditMemoryLog.length = 200;
+  }
+
+  if (client) {
+    try {
+      await client.from('saas_audit_logs').insert(full);
+    } catch {
+      // Non-blocking when saas_audit_logs migration hasn't been applied yet
+    }
+  }
+  return full;
+}
+
 interface VerifiedSupabaseUser {
   id: string;
   email: string;
+  emailConfirmed: boolean;
+  appMetadataRole?: string;
   jwt: string;
 }
 
@@ -168,26 +238,117 @@ async function authenticateSupabaseRequest(req: Request): Promise<VerifiedSupaba
   if (error || !data?.user) {
     return null;
   }
+  const rawRole =
+    typeof data.user.app_metadata?.role === 'string'
+      ? data.user.app_metadata.role.trim().toLowerCase()
+      : undefined;
   return {
     id: data.user.id,
-    email: (data.user.email || '').toLowerCase(),
+    email: (data.user.email || '').trim().toLowerCase(),
+    emailConfirmed: Boolean(data.user.email_confirmed_at),
+    appMetadataRole: rawRole,
     jwt,
   };
 }
 
 async function verifyIsExplicitSuperAdmin(user: VerifiedSupabaseUser): Promise<boolean> {
+  // 1. Explicit UUID allowlist or server-controlled app_metadata claim
+  if (SUPER_ADMIN_USER_IDS.has(user.id)) {
+    return true;
+  }
+  if (user.appMetadataRole === 'super_admin') {
+    return true;
+  }
+
   if (adminSupabase) {
-    const { data, error } = await adminSupabase
+    // 2. Authoritative Supabase Auth admin lookup (app_metadata is server-only)
+    const { data: authLookup, error: authErr } = await adminSupabase.auth.admin.getUserById(user.id);
+    const authUser = !authErr ? authLookup?.user : null;
+    if (authUser?.app_metadata?.role === 'super_admin') {
+      return true;
+    }
+
+    // 3. Authoritative public.super_admins table check (if migrated)
+    const saLookup = await adminSupabase
       .from('super_admins')
       .select('user_id')
       .eq('user_id', user.id)
       .maybeSingle();
-    if (error) return false;
-    return Boolean(data?.user_id);
+    if (!saLookup.error && saLookup.data?.user_id) {
+      return true;
+    }
+
+    // 4. Secure one-time initial Founder provisioning:
+    // Only when NO other super admin exists yet AND verified server email matches INITIAL_FOUNDER_EMAIL
+    const confirmedEmail = Boolean(authUser?.email_confirmed_at ?? user.emailConfirmed);
+    const verifiedEmail = (authUser?.email || user.email || '').trim().toLowerCase();
+    if (confirmedEmail && verifiedEmail === INITIAL_FOUNDER_EMAIL) {
+      let existingSuperAdminFound = false;
+
+      if (!saLookup.error) {
+        const anySa = await adminSupabase
+          .from('super_admins')
+          .select('user_id')
+          .limit(1);
+        if (!anySa.error && (anySa.data?.length ?? 0) > 0) {
+          existingSuperAdminFound = true;
+        }
+      }
+
+      if (!existingSuperAdminFound) {
+        const usersList = await adminSupabase.auth.admin.listUsers({ page: 1, perPage: 200 });
+        if (!usersList.error && Array.isArray(usersList.data?.users)) {
+          existingSuperAdminFound = usersList.data.users.some(
+            (u) => u.id !== user.id && u.app_metadata?.role === 'super_admin'
+          );
+        }
+      }
+
+      if (!existingSuperAdminFound) {
+        const { error: metaErr } = await adminSupabase.auth.admin.updateUserById(user.id, {
+          app_metadata: {
+            ...(authUser?.app_metadata || {}),
+            role: 'super_admin',
+            super_admin_provisioned_at: new Date().toISOString(),
+          },
+        });
+        if (!metaErr) {
+          if (!isTableMissingError(saLookup.error)) {
+            await adminSupabase
+              .from('super_admins')
+              .upsert(
+                { user_id: user.id, email: verifiedEmail },
+                { onConflict: 'user_id' }
+              );
+          }
+          await recordSaasAuditLog(adminSupabase, {
+            actor_user_id: user.id,
+            actor_email: verifiedEmail,
+            target_user_id: user.id,
+            target_email: verifiedEmail,
+            target_shop_name: String(authUser?.user_metadata?.shop_name || 'Platform Founder'),
+            action: 'founder_provisioned',
+            previous_status: 'unassigned',
+            new_status: 'super_admin',
+            details: 'Secure one-time initial Super Admin claim verified on server.',
+          });
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
+  // Fallback when service role key is unavailable: verify via Postgres RLS / RPC
   const userClient = createUserScopedSupabase(user.jwt);
   if (!userClient) return false;
+
+  const { data: rpcOk, error: rpcErr } = await userClient.rpc('is_super_admin');
+  if (!rpcErr && rpcOk === true) {
+    return true;
+  }
+
   const { data, error } = await userClient
     .from('super_admins')
     .select('user_id')
@@ -195,6 +356,66 @@ async function verifyIsExplicitSuperAdmin(user: VerifiedSupabaseUser): Promise<b
     .maybeSingle();
   if (error) return false;
   return Boolean(data?.user_id);
+}
+
+async function checkTenantOperationalAccess(
+  user: VerifiedSupabaseUser
+): Promise<{
+  allowed: boolean;
+  status?: ShopSubscriptionStatus;
+  reason?: string;
+}> {
+  const client = adminSupabase ?? createUserScopedSupabase(user.jwt);
+  if (!client) return { allowed: true };
+
+  let subRow: Record<string, unknown> | null = null;
+  const primary = await client
+    .from('subscriptions')
+    .select('is_blocked, status, suspended_reason, expires_at')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!primary.error) {
+    subRow = (primary.data as Record<string, unknown> | null) ?? null;
+  } else if (isMissingColumnError(primary.error)) {
+    const legacy = await client
+      .from('subscriptions')
+      .select('is_blocked, expires_at')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (!legacy.error) {
+      subRow = (legacy.data as Record<string, unknown> | null) ?? null;
+    }
+  }
+
+  const overlay = unmigratedStatusOverlay.get(user.id);
+  const rawStatus =
+    typeof subRow?.status === 'string' &&
+    ['active', 'suspended', 'blocked'].includes(subRow.status)
+      ? (subRow.status as ShopSubscriptionStatus)
+      : overlay?.status;
+
+  const isBlocked = Boolean(subRow?.is_blocked);
+  const effectiveStatus: ShopSubscriptionStatus =
+    rawStatus === 'suspended'
+      ? 'suspended'
+      : rawStatus === 'blocked' || isBlocked
+      ? 'blocked'
+      : 'active';
+
+  if (effectiveStatus === 'suspended' || effectiveStatus === 'blocked') {
+    const reason =
+      typeof subRow?.suspended_reason === 'string' && subRow.suspended_reason
+        ? subRow.suspended_reason
+        : overlay?.suspendedReason || '';
+    return {
+      allowed: false,
+      status: effectiveStatus,
+      reason,
+    };
+  }
+
+  return { allowed: true, status: 'active' };
 }
 
 interface SignedStaffCookiePayload {
@@ -326,7 +547,7 @@ export function createPosExpressApp() {
     });
   });
 
-  // Explicit Super Admin status check (backed strictly by public.super_admins, never email prefixes)
+  // Explicit Super Admin status check (backed strictly by server metadata / public.super_admins, never client flags)
   app.get('/api/admin/me', async (req: Request, res: Response) => {
     const user = await authenticateSupabaseRequest(req);
     if (!user) {
@@ -336,7 +557,7 @@ export function createPosExpressApp() {
     return res.json({ isSuperAdmin, userId: user.id });
   });
 
-  // List all tenant subscriptions (Super Admin only)
+  // List all registered shops, owners, subscriptions, staff counts & audit logs (Super Admin only)
   app.get('/api/admin/subscriptions', async (req: Request, res: Response) => {
     const user = await authenticateSupabaseRequest(req);
     if (!user) {
@@ -352,18 +573,211 @@ export function createPosExpressApp() {
       return res.status(503).json({ error: 'Supabase client unavailable on server.' });
     }
 
-    const { data, error } = await client
+    const { data: subRows, error: subErr } = await client
       .from('subscriptions')
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
+    if (subErr) {
+      return res.status(500).json({ error: subErr.message });
     }
-    return res.json({ subscriptions: data || [] });
+
+    const subByUserId = new Map<string, Record<string, unknown>>(
+      (subRows || []).map((r) => [String((r as Record<string, unknown>).user_id), r as Record<string, unknown>])
+    );
+
+    const storeNameByUserId = new Map<string, string>();
+    const empStatsByUserId = new Map<
+      string,
+      { employeeCount: number; activeEmployeeCount: number; adminConfigured: boolean }
+    >();
+    const authUsersList: Array<{
+      id: string;
+      email: string;
+      shopName?: string;
+      createdAt: string;
+      lastSignInAt?: string;
+    }> = [];
+
+    if (adminSupabase) {
+      const [usersRes, settingsRes, empPrimary] = await Promise.all([
+        adminSupabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+        adminSupabase.from('store_settings').select('user_id, store_name'),
+        adminSupabase.from('employees').select('id, user_id, role, is_active, pin_hash, pin_code'),
+      ]);
+
+      if (!usersRes.error && Array.isArray(usersRes.data?.users)) {
+        for (const u of usersRes.data.users) {
+          authUsersList.push({
+            id: u.id,
+            email: (u.email || '').trim().toLowerCase(),
+            shopName:
+              typeof u.user_metadata?.shop_name === 'string' && u.user_metadata.shop_name.trim()
+                ? u.user_metadata.shop_name.trim()
+                : undefined,
+            createdAt: u.created_at || new Date().toISOString(),
+            lastSignInAt: u.last_sign_in_at || undefined,
+          });
+        }
+      }
+
+      if (!settingsRes.error && Array.isArray(settingsRes.data)) {
+        for (const row of settingsRes.data) {
+          const uid = String(row.user_id || '');
+          const sname = typeof row.store_name === 'string' ? row.store_name.trim() : '';
+          if (uid && sname) {
+            storeNameByUserId.set(uid, sname);
+          }
+        }
+      }
+
+      let empRows: Array<Record<string, unknown>> = [];
+      if (!empPrimary.error && Array.isArray(empPrimary.data)) {
+        empRows = empPrimary.data as Array<Record<string, unknown>>;
+      } else if (isMissingColumnError(empPrimary.error)) {
+        const empLegacy = await adminSupabase
+          .from('employees')
+          .select('id, user_id, role, is_active, pin_code');
+        if (!empLegacy.error && Array.isArray(empLegacy.data)) {
+          empRows = empLegacy.data as Array<Record<string, unknown>>;
+        }
+      }
+
+      for (const row of empRows) {
+        const uid = String(row.user_id || '');
+        if (!uid) continue;
+        const curr = empStatsByUserId.get(uid) ?? {
+          employeeCount: 0,
+          activeEmployeeCount: 0,
+          adminConfigured: false,
+        };
+        curr.employeeCount += 1;
+        const isActive = row.is_active !== false;
+        if (isActive) curr.activeEmployeeCount += 1;
+        if (normalizeEmployeeRole(row.role) === 'admin' && isActive && rowHasConfiguredPin(row)) {
+          curr.adminConfigured = true;
+        }
+        empStatsByUserId.set(uid, curr);
+      }
+    }
+
+    const allUserIds = new Set<string>([
+      ...subByUserId.keys(),
+      ...authUsersList.map((u) => u.id),
+    ]);
+    const authByUserId = new Map(authUsersList.map((u) => [u.id, u]));
+
+    const merged = Array.from(allUserIds).map((uid) => {
+      const row = subByUserId.get(uid);
+      const authU = authByUserId.get(uid);
+      const empStats = empStatsByUserId.get(uid) ?? {
+        employeeCount: 0,
+        activeEmployeeCount: 0,
+        adminConfigured: false,
+      };
+      const overlay = unmigratedStatusOverlay.get(uid);
+      const createdAt = String(row?.created_at || authU?.createdAt || new Date().toISOString());
+      const defaultTrialExpiry = new Date(
+        new Date(createdAt).getTime() + 30 * 24 * 60 * 60 * 1000
+      ).toISOString();
+      const rawStatus =
+        typeof row?.status === 'string' && ['active', 'suspended', 'blocked'].includes(row.status)
+          ? (row.status as ShopSubscriptionStatus)
+          : overlay?.status;
+      const isBlocked = Boolean(row?.is_blocked);
+      const status: ShopSubscriptionStatus =
+        rawStatus === 'suspended'
+          ? 'suspended'
+          : rawStatus === 'blocked' || isBlocked
+          ? 'blocked'
+          : 'active';
+
+      return {
+        user_id: uid,
+        email: String(row?.email || authU?.email || ''),
+        shop_name:
+          storeNameByUserId.get(uid) ||
+          (row?.shop_name ? String(row.shop_name) : '') ||
+          authU?.shopName ||
+          '',
+        plan_name: String(row?.plan_name || '30-Day Free Trial'),
+        expires_at: String(row?.expires_at || defaultTrialExpiry),
+        is_blocked: status !== 'active' || isBlocked,
+        status,
+        suspended_reason:
+          (typeof row?.suspended_reason === 'string' && row.suspended_reason) ||
+          overlay?.suspendedReason ||
+          '',
+        suspended_at: row?.suspended_at || overlay?.suspendedAt || null,
+        trial_ends_at: row?.trial_ends_at || defaultTrialExpiry,
+        max_branches: row?.max_branches ?? 3,
+        max_employees: row?.max_employees ?? 15,
+        payment_history: Array.isArray(row?.payment_history) ? row.payment_history : [],
+        employee_count: empStats.employeeCount,
+        active_employee_count: empStats.activeEmployeeCount,
+        admin_configured: empStats.adminConfigured,
+        last_sign_in_at: authU?.lastSignInAt ?? null,
+        created_at: createdAt,
+        updated_at: row?.updated_at || createdAt,
+      };
+    });
+
+    merged.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+
+    let dbAuditRows: ServerSaasAuditLog[] = [];
+    const auditRes = await client
+      .from('saas_audit_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (!auditRes.error && Array.isArray(auditRes.data)) {
+      dbAuditRows = auditRes.data as ServerSaasAuditLog[];
+    }
+    const seenIds = new Set(dbAuditRows.map((a) => a.id));
+    const combinedLogs = [
+      ...dbAuditRows,
+      ...platformAuditMemoryLog.filter((a) => !seenIds.has(a.id)),
+    ]
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+      .slice(0, 100);
+
+    return res.json({ subscriptions: merged, auditLogs: combinedLogs });
   });
 
-  // Update a shopkeeper subscription (Super Admin only)
+  app.get('/api/admin/audit-logs', async (req: Request, res: Response) => {
+    const user = await authenticateSupabaseRequest(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    const isSuperAdmin = await verifyIsExplicitSuperAdmin(user);
+    if (!isSuperAdmin) {
+      return res.status(403).json({ error: 'Forbidden: explicit super_admin role required.' });
+    }
+
+    const client = adminSupabase ?? createUserScopedSupabase(user.jwt);
+    let dbAuditRows: ServerSaasAuditLog[] = [];
+    if (client) {
+      const auditRes = await client
+        .from('saas_audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (!auditRes.error && Array.isArray(auditRes.data)) {
+        dbAuditRows = auditRes.data as ServerSaasAuditLog[];
+      }
+    }
+    const seenIds = new Set(dbAuditRows.map((a) => a.id));
+    const combinedLogs = [
+      ...dbAuditRows,
+      ...platformAuditMemoryLog.filter((a) => !seenIds.has(a.id)),
+    ]
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+      .slice(0, 100);
+
+    return res.json({ auditLogs: combinedLogs });
+  });
+
+  // Update / activate / suspend / block a shopkeeper subscription (Super Admin only)
   app.post('/api/admin/subscriptions/:userId', async (req: Request, res: Response) => {
     const user = await authenticateSupabaseRequest(req);
     if (!user) {
@@ -379,23 +793,107 @@ export function createPosExpressApp() {
       return res.status(400).json({ error: 'Target userId is required.' });
     }
 
-    const { expiresAt, isBlocked, planName, maxBranches, maxEmployees, paymentHistory } = req.body as {
+    const {
+      expiresAt,
+      isBlocked,
+      status,
+      suspendedReason,
+      planName,
+      maxBranches,
+      maxEmployees,
+      paymentHistory,
+      actionLabel,
+    } = req.body as {
       expiresAt?: string;
       isBlocked?: boolean;
+      status?: ShopSubscriptionStatus;
+      suspendedReason?: string;
       planName?: string;
       maxBranches?: number;
       maxEmployees?: number;
       paymentHistory?: unknown[];
+      actionLabel?: string;
     };
 
+    const normalizedStatus: ShopSubscriptionStatus | undefined =
+      status && ['active', 'suspended', 'blocked'].includes(status)
+        ? status
+        : typeof isBlocked === 'boolean'
+        ? isBlocked
+          ? 'blocked'
+          : 'active'
+        : undefined;
+
+    const effectiveBlocked =
+      normalizedStatus !== undefined
+        ? normalizedStatus !== 'active'
+        : typeof isBlocked === 'boolean'
+        ? isBlocked
+        : undefined;
+
+    if (targetUserId === user.id && effectiveBlocked === true) {
+      return res.status(400).json({
+        error: 'Cannot suspend or block the active platform Super Admin account.',
+      });
+    }
+
+    const client = adminSupabase ?? createUserScopedSupabase(user.jwt);
+    if (!client) {
+      return res.status(503).json({ error: 'Supabase client unavailable on server.' });
+    }
+
+    const existingSubRes = await client
+      .from('subscriptions')
+      .select('*')
+      .eq('user_id', targetUserId)
+      .maybeSingle();
+
+    const existingRow = (existingSubRes.data as Record<string, unknown> | null) ?? null;
+    const prevOverlay = unmigratedStatusOverlay.get(targetUserId);
+    const previousStatus =
+      typeof existingRow?.status === 'string'
+        ? existingRow.status
+        : existingRow?.is_blocked
+        ? prevOverlay?.status || 'blocked'
+        : 'active';
+
+    let targetEmail = String(existingRow?.email || '');
+    let targetShopName = String(existingRow?.shop_name || '');
+    if ((!targetEmail || !targetShopName) && adminSupabase) {
+      const authLookup = await adminSupabase.auth.admin.getUserById(targetUserId);
+      if (!authLookup.error && authLookup.data?.user) {
+        targetEmail = targetEmail || (authLookup.data.user.email || '').toLowerCase();
+        targetShopName =
+          targetShopName || String(authLookup.data.user.user_metadata?.shop_name || '');
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const defaultExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
     const payload: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
     if (typeof expiresAt === 'string' && !Number.isNaN(Date.parse(expiresAt))) {
       payload.expires_at = expiresAt;
     }
-    if (typeof isBlocked === 'boolean') {
-      payload.is_blocked = isBlocked;
+    if (typeof effectiveBlocked === 'boolean') {
+      payload.is_blocked = effectiveBlocked;
+    }
+    if (normalizedStatus) {
+      payload.status = normalizedStatus;
+      payload.suspended_at = normalizedStatus === 'active' ? null : nowIso;
+      payload.suspended_reason =
+        normalizedStatus === 'active' ? '' : String(suspendedReason || '').trim();
+      if (normalizedStatus === 'active') {
+        unmigratedStatusOverlay.delete(targetUserId);
+      } else {
+        unmigratedStatusOverlay.set(targetUserId, {
+          status: normalizedStatus,
+          suspendedReason: String(suspendedReason || '').trim(),
+          suspendedAt: nowIso,
+        });
+      }
     }
     if (typeof planName === 'string' && planName.trim()) {
       payload.plan_name = planName.trim();
@@ -410,20 +908,96 @@ export function createPosExpressApp() {
       payload.payment_history = paymentHistory;
     }
 
-    const client = adminSupabase ?? createUserScopedSupabase(user.jwt);
-    if (!client) {
-      return res.status(503).json({ error: 'Supabase client unavailable on server.' });
+    const writeSubscriptionCompat = async (
+      fields: Record<string, unknown>
+    ): Promise<{ error: { code?: string; message: string } | null }> => {
+      const optionalCols = [
+        'status',
+        'suspended_at',
+        'suspended_reason',
+        'max_branches',
+        'max_employees',
+        'payment_history',
+      ];
+      let candidate = { ...fields };
+      for (let attempt = 0; attempt <= optionalCols.length; attempt++) {
+        const op = existingRow
+          ? await client.from('subscriptions').update(candidate).eq('user_id', targetUserId)
+          : await client.from('subscriptions').upsert(
+              {
+                user_id: targetUserId,
+                email: targetEmail || 'owner@store.local',
+                shop_name: targetShopName,
+                plan_name: String(candidate.plan_name || '30-Day Free Trial'),
+                expires_at: String(candidate.expires_at || defaultExpiry),
+                is_blocked: Boolean(candidate.is_blocked ?? false),
+                created_at: nowIso,
+                ...candidate,
+              },
+              { onConflict: 'user_id' }
+            );
+        if (!op.error) return { error: null };
+        if (!isMissingColumnError(op.error)) return { error: op.error };
+
+        const msg = op.error.message || '';
+        const matchedCol = optionalCols.find(
+          (col) => col in candidate && new RegExp(`\\b${col}\\b`, 'i').test(msg)
+        );
+        if (matchedCol) {
+          const nextCandidate = { ...candidate };
+          delete nextCandidate[matchedCol];
+          candidate = nextCandidate;
+        } else {
+          // Strip all optional extended columns if Postgres didn't identify the exact one
+          const coreOnly: Record<string, unknown> = {
+            updated_at: nowIso,
+          };
+          if ('expires_at' in candidate) coreOnly.expires_at = candidate.expires_at;
+          if ('is_blocked' in candidate) coreOnly.is_blocked = candidate.is_blocked;
+          if ('plan_name' in candidate) coreOnly.plan_name = candidate.plan_name;
+          candidate = coreOnly;
+        }
+      }
+      return { error: null };
+    };
+
+    const writeRes = await writeSubscriptionCompat(payload);
+    if (writeRes.error) {
+      return res.status(500).json({ error: writeRes.error.message });
     }
 
-    const { error } = await client
-      .from('subscriptions')
-      .update(payload)
-      .eq('user_id', targetUserId);
+    const nextStatusLabel =
+      normalizedStatus ??
+      (effectiveBlocked === true ? 'blocked' : effectiveBlocked === false ? 'active' : previousStatus);
+    const derivedAction =
+      actionLabel ||
+      (normalizedStatus === 'suspended'
+        ? 'shop_suspended'
+        : normalizedStatus === 'blocked'
+        ? 'shop_blocked'
+        : normalizedStatus === 'active' && previousStatus !== 'active'
+        ? 'shop_activated'
+        : 'subscription_updated');
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
-    return res.json({ ok: true });
+    const auditEntry = await recordSaasAuditLog(client, {
+      actor_user_id: user.id,
+      actor_email: user.email,
+      target_user_id: targetUserId,
+      target_email: targetEmail,
+      target_shop_name: targetShopName || targetEmail,
+      action: derivedAction,
+      previous_status: previousStatus,
+      new_status: nextStatusLabel,
+      details: [
+        planName ? `Plan: ${planName}` : null,
+        expiresAt ? `Expires: ${expiresAt.slice(0, 10)}` : null,
+        suspendedReason ? `Reason: ${suspendedReason}` : null,
+      ]
+        .filter(Boolean)
+        .join(' • ') || `Updated status to ${nextStatusLabel}`,
+    });
+
+    return res.json({ ok: true, auditLog: auditEntry });
   });
 
   // Authenticated non-secret staff bootstrap inspection & fallback for the signed-in owner's store
@@ -460,19 +1034,28 @@ export function createPosExpressApp() {
       return res.status(500).json({ ok: false, error: userLookup.error.message });
     }
 
-    const employees = effectiveRows.map((row) => ({
-      id: String(row.id),
-      name: String(row.name || ''),
-      phone: String(row.phone || ''),
-      role: normalizeEmployeeRole(row.role),
-      hasPin: rowHasConfiguredPin(row),
-      pinState: classifyPinState(row),
-      isActive: row.is_active !== false,
-      createdAt: String(row.created_at || ''),
-    }));
+    const employees = effectiveRows.map((row) => {
+      const pinState = classifyPinState(row);
+      const isDemoFixturePin = pinState === 'demo_fixture';
+      return {
+        id: String(row.id),
+        name: String(row.name || ''),
+        phone: String(row.phone || ''),
+        role: normalizeEmployeeRole(row.role),
+        hasPin: !isDemoFixturePin && rowHasConfiguredPin(row),
+        isDemoFixturePin,
+        pinState,
+        isActive: row.is_active !== false,
+        createdAt: String(row.created_at || ''),
+      };
+    });
 
     const adminConfigured = employees.some(
-      (emp) => emp.role === 'admin' && emp.isActive && emp.hasPin
+      (emp) =>
+        emp.role === 'admin' &&
+        emp.isActive &&
+        emp.hasPin &&
+        !emp.isDemoFixturePin
     );
 
     return res.json({
@@ -696,6 +1279,18 @@ export function createPosExpressApp() {
       return res.status(401).json({ ok: false, error: 'Authentication required.' });
     }
 
+    // Verify store is not suspended/blocked before allowing PIN unlock
+    const opAccess = await checkTenantOperationalAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        ok: false,
+        error:
+          opAccess.status === 'suspended'
+            ? 'This store subscription is currently suspended. POS access is paused while all shop records remain preserved.'
+            : 'This store account is blocked. Contact platform support while your shop records remain preserved.',
+      });
+    }
+
     const { pin, employeeId } = req.body as { pin?: string; employeeId?: string };
     const cleanPin = String(pin || '').trim();
     if (!isValidPinFormat(cleanPin)) {
@@ -789,6 +1384,16 @@ export function createPosExpressApp() {
     const user = await authenticateSupabaseRequest(req);
     if (!user) {
       return res.status(401).json({ error: 'Authentication required.' });
+    }
+
+    const opAccess = await checkTenantOperationalAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        error:
+          opAccess.status === 'suspended'
+            ? 'Store access is suspended. Staff changes are disabled while records remain preserved.'
+            : 'Store account is blocked.',
+      });
     }
 
     const staffToken = (req.header('x-staff-session') || '').trim();
@@ -932,6 +1537,16 @@ export function createPosExpressApp() {
       return res.status(401).json({ error: 'Authentication required.' });
     }
 
+    const opAccess = await checkTenantOperationalAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        error:
+          opAccess.status === 'suspended'
+            ? 'Store access is suspended. Staff changes are disabled while records remain preserved.'
+            : 'Store account is blocked.',
+      });
+    }
+
     const staffToken = (req.header('x-staff-session') || '').trim();
     const userClient = createUserScopedSupabase(user.jwt, staffToken || null);
     if (!userClient) {
@@ -974,6 +1589,17 @@ export function createPosExpressApp() {
       return res.status(401).json({ allowed: false, error: 'Authentication required.' });
     }
 
+    const opAccess = await checkTenantOperationalAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        allowed: false,
+        error:
+          opAccess.status === 'suspended'
+            ? 'Store access is currently suspended. POS billing is disabled while all shop records remain preserved.'
+            : 'Store account is blocked.',
+      });
+    }
+
     const { action, customPermissions } = req.body as {
       action?: RoleAction;
       customPermissions?: string[];
@@ -1006,6 +1632,15 @@ export function createPosExpressApp() {
     const user = await authenticateSupabaseRequest(req);
     if (!user) {
       return res.status(401).json({ delivered: false, configured: false, error: 'Authentication required.' });
+    }
+
+    const opAccess = await checkTenantOperationalAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        delivered: false,
+        configured: false,
+        error: 'Store access is suspended or blocked.',
+      });
     }
 
     const staff = await resolveVerifiedStaffRole(req, user);

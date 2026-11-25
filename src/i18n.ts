@@ -456,6 +456,11 @@ export interface TranslationStrings {
   superAdminBadge: string;
   subLockTitle: string;
   subLockDesc: string;
+  subLockSuspendedTitle: string;
+  subLockSuspendedDesc: string;
+  subLockBlockedDesc: string;
+  subLockDataSafeNote: string;
+  subLockReasonLabel: string;
   subLockWhatsappBtn: string;
   subLockRefreshBtn: string;
   subLockEmailLabel: string;
@@ -467,18 +472,31 @@ export interface TranslationStrings {
   totalTenantsLabel: string;
   activeTenantsLabel: string;
   expiredBlockedLabel: string;
+  totalTrackedStaffLabel: string;
   searchTenantsPlaceholder: string;
   extend30DaysBtn: string;
   extend1YearBtn: string;
   blockUserBtn: string;
   unblockUserBtn: string;
+  suspendShopBtn: string;
+  activateShopBtn: string;
   statusActiveLabel: string;
+  statusTrialLabel: string;
+  statusSuspendedLabel: string;
   statusExpiredLabel: string;
   statusBlockedLabel: string;
   tenantEmailCol: string;
   tenantShopCol: string;
+  shopStaffCol: string;
   tenantPlanCol: string;
   tenantExpiryCol: string;
+  saasTenantsTab: string;
+  saasAuditLogsTab: string;
+  yourStoreBadge: string;
+  adminPinReadyBadge: string;
+  needsAdminSetupBadge: string;
+  noSaasAuditLogsMsg: string;
+  suspendedReasonLabel: string;
   noTenantsFound: string;
   refreshListBtn: string;
 
@@ -1162,31 +1180,52 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     subLockTitle: 'Subscription Expired / Account Locked',
     subLockDesc:
       'Subscription Expired / Account Locked — Contact Haseeb Ahmed (Netra-Dev Solutions) on WhatsApp to renew your license.',
+    subLockSuspendedTitle: 'Store Subscription Suspended',
+    subLockSuspendedDesc:
+      'POS billing and staff access for this store are currently paused by the SmartBitz platform administrator.',
+    subLockBlockedDesc:
+      'Access to this store account has been blocked by the SmartBitz platform administrator.',
+    subLockDataSafeNote:
+      'All your store inventory, bills, customer profiles, and Khata ledger records remain safely preserved.',
+    subLockReasonLabel: 'Reason',
     subLockWhatsappBtn: 'Contact Haseeb Ahmed on WhatsApp',
     subLockRefreshBtn: 'Check Renewal Status',
     subLockEmailLabel: 'Account Email',
     subLockPlanLabel: 'Current Plan',
     subLockExpiryLabel: 'Expiry Date',
 
-    saasAdminTitle: 'SaaS Admin — License & Subscription Control',
+    saasAdminTitle: 'SaaS Admin — Platform, License & Store Control',
     saasAdminSubtitle:
-      'Manage registered shopkeepers, extend trial/annual licenses, or block/unblock store accounts',
-    totalTenantsLabel: 'Registered Shopkeepers',
-    activeTenantsLabel: 'Active Licenses',
-    expiredBlockedLabel: 'Expired / Blocked',
-    searchTenantsPlaceholder: 'Search shopkeeper email, shop name, or plan...',
+      'Monitor all registered shops, active staff profiles, trial/paid plans, account statuses, payments, and audit logs',
+    totalTenantsLabel: 'Registered Shops',
+    activeTenantsLabel: 'Active / Trial',
+    expiredBlockedLabel: 'Suspended / Blocked / Expired',
+    totalTrackedStaffLabel: 'Tracked Staff Profiles',
+    searchTenantsPlaceholder: 'Search shop owner email, store name, or plan...',
     extend30DaysBtn: 'Extend +30 Days',
     extend1YearBtn: 'Extend +1 Year',
     blockUserBtn: 'Block',
     unblockUserBtn: 'Unblock',
+    suspendShopBtn: 'Suspend',
+    activateShopBtn: 'Activate',
     statusActiveLabel: 'Active',
+    statusTrialLabel: 'Trial',
+    statusSuspendedLabel: 'Suspended',
     statusExpiredLabel: 'Expired',
     statusBlockedLabel: 'Blocked',
-    tenantEmailCol: 'Shopkeeper Email',
+    tenantEmailCol: 'Shop Owner Email',
     tenantShopCol: 'Store Name',
-    tenantPlanCol: 'Plan',
-    tenantExpiryCol: 'Expires On',
-    noTenantsFound: 'No shopkeeper subscriptions match your filter.',
+    shopStaffCol: 'Staff & PIN Status',
+    tenantPlanCol: 'Plan & Limits',
+    tenantExpiryCol: 'Trial / Expiry',
+    saasTenantsTab: 'Registered Shops',
+    saasAuditLogsTab: 'Platform Audit Logs',
+    yourStoreBadge: 'Your Store',
+    adminPinReadyBadge: 'Admin PIN Ready',
+    needsAdminSetupBadge: 'Needs Admin Setup',
+    noSaasAuditLogsMsg: 'No SaaS platform audit events recorded yet.',
+    suspendedReasonLabel: 'Suspension / Block Reason (optional)',
+    noTenantsFound: 'No registered shops match your filter.',
     refreshListBtn: 'Refresh List',
 
     expensesTitle: 'Daily Shop Expenses',
@@ -1861,30 +1900,51 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     subLockTitle: 'سبسکرپشن ختم / اکاؤنٹ لاک',
     subLockDesc:
       'آپ کی سبسکرپشن ختم ہو چکی ہے یا اکاؤنٹ لاک ہے۔ لائسنس کی تجدید کے لیے حسیب احمد (Netra-Dev Solutions) سے واٹس ایپ پر رابطہ کریں۔',
+    subLockSuspendedTitle: 'اسٹور سبسکرپشن معطل ہے',
+    subLockSuspendedDesc:
+      'پلیٹ فارم ایڈمن کی جانب سے اس اسٹور کی پی او ایس بلنگ اور رسائی عارضی طور پر معطل کر دی گئی ہے۔',
+    subLockBlockedDesc:
+      'پلیٹ فارم ایڈمن کی جانب سے اس اسٹور اکاؤنٹ کو بلاک کر دیا گیا ہے۔',
+    subLockDataSafeNote:
+      'آپ کا تمام اسٹاک، بل، گاہک اور کھاتہ ریکارڈ مکمل طور پر محفوظ ہے۔',
+    subLockReasonLabel: 'وجہ',
     subLockWhatsappBtn: 'حسیب احمد سے واٹس ایپ پر رابطہ کریں',
     subLockRefreshBtn: 'لائسنس اسٹیٹس چیک کریں',
     subLockEmailLabel: 'اکاؤنٹ ای میل',
     subLockPlanLabel: 'موجودہ پلان',
     subLockExpiryLabel: 'آخری تاریخ',
 
-    saasAdminTitle: 'SaaS سپر ایڈمن — لائسنس اور سبسکرپشن کنٹرول',
+    saasAdminTitle: 'SaaS سپر ایڈمن — پلیٹ فارم، لائسنس اور اسٹور کنٹرول',
     saasAdminSubtitle:
-      'تمام رجسٹرڈ دکانداروں کے لائسنس دیکھیں، مدت میں توسیع کریں یا اکاؤنٹ بلاک/ان بلاک کریں',
-    totalTenantsLabel: 'کل رجسٹرڈ دکاندار',
-    activeTenantsLabel: 'فعال لائسنس',
-    expiredBlockedLabel: 'ختم شدہ / بلاک',
+      'تمام رجسٹرڈ دکانیں، اسٹاف پروفائلز، ٹرائل اور ادائیگی کے پلانز، اسٹیٹس اور آڈٹ لاگز مانیٹر کریں',
+    totalTenantsLabel: 'کل رجسٹرڈ دکانیں',
+    activeTenantsLabel: 'فعال / ٹرائل',
+    expiredBlockedLabel: 'معطل / بلاک / ختم شدہ',
+    totalTrackedStaffLabel: 'کل ٹریک شدہ اسٹاف',
     searchTenantsPlaceholder: 'ای میل، اسٹور کا نام یا پلان تلاش کریں...',
     extend30DaysBtn: '+30 دن توسیع',
     extend1YearBtn: '+1 سال توسیع',
     blockUserBtn: 'بلاک کریں',
     unblockUserBtn: 'ان بلاک کریں',
+    suspendShopBtn: 'معطل کریں',
+    activateShopBtn: 'فعال کریں',
     statusActiveLabel: 'فعال',
+    statusTrialLabel: 'ٹرائل',
+    statusSuspendedLabel: 'معطل',
     statusExpiredLabel: 'ختم شدہ',
     statusBlockedLabel: 'بلاک شدہ',
     tenantEmailCol: 'دکاندار ای میل',
     tenantShopCol: 'اسٹور کا نام',
-    tenantPlanCol: 'پلان',
-    tenantExpiryCol: 'میعاد ختم',
+    shopStaffCol: 'اسٹاف اور پن اسٹیٹس',
+    tenantPlanCol: 'پلان اور حدود',
+    tenantExpiryCol: 'ٹرائل / میعاد ختم',
+    saasTenantsTab: 'رجسٹرڈ دکانیں',
+    saasAuditLogsTab: 'پلیٹ فارم آڈٹ لاگز',
+    yourStoreBadge: 'آپ کا اسٹور',
+    adminPinReadyBadge: 'ایڈمن پن تیار',
+    needsAdminSetupBadge: 'ایڈمن سیٹ اپ باقی',
+    noSaasAuditLogsMsg: 'ابھی تک کوئی پلیٹ فارم آڈٹ لاگ ریکارڈ نہیں ہوا۔',
+    suspendedReasonLabel: 'معطلی / بلاک کی وجہ (اختیاری)',
     noTenantsFound: 'کوئی دکاندار اکاؤنٹ نہیں ملا۔',
     refreshListBtn: 'فہرست تازہ کریں',
 

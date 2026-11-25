@@ -27,6 +27,7 @@ import {
   parseWorkspaceBackupJson,
 } from '../src/lib/posExtendedStore';
 import {
+  DEMO_PIN_HASHES,
   hasConfiguredAdmin,
   isStoredPinHash,
 } from '../src/lib/pinSecurity';
@@ -647,7 +648,7 @@ async function runTests(): Promise<void> {
   assert(
     appSource.includes('workspaceLoadedUserId') &&
       appSource.includes('isWorkspaceBootstrapReady') &&
-      appSource.includes('hasConfiguredAdmin(employees)') &&
+      appSource.includes('hasConfiguredAdmin(employees,') &&
       appSource.includes('needsInitialAdminSetup'),
     'App.tsx must wait for workspaceLoadedUserId & bootstrap-admin check before rendering StaffPinModal'
   );
@@ -796,6 +797,76 @@ async function runTests(): Promise<void> {
     simulatedNeedsInitialAdminSetup,
     true,
     'PAPUDA HOTEL needsInitialAdminSetup === true'
+  );
+
+  // Stale localStorage DEMO_PIN_HASHES['1234'] contamination for a real non-demo store
+  // (e.g. PAPUDA HOTEL from an older build) must be flagged & rejected so
+  // Create Your Store Admin PIN activates reliably.
+  const stalePapudaId = 'papuda-stale-fixture-uuid';
+  localStorage.setItem(
+    `khaas_pos_workspace_${stalePapudaId}_v1`,
+    JSON.stringify({
+      products: [],
+      orders: [],
+      udhaarCustomers: [],
+      udhaarEntries: [],
+      vendors: [],
+      purchases: [],
+      inventoryAdjustments: [],
+      customers: [],
+      employees: [
+        {
+          id: 'papuda-stale-emp-admin',
+          name: 'Store Admin',
+          phone: '',
+          role: 'admin',
+          pinHash: DEMO_PIN_HASHES['1234'],
+          hasPin: true,
+          isActive: true,
+          createdAt: '2026-11-18T00:00:00.000Z',
+        },
+        {
+          id: 'papuda-stale-emp-cashier',
+          name: 'Cashier',
+          phone: '',
+          role: 'cashier',
+          pinHash: DEMO_PIN_HASHES['1111'],
+          hasPin: true,
+          isActive: true,
+          createdAt: '2026-11-18T00:00:00.000Z',
+        },
+      ],
+      expenses: [],
+      storeSettings: createDefaultStoreSettings('PAPUDA HOTEL'),
+    })
+  );
+
+  const stalePapudaWs = await fetchWorkspaceData(stalePapudaId, 'PAPUDA HOTEL');
+  assertEqual(
+    hasConfiguredAdmin(stalePapudaWs.employees, { allowDemoFixturePins: false }),
+    false,
+    'Stale DEMO_PIN_HASHES admin fixture in localStorage must NOT bypass first-time Admin PIN creation'
+  );
+
+  // Verify suspended/blocked enforcement exists in App.tsx, SubscriptionLockModal, SaasAdminView, and serverApp.ts
+  const lockModalSource = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/SubscriptionLockModal.tsx'),
+    'utf8'
+  );
+  const saasAdminSource = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/SaasAdminView.tsx'),
+    'utf8'
+  );
+  assert(
+    appSource.includes("subscription.status === 'suspended'") &&
+      appSource.includes('if (!user || cart.length === 0 || isSubscriptionLocked) return null;') &&
+      lockModalSource.includes("subscription.status === 'suspended'") &&
+      lockModalSource.includes('t.subLockDataSafeNote') &&
+      saasAdminSource.includes('auditLogs') &&
+      saasAdminSource.includes("'suspend'") &&
+      saasAdminSource.includes("'activate'") &&
+      serverAppSource.includes('checkTenantOperationalAccess'),
+    'Frontend and backend must enforce suspended/blocked POS lock while preserving shop data and exposing SaaS audit logs'
   );
 
   console.log('ALL_COMMERCIAL_POS_SUITE_TESTS_PASSED');

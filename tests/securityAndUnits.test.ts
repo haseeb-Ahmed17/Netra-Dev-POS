@@ -8,6 +8,7 @@ import { createPosExpressApp } from '../server';
 import { createInitialEmployees, INITIAL_PRODUCTS } from '../src/data/initialData';
 import {
   DEMO_PIN_HASHES,
+  hasConfiguredAdmin,
   hashPinAsync,
   isStoredPinHash,
   isValidPinFormat,
@@ -114,6 +115,26 @@ async function runTests(): Promise<void> {
     '20261123 migration must define explicit public.super_admins table and is_super_admin() RPC'
   );
 
+  const migration20261125Path = path.resolve(
+    process.cwd(),
+    'supabase/migrations/20261125_founder_super_admin.sql'
+  );
+  assert(
+    fs.existsSync(migration20261125Path),
+    'Additive migration 20261125_founder_super_admin.sql must exist'
+  );
+  const migration20261125 = fs.readFileSync(migration20261125Path, 'utf8');
+  assert(
+    migration20261125.includes('bc260436573mha@vu.edu.pk') &&
+      !migration20261125.toLowerCase().includes(' like '),
+    '20261125 migration must use exact founder email without LIKE wildcards'
+  );
+  assert(
+    migration20261125.includes('create table if not exists public.saas_audit_logs') &&
+      migration20261125.includes('add column if not exists status text'),
+    '20261125 migration must define saas_audit_logs and subscriptions.status'
+  );
+
   // -------------------------------------------------------------------------
   // 2. Staff PIN Cryptographic Hashing & Plaintext Leakage Removal
   // -------------------------------------------------------------------------
@@ -128,6 +149,37 @@ async function runTests(): Promise<void> {
   assert(
     !(await verifyPinHashAsync('9999', DEMO_PIN_HASHES['1234'])),
     'DEMO_PIN_HASHES["1234"] must reject wrong PIN'
+  );
+
+  assertEqual(
+    hasConfiguredAdmin(
+      [
+        {
+          role: 'admin',
+          isActive: true,
+          hasPin: true,
+          pinHash: DEMO_PIN_HASHES['1234'],
+        },
+      ],
+      { allowDemoFixturePins: false }
+    ),
+    false,
+    'hasConfiguredAdmin must reject static DEMO_PIN_HASHES fixtures for real tenants'
+  );
+  assertEqual(
+    hasConfiguredAdmin(
+      [
+        {
+          role: 'admin',
+          isActive: true,
+          hasPin: true,
+          pinHash: DEMO_PIN_HASHES['1234'],
+        },
+      ],
+      { allowDemoFixturePins: true }
+    ),
+    true,
+    'hasConfiguredAdmin may accept DEMO_PIN_HASHES only for explicit demo workspace'
   );
 
   const customHash = await hashPinAsync('4829');
@@ -238,6 +290,14 @@ async function runTests(): Promise<void> {
 
     const unauthAdminSubs = await requestJson(baseUrl, 'GET', '/api/admin/subscriptions');
     assertEqual(unauthAdminSubs.status, 401, 'unauthenticated /api/admin/subscriptions must return 401');
+
+    const unauthAdminAudit = await requestJson(baseUrl, 'GET', '/api/admin/audit-logs');
+    assertEqual(unauthAdminAudit.status, 401, 'unauthenticated /api/admin/audit-logs must return 401');
+
+    const unauthAdminUpdate = await requestJson(baseUrl, 'POST', '/api/admin/subscriptions/test-user', {
+      status: 'suspended',
+    });
+    assertEqual(unauthAdminUpdate.status, 401, 'unauthenticated /api/admin/subscriptions/:userId must return 401');
 
     const unauthStaffPin = await requestJson(baseUrl, 'POST', '/api/staff/verify-pin', { pin: '1234' });
     assertEqual(unauthStaffPin.status, 401, 'unauthenticated /api/staff/verify-pin must return 401');

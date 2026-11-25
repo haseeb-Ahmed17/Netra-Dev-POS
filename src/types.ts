@@ -320,6 +320,12 @@ export interface Customer {
 
 export type EmployeeRole = 'admin' | 'manager' | 'cashier';
 
+export type EmployeePinState =
+  | 'hashed'
+  | 'demo_fixture'
+  | 'legacy_4digit'
+  | 'unconfigured';
+
 export interface Employee {
   id: string;
   name: string;
@@ -327,6 +333,8 @@ export interface Employee {
   role: EmployeeRole;
   pinHash: string;
   hasPin?: boolean;
+  isDemoFixturePin?: boolean;
+  pinState?: EmployeePinState;
   isActive: boolean;
   branchId?: string;
   shiftAssignment?: string;
@@ -398,6 +406,8 @@ export interface SubscriptionPaymentEntry {
   note: string;
 }
 
+export type ShopSubscriptionStatus = 'active' | 'suspended' | 'blocked';
+
 export interface SubscriptionRecord {
   userId: string;
   email: string;
@@ -405,11 +415,33 @@ export interface SubscriptionRecord {
   planName: string;
   expiresAt: string; // ISO timestamp
   isBlocked: boolean;
+  status?: ShopSubscriptionStatus;
+  suspendedReason?: string;
+  suspendedAt?: string;
+  trialEndsAt?: string;
   maxBranches?: number;
   maxEmployees?: number;
+  employeeCount?: number;
+  activeEmployeeCount?: number;
+  adminConfigured?: boolean;
+  lastSignInAt?: string;
   paymentHistory?: SubscriptionPaymentEntry[];
   createdAt: string;
   updatedAt?: string;
+}
+
+export interface SaasAuditLogEntry {
+  id: string;
+  actorUserId?: string;
+  actorEmail: string;
+  targetUserId: string;
+  targetEmail: string;
+  targetShopName?: string;
+  action: string;
+  previousStatus?: string;
+  newStatus?: string;
+  details: string;
+  createdAt: string;
 }
 
 export type ExpenseCategory =

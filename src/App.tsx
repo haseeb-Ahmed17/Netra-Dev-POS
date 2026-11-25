@@ -88,6 +88,7 @@ import {
   upsertStoreSettingsRecord,
   upsertVendorRecord,
   verifyStaffPinRecord,
+  type AdminSubscriptionAction,
 } from './lib/posRepository';
 import { hasConfiguredAdmin } from './lib/pinSecurity';
 import { generateUuid } from './lib/idUtils';
@@ -135,7 +136,9 @@ import type {
   PurchaseRecord,
   PurchaseReturnRecord,
   ReminderSchedule,
+  SaasAuditLogEntry,
   SellingUnit,
+  ShopSubscriptionStatus,
   ShopkeeperUser,
   StaffSessionInfo,
   StockTransfer,
@@ -227,6 +230,7 @@ export default function App() {
   const [subscription, setSubscription] = useState<SubscriptionRecord | null>(null);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [allSubscriptions, setAllSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [saasAuditLogs, setSaasAuditLogs] = useState<SaasAuditLogEntry[]>([]);
   const [loadingAllSubs, setLoadingAllSubs] = useState(false);
   const [updatingSubUserId, setUpdatingSubUserId] = useState<string | null>(null);
 
@@ -268,7 +272,9 @@ export default function App() {
   const isWorkspaceBootstrapReady = Boolean(
     user && workspaceLoadedUserId === user.id && !loadingData
   );
-  const adminConfigured = hasConfiguredAdmin(employees);
+  const adminConfigured = hasConfiguredAdmin(employees, {
+    allowDemoFixturePins: user?.id === 'demo-shopkeeper-1',
+  });
   const needsInitialAdminSetup = !adminConfigured;
   const isEffectiveOnline = browserOnline && networkReachable;
   const isSubscriptionLocked = Boolean(
@@ -276,6 +282,8 @@ export default function App() {
       !isSuperAdmin &&
       subscription &&
       (subscription.isBlocked ||
+        subscription.status === 'suspended' ||
+        subscription.status === 'blocked' ||
         new Date(subscription.expiresAt).getTime() <= Date.now())
   );
 
@@ -300,6 +308,7 @@ export default function App() {
         role: e.role,
         isActive: e.isActive,
         hasPin: Boolean(e.hasPin),
+        pinState: e.pinState ?? (e.isDemoFixturePin ? 'demo_fixture' : 'unknown'),
       })),
     });
   }, [
@@ -402,7 +411,9 @@ export default function App() {
       setPendingSyncCount(getOfflineQueue(userId).length);
 
       const activeList = ws.employees.filter((e) => e.isActive);
-      const adminConfigured = hasConfiguredAdmin(ws.employees);
+      const adminConfigured = hasConfiguredAdmin(ws.employees, {
+        allowDemoFixturePins: userId === 'demo-shopkeeper-1',
+      });
 
       if (!adminConfigured) {
         saveStoredStaffSession(userId, null);
@@ -559,6 +570,7 @@ export default function App() {
       setSubscription(null);
       setCheckingSubscription(false);
       setAllSubscriptions([]);
+      setSaasAuditLogs([]);
       setLoadingAllSubs(false);
       setUpdatingSubUserId(null);
       setStaffSession(null);
@@ -620,6 +632,7 @@ export default function App() {
           .then((res) => {
             if (!active) return;
             setAllSubscriptions(res.subscriptions);
+            setSaasAuditLogs(res.auditLogs ?? []);
             if (res.error) {
               setCloudSyncError((prev) => prev ?? res.error);
             }
@@ -629,6 +642,7 @@ export default function App() {
           });
       } else {
         setAllSubscriptions([]);
+        setSaasAuditLogs([]);
       }
     });
 
@@ -819,6 +833,10 @@ export default function App() {
   };
 
   const guardAction = (action: RoleAction): boolean => {
+    if (isSubscriptionLocked) {
+      setRbacNotice(t.subLockSuspendedDesc);
+      return false;
+    }
     if (!hasRolePermission(activeRole, action, activeEmployee?.customPermissions)) {
       setRbacNotice(t.rbacUnauthorizedError);
       return false;
@@ -1209,7 +1227,7 @@ export default function App() {
     clientTxRef,
     inlineNewUdhaarCustomer,
   }: PosCheckoutPayload): OrderRecord | null => {
-    if (!user || cart.length === 0) return null;
+    if (!user || cart.length === 0 || isSubscriptionLocked) return null;
 
     if (clientTxRef) {
       const existingByRef = orders.find((o) => o.clientTxRef === clientTxRef);
@@ -3238,6 +3256,7 @@ export default function App() {
     try {
       const res = await fetchAllSubscriptions();
       setAllSubscriptions(res.subscriptions);
+      setSaasAuditLogs(res.auditLogs ?? []);
       if (res.error) setCloudSyncError(res.error);
     } finally {
       setLoadingAllSubs(false);
@@ -3246,15 +3265,19 @@ export default function App() {
 
   const handleAdminSubscriptionAction = async (
     sub: SubscriptionRecord,
-    action: 'extend_30_days' | 'extend_1_year' | 'toggle_block'
+    action: AdminSubscriptionAction,
+    options?: { suspendedReason?: string }
   ) => {
     if (!user || !isSuperAdmin) return;
     setUpdatingSubUserId(sub.userId);
     try {
-      const res = await adminUpdateSubscription(sub.userId, action, sub);
+      const res = await adminUpdateSubscription(sub.userId, action, sub, options);
       setAllSubscriptions((prev) =>
         prev.map((item) => (item.userId === sub.userId ? res.updated : item))
       );
+      if (res.auditLog) {
+        setSaasAuditLogs((prev) => [res.auditLog!, ...prev].slice(0, 100));
+      }
       if (sub.userId === user.id) {
         setSubscription(res.updated);
       }
@@ -3270,6 +3293,8 @@ export default function App() {
       planName?: string;
       maxBranches?: number;
       maxEmployees?: number;
+      status?: ShopSubscriptionStatus;
+      suspendedReason?: string;
       paymentEntry?: SubscriptionPaymentEntry;
     }
   ) => {
@@ -3280,6 +3305,9 @@ export default function App() {
       setAllSubscriptions((prev) =>
         prev.map((item) => (item.userId === sub.userId ? res.updated : item))
       );
+      if (res.auditLog) {
+        setSaasAuditLogs((prev) => [res.auditLog!, ...prev].slice(0, 100));
+      }
       if (sub.userId === user.id) {
         setSubscription(res.updated);
       }
@@ -3872,11 +3900,13 @@ export default function App() {
             {activeTab === 'saas_admin' && isSuperAdmin && (
               <SaasAdminView
                 subscriptions={allSubscriptions}
+                auditLogs={saasAuditLogs}
+                currentUserId={user.id}
                 loading={loadingAllSubs}
                 updatingUserId={updatingSubUserId}
                 onRefresh={() => void handleRefreshAllSubscriptions()}
-                onAdminAction={(sub, action) =>
-                  void handleAdminSubscriptionAction(sub, action)
+                onAdminAction={(sub, action, options) =>
+                  void handleAdminSubscriptionAction(sub, action, options)
                 }
                 onUpdateSubscriptionMeta={(sub, patch) =>
                   void handleAdminUpdateSubscriptionMeta(sub, patch)

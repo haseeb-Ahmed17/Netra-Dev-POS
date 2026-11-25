@@ -516,7 +516,7 @@ create policy "Users can read own super admin status"
 insert into public.super_admins (user_id, email)
 select id, lower(email)
 from auth.users
-where lower(email) = 'bc260436573mha@gmail.com'
+where lower(email) = 'bc260436573mha@vu.edu.pk'
 on conflict (user_id) do update set email = excluded.email;
 
 create or replace function public.is_super_admin()
@@ -530,7 +530,8 @@ as $$
     select 1
     from public.super_admins sa
     where sa.user_id = auth.uid()
-  );
+  )
+  or coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') = 'super_admin';
 $$;
 
 revoke all on function public.is_super_admin() from public;

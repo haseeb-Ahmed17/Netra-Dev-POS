@@ -87,7 +87,9 @@ export function TopBar({
           ) : subscription ? (
             <span
               className={`hidden sm:inline-flex items-center px-2.5 py-1 rounded-md text-xs font-mono font-semibold tabular-nums whitespace-nowrap border ${
-                subscription.isBlocked
+                subscription.status === 'suspended'
+                  ? 'bg-amber-50 text-amber-800 border-amber-300'
+                  : subscription.isBlocked
                   ? 'bg-red-50 text-red-700 border-red-200'
                   : (daysRemaining ?? 0) <= 5
                   ? 'bg-amber-50 text-amber-800 border-amber-200'
@@ -95,7 +97,9 @@ export function TopBar({
               }`}
               title={subscription.planName}
             >
-              {subscription.isBlocked
+              {subscription.status === 'suspended'
+                ? t.statusSuspendedLabel
+                : subscription.isBlocked
                 ? t.accountBlockedBadge
                 : (daysRemaining ?? 0) <= 0
                 ? t.trialExpiredBadge

@@ -1,4 +1,4 @@
-import { Lock, LogOut, MessageCircle, RefreshCw } from 'lucide-react';
+import { Lock, LogOut, MessageCircle, PauseCircle, RefreshCw, ShieldCheck } from 'lucide-react';
 import type { TranslationStrings } from '../i18n';
 import type { Language, SubscriptionRecord } from '../types';
 
@@ -26,14 +26,35 @@ export function SubscriptionLockModal({
     { year: 'numeric', month: 'short', day: '2-digit' }
   );
 
+  const isSuspended = subscription.status === 'suspended';
+  const isBlocked =
+    subscription.status === 'blocked' ||
+    (subscription.isBlocked && !isSuspended);
+
+  const title = isSuspended ? t.subLockSuspendedTitle : t.subLockTitle;
+  const description = isSuspended
+    ? t.subLockSuspendedDesc
+    : isBlocked
+    ? t.subLockBlockedDesc
+    : t.subLockDesc;
+
+  const statusText = isSuspended
+    ? 'Suspended'
+    : isBlocked
+    ? 'Account Blocked'
+    : `Expired (${formattedExpiry})`;
+
   const renewalMessage = [
     `Assalam-o-Alaikum Haseeb Ahmed (Netra-Dev Solutions),`,
-    `Please renew my Khaas Retail POS license:`,
+    `Please review my SmartBitz POS license:`,
     `Store: ${shopName}`,
     `Email: ${subscription.email}`,
     `Plan: ${subscription.planName}`,
-    `Status: ${subscription.isBlocked ? 'Account Blocked' : `Expired (${formattedExpiry})`}`,
-  ].join('\n');
+    `Status: ${statusText}`,
+    subscription.suspendedReason ? `Reason: ${subscription.suspendedReason}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(renewalMessage)}`;
 
@@ -46,20 +67,35 @@ export function SubscriptionLockModal({
     >
       <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
         <div className="p-6 sm:p-8 text-center border-b border-slate-100">
-          <div className="w-12 h-12 rounded-full bg-red-50 border border-red-200 flex items-center justify-center mx-auto mb-4">
-            <Lock className="w-6 h-6 text-red-700" aria-hidden="true" />
+          <div
+            className={`w-12 h-12 rounded-full border flex items-center justify-center mx-auto mb-4 ${
+              isSuspended
+                ? 'bg-amber-50 border-amber-200'
+                : 'bg-red-50 border-red-200'
+            }`}
+          >
+            {isSuspended ? (
+              <PauseCircle className="w-6 h-6 text-amber-700" aria-hidden="true" />
+            ) : (
+              <Lock className="w-6 h-6 text-red-700" aria-hidden="true" />
+            )}
           </div>
 
           <h2
             id="subscription-lock-title"
             className="text-xl font-bold text-slate-900"
           >
-            {t.subLockTitle}
+            {title}
           </h2>
 
           <p className="text-sm text-slate-700 mt-3 leading-relaxed">
-            {t.subLockDesc}
+            {description}
           </p>
+
+          <div className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-900">
+            <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
+            <span>{t.subLockDataSafeNote}</span>
+          </div>
         </div>
 
         <div className="p-6 bg-slate-50/70 space-y-4">
@@ -82,6 +118,14 @@ export function SubscriptionLockModal({
                 {formattedExpiry}
               </span>
             </div>
+            {subscription.suspendedReason && (
+              <div className="pt-2 border-t border-slate-100 flex items-start justify-between gap-3">
+                <span className="text-slate-500 shrink-0">{t.subLockReasonLabel}</span>
+                <span className="font-medium text-slate-800 text-end">
+                  {subscription.suspendedReason}
+                </span>
+              </div>
+            )}
           </div>
 
           <a

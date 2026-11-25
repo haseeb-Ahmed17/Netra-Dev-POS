@@ -23,6 +23,8 @@ import type {
   PurchaseRecord,
   ReminderSchedule,
   ShopkeeperUser,
+  SaasAuditLogEntry,
+  ShopSubscriptionStatus,
   StaffSessionInfo,
   StoreSettings,
   SubscriptionRecord,
@@ -34,9 +36,11 @@ import type {
 import { deterministicDemoUuid, generateUuid } from './idUtils';
 import { idbSetItem } from './indexedDbStore';
 import {
+  classifyEmployeePin,
   DEMO_PIN_HASHES,
   hasConfiguredAdmin,
   hashPinAsync,
+  isDemoFixturePinHash,
   isStoredPinHash,
   isValidPinFormat,
   REDACTED_PIN_SENTINEL,
@@ -159,6 +163,8 @@ export async function fetchBootstrapStatusFromServer(): Promise<{
         phone?: string;
         role: Employee['role'];
         hasPin: boolean;
+        isDemoFixturePin?: boolean;
+        pinState?: Employee['pinState'];
         isActive: boolean;
         createdAt?: string;
       }>;
@@ -173,16 +179,22 @@ export async function fetchBootstrapStatusFromServer(): Promise<{
       rlsError: body.rlsError ?? null,
       supportsPinHashColumn: body.supportsPinHashColumn,
       hasConfiguredAdmin: body.hasConfiguredAdmin,
-      employees: body.employees.map((e) => ({
-        id: String(e.id),
-        name: String(e.name ?? ''),
-        phone: String(e.phone ?? ''),
-        role: e.role,
-        pinHash: '',
-        hasPin: Boolean(e.hasPin),
-        isActive: e.isActive !== false,
-        createdAt: String(e.createdAt ?? new Date().toISOString()),
-      })),
+      employees: body.employees.map((e) => {
+        const isDemoFixture =
+          Boolean(e.isDemoFixturePin) || e.pinState === 'demo_fixture';
+        return {
+          id: String(e.id),
+          name: String(e.name ?? ''),
+          phone: String(e.phone ?? ''),
+          role: e.role,
+          pinHash: '',
+          hasPin: isDemoFixture ? false : Boolean(e.hasPin),
+          isDemoFixturePin: isDemoFixture,
+          pinState: e.pinState,
+          isActive: e.isActive !== false,
+          createdAt: String(e.createdAt ?? new Date().toISOString()),
+        };
+      }),
     };
   } catch {
     return null;
@@ -499,18 +511,30 @@ export function buildStarterWorkspace(
   };
 }
 
-function normalizeEmployeeRecord(raw: unknown): Employee {
+function normalizeEmployeeRecord(raw: unknown, userId?: string): Employee {
   const r = (raw ?? {}) as Record<string, unknown>;
   const legacyPin = typeof r.pinCode === 'string' ? r.pinCode.trim() : '';
   let pinHash = typeof r.pinHash === 'string' ? r.pinHash : '';
-  if (!pinHash && legacyPin && legacyPin in DEMO_PIN_HASHES) {
+  const allowDemo = userId === 'demo-shopkeeper-1';
+  if (!pinHash && legacyPin && legacyPin in DEMO_PIN_HASHES && allowDemo) {
     pinHash = DEMO_PIN_HASHES[legacyPin as keyof typeof DEMO_PIN_HASHES];
   }
-  const hasPin = Boolean(
-    r.hasPin ||
-      pinHash ||
-      (legacyPin && legacyPin !== REDACTED_PIN_SENTINEL)
-  );
+  const pinState =
+    typeof r.pinState === 'string'
+      ? (r.pinState as Employee['pinState'])
+      : classifyEmployeePin({ pinHash, pinCode: legacyPin });
+  const isDemoFixturePin =
+    Boolean(r.isDemoFixturePin) ||
+    pinState === 'demo_fixture' ||
+    isDemoFixturePinHash(pinHash);
+  const hasPin =
+    !allowDemo && isDemoFixturePin
+      ? false
+      : Boolean(
+          r.hasPin ||
+            pinHash ||
+            (legacyPin && legacyPin !== REDACTED_PIN_SENTINEL && isValidPinFormat(legacyPin))
+        );
   return {
     id: String(r.id ?? ''),
     name: String(r.name ?? ''),
@@ -518,6 +542,8 @@ function normalizeEmployeeRecord(raw: unknown): Employee {
     role: (r.role as Employee['role']) || 'cashier',
     pinHash,
     hasPin,
+    isDemoFixturePin,
+    pinState,
     isActive: r.isActive !== false,
     branchId: typeof r.branchId === 'string' && r.branchId ? r.branchId : undefined,
     shiftAssignment:
@@ -542,6 +568,7 @@ async function migrateLegacyLocalPins(userId: string): Promise<void> {
       employees?: Array<Record<string, unknown>>;
     };
     if (!Array.isArray(parsed.employees)) return;
+    const isDemo = userId === 'demo-shopkeeper-1';
     let changed = false;
     const migrated = await Promise.all(
       parsed.employees.map(async (emp) => {
@@ -549,7 +576,7 @@ async function migrateLegacyLocalPins(userId: string): Promise<void> {
         let pinHash = typeof emp.pinHash === 'string' ? emp.pinHash : '';
         if (!pinHash && isValidPinFormat(legacyPin)) {
           pinHash =
-            legacyPin in DEMO_PIN_HASHES
+            isDemo && legacyPin in DEMO_PIN_HASHES
               ? DEMO_PIN_HASHES[legacyPin as keyof typeof DEMO_PIN_HASHES]
               : await hashPinAsync(legacyPin);
           changed = true;
@@ -557,10 +584,15 @@ async function migrateLegacyLocalPins(userId: string): Promise<void> {
         if ('pinCode' in emp || 'pin_code' in emp) {
           changed = true;
         }
+        const isDemoFixture = !isDemo && isDemoFixturePinHash(pinHash);
+        if (isDemoFixture && emp.hasPin !== false) {
+          changed = true;
+        }
         return {
           ...stripPlaintextPin(emp),
-          pinHash,
-          hasPin: Boolean(emp.hasPin || pinHash),
+          pinHash: isDemoFixture ? '' : pinHash,
+          hasPin: isDemoFixture ? false : Boolean(emp.hasPin || pinHash),
+          isDemoFixturePin: isDemoFixture || undefined,
         };
       })
     );
@@ -606,7 +638,7 @@ function loadLocalWorkspace(userId: string, shopName?: string): ShopkeeperWorksp
       }));
       const normalizedEmployees = Array.isArray(parsed.employees)
         ? parsed.employees.length > 0
-          ? parsed.employees.map((emp) => normalizeEmployeeRecord(emp))
+          ? parsed.employees.map((emp) => normalizeEmployeeRecord(emp, userId))
           : fallbackEmployees
         : fallbackEmployees;
       return {
@@ -1370,10 +1402,13 @@ export function mapEmployeeFromRow(row: Record<string, unknown>): Employee {
     rawRole === 'admin' || rawRole === 'manager' || rawRole === 'cashier'
       ? rawRole
       : 'cashier';
+  const pinState = classifyEmployeePin({ pinHash: rawPinHash, pinCode: rawPinCode });
+  const isDemoFixturePin = pinState === 'demo_fixture';
   const hasPin =
-    isStoredPinHash(rawPinHash) ||
-    isStoredPinHash(rawPinCode) ||
-    isValidPinFormat(rawPinCode);
+    !isDemoFixturePin &&
+    (isStoredPinHash(rawPinHash) ||
+      isStoredPinHash(rawPinCode) ||
+      isValidPinFormat(rawPinCode));
   return {
     id: String(row.id),
     name: String(row.name),
@@ -1381,6 +1416,8 @@ export function mapEmployeeFromRow(row: Record<string, unknown>): Employee {
     role,
     pinHash: '',
     hasPin,
+    isDemoFixturePin,
+    pinState,
     isActive: row.is_active !== false,
     branchId: typeof row.branch_id === 'string' && row.branch_id ? row.branch_id : undefined,
     shiftAssignment:
@@ -1569,13 +1606,33 @@ function mapExpenseToRow(
 }
 
 function mapSubscriptionFromRow(row: Record<string, unknown>): SubscriptionRecord {
+  const rawStatus =
+    typeof row.status === 'string' &&
+    ['active', 'suspended', 'blocked'].includes(row.status)
+      ? (row.status as ShopSubscriptionStatus)
+      : row.is_blocked
+      ? 'blocked'
+      : 'active';
   return {
     userId: String(row.user_id),
     email: String(row.email ?? ''),
     shopName: row.shop_name ? String(row.shop_name) : undefined,
     planName: String(row.plan_name ?? '30-Day Free Trial'),
     expiresAt: String(row.expires_at),
-    isBlocked: Boolean(row.is_blocked),
+    isBlocked: rawStatus !== 'active' || Boolean(row.is_blocked),
+    status: rawStatus,
+    suspendedReason:
+      typeof row.suspended_reason === 'string' && row.suspended_reason
+        ? row.suspended_reason
+        : undefined,
+    suspendedAt:
+      typeof row.suspended_at === 'string' && row.suspended_at
+        ? row.suspended_at
+        : undefined,
+    trialEndsAt:
+      typeof row.trial_ends_at === 'string' && row.trial_ends_at
+        ? row.trial_ends_at
+        : undefined,
     maxBranches:
       row.max_branches !== undefined && row.max_branches !== null
         ? Number(row.max_branches)
@@ -1584,11 +1641,45 @@ function mapSubscriptionFromRow(row: Record<string, unknown>): SubscriptionRecor
       row.max_employees !== undefined && row.max_employees !== null
         ? Number(row.max_employees)
         : 15,
+    employeeCount:
+      row.employee_count !== undefined && row.employee_count !== null
+        ? Number(row.employee_count)
+        : undefined,
+    activeEmployeeCount:
+      row.active_employee_count !== undefined && row.active_employee_count !== null
+        ? Number(row.active_employee_count)
+        : undefined,
+    adminConfigured:
+      typeof row.admin_configured === 'boolean' ? row.admin_configured : undefined,
+    lastSignInAt:
+      typeof row.last_sign_in_at === 'string' && row.last_sign_in_at
+        ? row.last_sign_in_at
+        : undefined,
     paymentHistory: Array.isArray(row.payment_history)
       ? (row.payment_history as SubscriptionRecord['paymentHistory'])
       : [],
     createdAt: String(row.created_at ?? new Date().toISOString()),
     updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
+function mapSaasAuditLogFromRow(row: Record<string, unknown>): SaasAuditLogEntry {
+  return {
+    id: String(row.id ?? ''),
+    actorUserId: typeof row.actor_user_id === 'string' ? row.actor_user_id : undefined,
+    actorEmail: String(row.actor_email ?? ''),
+    targetUserId: String(row.target_user_id ?? ''),
+    targetEmail: String(row.target_email ?? ''),
+    targetShopName:
+      typeof row.target_shop_name === 'string' && row.target_shop_name
+        ? row.target_shop_name
+        : undefined,
+    action: String(row.action ?? 'updated'),
+    previousStatus:
+      typeof row.previous_status === 'string' ? row.previous_status : undefined,
+    newStatus: typeof row.new_status === 'string' ? row.new_status : undefined,
+    details: String(row.details ?? ''),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
   };
 }
 
@@ -1599,6 +1690,7 @@ export async function fetchWorkspaceData(
   await migrateLegacyLocalPins(userId);
   const browserOffline =
     typeof navigator !== 'undefined' && navigator.onLine === false;
+  const allowDemoFixturePins = userId === 'demo-shopkeeper-1';
 
   const mergeEmployeeLocalMeta = (
     cloudEmployees: Employee[],
@@ -1626,7 +1718,7 @@ export async function fetchWorkspaceData(
         employeesSource: ws.employeesSource ?? 'unknown',
         employeeFallbackReason: ws.employeeFallbackReason ?? null,
         isOffline: Boolean(ws.isOffline),
-        hasConfiguredAdmin: hasConfiguredAdmin(ws.employees),
+        hasConfiguredAdmin: hasConfiguredAdmin(ws.employees, { allowDemoFixturePins }),
         employeeCount: ws.employees.length,
         employeesSummary: ws.employees.map((e) => ({
           id: e.id,
@@ -1634,6 +1726,7 @@ export async function fetchWorkspaceData(
           role: e.role,
           isActive: e.isActive,
           hasPin: Boolean(e.hasPin),
+          pinState: e.pinState ?? (e.isDemoFixturePin ? 'demo_fixture' : 'unknown'),
         })),
         ...extra,
       });
@@ -1755,9 +1848,23 @@ export async function fetchWorkspaceData(
         if (!employeeFallbackReason) {
           employeeFallbackReason = `Partial query error: ${firstError.message}`;
         }
+        // If cloud employees failed too, try authoritative server endpoint before using local cache
+        if (!resolvedCloudEmployees && !isNetworkLossError(firstError.message)) {
+          const serverBootstrap = await fetchBootstrapStatusFromServer();
+          if (serverBootstrap?.ok && serverBootstrap.employees) {
+            resolvedCloudEmployees = mergeEmployeeLocalMeta(
+              serverBootstrap.employees,
+              localCached.employees
+            );
+            resolvedEmployeesSource = 'server_api';
+          }
+        }
+        const safeLocalEmployees = allowDemoFixturePins
+          ? localCached.employees
+          : localCached.employees.filter((e) => !e.isDemoFixturePin);
         const localFallback: ShopkeeperWorkspaceData = {
           ...localCached,
-          employees: resolvedCloudEmployees ?? localCached.employees,
+          employees: resolvedCloudEmployees ?? safeLocalEmployees,
           employeesSource: resolvedCloudEmployees
             ? resolvedEmployeesSource
             : 'local_storage_fallback',
@@ -1940,9 +2047,12 @@ export async function fetchWorkspaceData(
           resolvedEmployeesSource = 'server_api';
         }
       }
+      const safeLocalEmployees = allowDemoFixturePins
+        ? localFallback.employees
+        : localFallback.employees.filter((e) => !e.isDemoFixturePin);
       const wsResult: ShopkeeperWorkspaceData = {
         ...localFallback,
-        employees: resolvedCloudEmployees ?? localFallback.employees,
+        employees: resolvedCloudEmployees ?? safeLocalEmployees,
         employeesSource: resolvedCloudEmployees
           ? resolvedEmployeesSource
           : 'local_storage_fallback',
@@ -3927,6 +4037,7 @@ export async function ensureUserSubscription(
 
 export async function fetchAllSubscriptions(): Promise<{
   subscriptions: SubscriptionRecord[];
+  auditLogs: SaasAuditLogEntry[];
   error: string | null;
 }> {
   if (isSupabaseConfigured && supabase) {
@@ -3940,19 +4051,24 @@ export async function fetchAllSubscriptions(): Promise<{
         if (resp.status !== 404 && resp.status < 500) {
           const body = (await resp.json().catch(() => ({}))) as {
             subscriptions?: Record<string, unknown>[];
+            auditLogs?: Record<string, unknown>[];
             error?: string;
           };
           if (!resp.ok) {
             return {
               subscriptions: [],
+              auditLogs: [],
               error: body.error || 'Forbidden: explicit super_admin role required.',
             };
           }
           const mapped = (body.subscriptions ?? []).map((row) =>
             mapSubscriptionFromRow(row)
           );
+          const mappedLogs = (body.auditLogs ?? []).map((row) =>
+            mapSaasAuditLogFromRow(row)
+          );
           saveLocalSubscriptions(mapped);
-          return { subscriptions: mapped, error: null };
+          return { subscriptions: mapped, auditLogs: mappedLogs, error: null };
         }
       } catch {
         // Fallback to RLS-protected direct Supabase query
@@ -3968,6 +4084,7 @@ export async function fetchAllSubscriptions(): Promise<{
       if (error) {
         return {
           subscriptions: loadLocalSubscriptions(),
+          auditLogs: [],
           error: isNetworkLossError(error.message) ? null : error.message,
         };
       }
@@ -3976,49 +4093,83 @@ export async function fetchAllSubscriptions(): Promise<{
         mapSubscriptionFromRow(row as Record<string, unknown>)
       );
       saveLocalSubscriptions(mapped);
-      return { subscriptions: mapped, error: null };
+      return { subscriptions: mapped, auditLogs: [], error: null };
     } catch (err) {
       return {
         subscriptions: loadLocalSubscriptions(),
+        auditLogs: [],
         error: err instanceof Error ? err.message : 'Unable to load subscriptions.',
       };
     }
   }
 
-  return { subscriptions: loadLocalSubscriptions(), error: null };
+  return { subscriptions: loadLocalSubscriptions(), auditLogs: [], error: null };
 }
+
+export type AdminSubscriptionAction =
+  | 'extend_30_days'
+  | 'extend_1_year'
+  | 'toggle_block'
+  | 'activate'
+  | 'suspend'
+  | 'block'
+  | 'unblock';
 
 export async function adminUpdateSubscription(
   targetUserId: string,
-  action: 'extend_30_days' | 'extend_1_year' | 'toggle_block',
-  currentRecord: SubscriptionRecord
-): Promise<{ updated: SubscriptionRecord; error: string | null }> {
+  action: AdminSubscriptionAction,
+  currentRecord: SubscriptionRecord,
+  options?: { suspendedReason?: string }
+): Promise<{
+  updated: SubscriptionRecord;
+  auditLog?: SaasAuditLogEntry;
+  error: string | null;
+}> {
   const now = new Date();
   const baseMs = Math.max(now.getTime(), new Date(currentRecord.expiresAt).getTime());
 
   let nextExpiresAt = currentRecord.expiresAt;
   let nextPlanName = currentRecord.planName;
-  let nextBlocked = currentRecord.isBlocked;
+  let nextStatus: ShopSubscriptionStatus =
+    currentRecord.status ?? (currentRecord.isBlocked ? 'blocked' : 'active');
+  let nextReason = currentRecord.suspendedReason;
 
   if (action === 'extend_30_days') {
     nextExpiresAt = new Date(baseMs + 30 * 24 * 60 * 60 * 1000).toISOString();
-    nextBlocked = false;
+    nextStatus = 'active';
+    nextReason = undefined;
     if (nextPlanName === '30-Day Free Trial') {
       nextPlanName = 'Monthly License';
     }
   } else if (action === 'extend_1_year') {
     nextExpiresAt = new Date(baseMs + 365 * 24 * 60 * 60 * 1000).toISOString();
-    nextBlocked = false;
+    nextStatus = 'active';
+    nextReason = undefined;
     nextPlanName = 'Annual License';
   } else if (action === 'toggle_block') {
-    nextBlocked = !currentRecord.isBlocked;
+    nextStatus = currentRecord.isBlocked ? 'active' : 'blocked';
+    if (nextStatus === 'active') nextReason = undefined;
+  } else if (action === 'activate' || action === 'unblock') {
+    nextStatus = 'active';
+    nextReason = undefined;
+  } else if (action === 'suspend') {
+    nextStatus = 'suspended';
+    nextReason = options?.suspendedReason?.trim() || 'Suspended by SaaS Super Admin';
+  } else if (action === 'block') {
+    nextStatus = 'blocked';
+    nextReason = options?.suspendedReason?.trim() || 'Blocked by SaaS Super Admin';
   }
+
+  const nextBlocked = nextStatus !== 'active';
 
   const updated: SubscriptionRecord = {
     ...currentRecord,
     planName: nextPlanName,
     expiresAt: nextExpiresAt,
     isBlocked: nextBlocked,
+    status: nextStatus,
+    suspendedReason: nextReason,
+    suspendedAt: nextBlocked ? now.toISOString() : undefined,
     updatedAt: now.toISOString(),
   };
 
@@ -4038,11 +4189,17 @@ export async function adminUpdateSubscription(
               planName: updated.planName,
               expiresAt: updated.expiresAt,
               isBlocked: updated.isBlocked,
+              status: updated.status,
+              suspendedReason: updated.suspendedReason ?? '',
+              actionLabel: action,
             }),
           }
         );
         if (resp.status !== 404 && resp.status < 500) {
-          const body = (await resp.json().catch(() => ({}))) as { error?: string };
+          const body = (await resp.json().catch(() => ({}))) as {
+            error?: string;
+            auditLog?: Record<string, unknown>;
+          };
           if (!resp.ok) {
             return {
               updated: currentRecord,
@@ -4054,7 +4211,11 @@ export async function adminUpdateSubscription(
             ? localSubs.map((s) => (s.userId === updated.userId ? updated : s))
             : [updated, ...localSubs];
           saveLocalSubscriptions(nextLocal);
-          return { updated, error: null };
+          return {
+            updated,
+            auditLog: body.auditLog ? mapSaasAuditLogFromRow(body.auditLog) : undefined,
+            error: null,
+          };
         }
       } catch {
         // Fallback to RLS-protected direct Supabase update
@@ -4091,19 +4252,40 @@ export async function adminUpdateSubscriptionMeta(
     planName?: string;
     maxBranches?: number;
     maxEmployees?: number;
+    status?: ShopSubscriptionStatus;
+    suspendedReason?: string;
     paymentEntry?: NonNullable<SubscriptionRecord['paymentHistory']>[number];
   },
   currentRecord: SubscriptionRecord
-): Promise<{ updated: SubscriptionRecord; error: string | null }> {
+): Promise<{
+  updated: SubscriptionRecord;
+  auditLog?: SaasAuditLogEntry;
+  error: string | null;
+}> {
   const nextHistory = patch.paymentEntry
     ? [patch.paymentEntry, ...(currentRecord.paymentHistory ?? [])]
     : currentRecord.paymentHistory ?? [];
+
+  const nextStatus: ShopSubscriptionStatus =
+    patch.status ??
+    currentRecord.status ??
+    (currentRecord.isBlocked ? 'blocked' : 'active');
+  const nextBlocked = nextStatus !== 'active';
+  const nextReason =
+    nextStatus === 'active'
+      ? undefined
+      : patch.suspendedReason !== undefined
+      ? patch.suspendedReason.trim()
+      : currentRecord.suspendedReason;
 
   const updated: SubscriptionRecord = {
     ...currentRecord,
     planName: patch.planName ?? currentRecord.planName,
     maxBranches: patch.maxBranches ?? currentRecord.maxBranches ?? 3,
     maxEmployees: patch.maxEmployees ?? currentRecord.maxEmployees ?? 15,
+    status: nextStatus,
+    isBlocked: nextBlocked,
+    suspendedReason: nextReason,
     paymentHistory: nextHistory,
     updatedAt: new Date().toISOString(),
   };
@@ -4124,12 +4306,19 @@ export async function adminUpdateSubscriptionMeta(
               planName: updated.planName,
               maxBranches: updated.maxBranches,
               maxEmployees: updated.maxEmployees,
+              status: updated.status,
+              isBlocked: updated.isBlocked,
+              suspendedReason: updated.suspendedReason ?? '',
               paymentHistory: updated.paymentHistory,
+              actionLabel: patch.paymentEntry ? 'payment_recorded' : 'plan_limits_updated',
             }),
           }
         );
         if (resp.status !== 404 && resp.status < 500) {
-          const body = (await resp.json().catch(() => ({}))) as { error?: string };
+          const body = (await resp.json().catch(() => ({}))) as {
+            error?: string;
+            auditLog?: Record<string, unknown>;
+          };
           if (!resp.ok) {
             return {
               updated: currentRecord,
@@ -4141,7 +4330,11 @@ export async function adminUpdateSubscriptionMeta(
             ? localSubs.map((s) => (s.userId === updated.userId ? updated : s))
             : [updated, ...localSubs];
           saveLocalSubscriptions(nextLocal);
-          return { updated, error: null };
+          return {
+            updated,
+            auditLog: body.auditLog ? mapSaasAuditLogFromRow(body.auditLog) : undefined,
+            error: null,
+          };
         }
       } catch {
         // Fallback to RLS-protected direct Supabase update
@@ -4152,6 +4345,7 @@ export async function adminUpdateSubscriptionMeta(
       .from('subscriptions')
       .update({
         plan_name: updated.planName,
+        is_blocked: updated.isBlocked,
         max_branches: updated.maxBranches,
         max_employees: updated.maxEmployees,
         payment_history: updated.paymentHistory,
@@ -4262,7 +4456,7 @@ export function restoreWorkspaceSnapshotLocally(
       : current.inventoryAdjustments,
     customers: Array.isArray(workspace.customers) ? workspace.customers : current.customers,
     employees: Array.isArray(workspace.employees)
-      ? workspace.employees.map(normalizeEmployeeRecord)
+      ? workspace.employees.map((emp) => normalizeEmployeeRecord(emp, userId))
       : current.employees,
     expenses: Array.isArray(workspace.expenses) ? workspace.expenses : current.expenses,
     storeSettings: workspace.storeSettings

@@ -134,21 +134,62 @@ export function stripPlaintextPin<T extends object>(
   return copy as Omit<T, 'pinCode' | 'pin_code'>;
 }
 
+export type PinStateClassification =
+  | 'hashed'
+  | 'demo_fixture'
+  | 'legacy_4digit'
+  | 'unconfigured';
+
+const DEMO_FIXTURE_HASH_SET = new Set<string>(Object.values(DEMO_PIN_HASHES));
+
+export function isDemoFixturePinHash(value?: string | null): boolean {
+  if (!value) return false;
+  return DEMO_FIXTURE_HASH_SET.has(value.trim());
+}
+
+export function classifyEmployeePin(opts: {
+  pinHash?: string | null;
+  pinCode?: string | null;
+}): PinStateClassification {
+  const pinHash = typeof opts.pinHash === 'string' ? opts.pinHash.trim() : '';
+  const pinCode = typeof opts.pinCode === 'string' ? opts.pinCode.trim() : '';
+  if (isDemoFixturePinHash(pinHash) || isDemoFixturePinHash(pinCode)) {
+    return 'demo_fixture';
+  }
+  if (isStoredPinHash(pinHash) || isStoredPinHash(pinCode)) {
+    return 'hashed';
+  }
+  if (isValidPinFormat(pinCode)) {
+    return 'legacy_4digit';
+  }
+  return 'unconfigured';
+}
+
 export function hasConfiguredAdmin(
   employees: ReadonlyArray<{
     role: string;
     isActive: boolean;
     hasPin?: boolean;
     pinHash?: string;
-  }>
+    isDemoFixturePin?: boolean;
+    pinState?: PinStateClassification;
+  }>,
+  options?: { allowDemoFixturePins?: boolean }
 ): boolean {
+  const allowDemo = options?.allowDemoFixturePins === true;
   return employees.some((emp) => {
     const normalizedRole = String(emp.role || '').trim().toLowerCase();
-    return (
-      normalizedRole === 'admin' &&
-      emp.isActive !== false &&
-      (emp.hasPin === true || isStoredPinHash(emp.pinHash))
-    );
+    if (normalizedRole !== 'admin' || emp.isActive === false) {
+      return false;
+    }
+    const isDemoFixture =
+      emp.isDemoFixturePin === true ||
+      emp.pinState === 'demo_fixture' ||
+      isDemoFixturePinHash(emp.pinHash);
+    if (isDemoFixture && !allowDemo) {
+      return false;
+    }
+    return emp.hasPin === true || isStoredPinHash(emp.pinHash);
   });
 }
 
