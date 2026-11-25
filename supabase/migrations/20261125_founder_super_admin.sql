@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Migration: 20261125_founder_super_admin.sql (ADDITIVE — DO NOT AUTO-EXECUTE)
 -- Purpose:
---   1. Provision the exact founder account (bc260436573mha@vu.edu.pk) in
+--   1. Provision the exact founder account (bc260436573@vu.edu.pk) in
 --      public.super_admins and auth.users.raw_app_meta_data (role = super_admin),
 --      removing legacy @gmail.com typo if present without prefix matching.
 --   2. Update public.is_super_admin() to verify both public.super_admins and
@@ -38,13 +38,13 @@ create policy "Users can read own super admin status"
 insert into public.super_admins (user_id, email)
 select id, lower(email)
 from auth.users
-where lower(email) = 'bc260436573mha@vu.edu.pk'
+where lower(email) = 'bc260436573@vu.edu.pk'
 on conflict (user_id) do update
   set email = excluded.email;
 
 update auth.users
 set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"super_admin"}'::jsonb
-where lower(email) = 'bc260436573mha@vu.edu.pk';
+where lower(email) = 'bc260436573@vu.edu.pk';
 
 create or replace function public.is_super_admin()
 returns boolean

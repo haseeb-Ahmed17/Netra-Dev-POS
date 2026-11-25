@@ -131,7 +131,7 @@ async function runTests(): Promise<void> {
   );
   const migration20261125 = fs.readFileSync(migration20261125Path, 'utf8');
   assert(
-    migration20261125.includes('bc260436573mha@vu.edu.pk') &&
+    migration20261125.includes('bc260436573@vu.edu.pk') &&
       !migration20261125.toLowerCase().includes(' like '),
     '20261125 migration must use exact founder email without LIKE wildcards'
   );
@@ -164,27 +164,27 @@ async function runTests(): Promise<void> {
 
   // Founder email normalization & safe diagnostics regression tests
   const defaultFounderCfg = resolveFounderEmailConfig(undefined);
-  assertEqual(defaultFounderCfg.effectiveFounderEmail, 'bc260436573mha@vu.edu.pk', 'unset INITIAL_FOUNDER_EMAIL falls back to exact founder email');
+  assertEqual(defaultFounderCfg.effectiveFounderEmail, 'bc260436573@vu.edu.pk', 'unset INITIAL_FOUNDER_EMAIL falls back to exact founder email');
   assertEqual(defaultFounderCfg.founderEmailSource, 'default_fallback', 'unset env uses default_fallback');
 
   const emptyQuotedCfg = resolveFounderEmailConfig('""');
-  assertEqual(emptyQuotedCfg.effectiveFounderEmail, 'bc260436573mha@vu.edu.pk', 'empty literal quotes "" must fall back to founder email');
+  assertEqual(emptyQuotedCfg.effectiveFounderEmail, 'bc260436573@vu.edu.pk', 'empty literal quotes "" must fall back to founder email');
   assertEqual(emptyQuotedCfg.founderEmailSource, 'default_fallback', 'empty literal quotes "" uses default_fallback');
   assertEqual(emptyQuotedCfg.rawEnvHadSurroundingQuotes, true, 'empty literal quotes "" records rawEnvHadSurroundingQuotes');
 
-  const quotedFounderCfg = resolveFounderEmailConfig(' "BC260436573MHA@VU.EDU.PK" ');
-  assertEqual(quotedFounderCfg.effectiveFounderEmail, 'bc260436573mha@vu.edu.pk', 'quoted/uppercase env must normalize cleanly');
+  const quotedFounderCfg = resolveFounderEmailConfig(' "BC260436573@VU.EDU.PK" ');
+  assertEqual(quotedFounderCfg.effectiveFounderEmail, 'bc260436573@vu.edu.pk', 'quoted/uppercase env must normalize cleanly');
   assertEqual(quotedFounderCfg.founderEmailSource, 'env_override', 'non-empty env uses env_override');
   assertEqual(quotedFounderCfg.rawEnvHadSurroundingQuotes, true, 'quoted env records rawEnvHadSurroundingQuotes');
   assertEqual(quotedFounderCfg.rawEnvHadWhitespace, true, 'padded env records rawEnvHadWhitespace');
 
-  const gmailOverrideCfg = resolveFounderEmailConfig('bc260436573mha@gmail.com');
-  assertEqual(gmailOverrideCfg.effectiveFounderEmail, 'bc260436573mha@gmail.com', 'explicit override must not be silently altered');
+  const gmailOverrideCfg = resolveFounderEmailConfig('bc260436573@gmail.com');
+  assertEqual(gmailOverrideCfg.effectiveFounderEmail, 'bc260436573@gmail.com', 'explicit override must not be silently altered');
   assertEqual(gmailOverrideCfg.founderEmailSource, 'env_override', 'explicit override records env_override');
 
-  assertEqual(maskEmailForDiagnostics('bc260436573mha@vu.edu.pk'), 'bc2***a@vu.edu.pk', 'maskEmailForDiagnostics hides full local part while keeping domain visible');
+  assertEqual(maskEmailForDiagnostics('bc260436573@vu.edu.pk'), 'bc2***3@vu.edu.pk', 'maskEmailForDiagnostics hides full local part while keeping domain visible');
   assertEqual(maskEmailForDiagnostics(''), '(empty)', 'maskEmailForDiagnostics handles empty email');
-  assertEqual(compareFounderEmails('bc260436573mha@vu.edu.pk', 'bc260436573mha@gmail.com').emailComparisonSummary, 'domain_mismatch', 'compareFounderEmails detects domain_mismatch');
+  assertEqual(compareFounderEmails('bc260436573@vu.edu.pk', 'bc260436573@gmail.com').emailComparisonSummary, 'domain_mismatch', 'compareFounderEmails detects domain_mismatch');
 
   const createStubClients = (opts: {
     authEmail: string | null;
@@ -253,20 +253,20 @@ async function runTests(): Promise<void> {
 
   // Case A: Email mismatch from stale Vercel INITIAL_FOUNDER_EMAIL override (@gmail.com vs @vu.edu.pk)
   const mismatchEnvStub = createStubClients({
-    authEmail: 'bc260436573mha@vu.edu.pk',
+    authEmail: 'bc260436573@vu.edu.pk',
     emailConfirmed: true,
   });
   const mismatchEnvRes = await verifyIsExplicitSuperAdminWithDiagnostics(
     {
       id: 'founder-uuid-1',
-      email: 'bc260436573mha@vu.edu.pk',
+      email: 'bc260436573@vu.edu.pk',
       emailConfirmed: true,
       jwt: 'stub-jwt',
     },
     {
       adminClient: mismatchEnvStub.adminClient,
       userClient: mismatchEnvStub.userClient,
-      rawFounderEnv: 'bc260436573mha@gmail.com',
+      rawFounderEnv: 'bc260436573@gmail.com',
       rawAllowlistEnv: '',
     }
   );
@@ -274,12 +274,12 @@ async function runTests(): Promise<void> {
   assertEqual(mismatchEnvRes.diagnostics.emailMatchesFounder, false, 'emailMatchesFounder must be false on domain mismatch');
   assertEqual(mismatchEnvRes.diagnostics.founderProvisioningBlockedReason, 'email_mismatch', 'blockedReason must be email_mismatch');
   assertEqual(mismatchEnvRes.diagnostics.founderEmailSource, 'env_override', 'diagnostics must report env_override');
-  assertEqual(mismatchEnvRes.diagnostics.configuredFounderEmailMasked, 'bc2***a@gmail.com', 'diagnostics must safely mask configured founder email');
-  assertEqual(mismatchEnvRes.diagnostics.authenticatedUserEmailMasked, 'bc2***a@vu.edu.pk', 'diagnostics must safely mask authenticated email');
+  assertEqual(mismatchEnvRes.diagnostics.configuredFounderEmailMasked, 'bc2***3@gmail.com', 'diagnostics must safely mask configured founder email');
+  assertEqual(mismatchEnvRes.diagnostics.authenticatedUserEmailMasked, 'bc2***3@vu.edu.pk', 'diagnostics must safely mask authenticated email');
   assertEqual(mismatchEnvRes.diagnostics.emailComparisonSummary, 'domain_mismatch', 'diagnostics must identify domain_mismatch');
   assertEqual(mismatchEnvStub.getState().updateUserCalled, false, 'updateUserById must not be called on email mismatch');
 
-  // Case B: Email mismatch from wrong user account logged in
+  // Case B1: Email mismatch from wrong user account logged in
   const wrongUserStub = createStubClients({
     authEmail: 'other.owner@gmail.com',
     emailConfirmed: true,
@@ -302,15 +302,39 @@ async function runTests(): Promise<void> {
   assertEqual(wrongUserRes.diagnostics.emailComparisonSummary, 'both_local_and_domain_mismatch', 'non-founder comparison summary');
   assertEqual(wrongUserStub.getState().updateUserCalled, false, 'non-founder must not trigger updateUserById');
 
+  // Case B2: Legacy typo email bc260436573mha@vu.edu.pk must be rejected (never granted Super Admin)
+  const typoUserStub = createStubClients({
+    authEmail: 'bc260436573mha@vu.edu.pk',
+    emailConfirmed: true,
+  });
+  const typoUserRes = await verifyIsExplicitSuperAdminWithDiagnostics(
+    {
+      id: 'typo-user-uuid',
+      email: 'bc260436573mha@vu.edu.pk',
+      emailConfirmed: true,
+      jwt: 'stub-jwt',
+    },
+    {
+      adminClient: typoUserStub.adminClient,
+      userClient: typoUserStub.userClient,
+      rawFounderEnv: undefined,
+      rawAllowlistEnv: '',
+    }
+  );
+  assertEqual(typoUserRes.isSuperAdmin, false, 'different local-part email bc260436573mha@vu.edu.pk must not become super admin');
+  assertEqual(typoUserRes.diagnostics.emailComparisonSummary, 'local_part_mismatch', 'typo email reports local_part_mismatch');
+  assertEqual(typoUserRes.diagnostics.founderProvisioningBlockedReason, 'email_mismatch', 'typo email blocked by email_mismatch');
+  assertEqual(typoUserStub.getState().updateUserCalled, false, 'typo email must not trigger updateUserById');
+
   // Case C: Unconfirmed founder email must never be provisioned
   const unconfirmedStub = createStubClients({
-    authEmail: 'bc260436573mha@vu.edu.pk',
+    authEmail: 'bc260436573@vu.edu.pk',
     emailConfirmed: false,
   });
   const unconfirmedRes = await verifyIsExplicitSuperAdminWithDiagnostics(
     {
       id: 'founder-uuid-unconfirmed',
-      email: 'bc260436573mha@vu.edu.pk',
+      email: 'bc260436573@vu.edu.pk',
       emailConfirmed: false,
       jwt: 'stub-jwt',
     },
@@ -326,15 +350,15 @@ async function runTests(): Promise<void> {
   assertEqual(unconfirmedRes.diagnostics.founderProvisioningBlockedReason, 'email_unconfirmed', 'blockedReason must be email_unconfirmed');
   assertEqual(unconfirmedStub.getState().updateUserCalled, false, 'unconfirmed account must not trigger updateUserById');
 
-  // Case D: Successful founder provisioning when Vercel env had "" literal quotes
+  // Case D: Successful founder provisioning for bc260436573@vu.edu.pk with unset or "" env
   const quotedEmptySuccessStub = createStubClients({
-    authEmail: 'bc260436573mha@vu.edu.pk',
+    authEmail: 'bc260436573@vu.edu.pk',
     emailConfirmed: true,
   });
   const quotedEmptySuccessRes = await verifyIsExplicitSuperAdminWithDiagnostics(
     {
       id: 'founder-uuid-1',
-      email: 'bc260436573mha@vu.edu.pk',
+      email: 'bc260436573@vu.edu.pk',
       emailConfirmed: true,
       jwt: 'stub-jwt',
     },
@@ -345,7 +369,8 @@ async function runTests(): Promise<void> {
       rawAllowlistEnv: '',
     }
   );
-  assertEqual(quotedEmptySuccessRes.isSuperAdmin, true, 'exact founder with "" env must provision successfully');
+  assertEqual(quotedEmptySuccessRes.isSuperAdmin, true, 'exact founder bc260436573@vu.edu.pk with "" env must provision successfully');
+  assertEqual(quotedEmptySuccessRes.diagnostics.founderProvisioningAttempted, true, 'founderProvisioningAttempted must be true');
   assertEqual(quotedEmptySuccessRes.diagnostics.founderProvisionedNow, true, 'founderProvisionedNow must be true');
   assertEqual(quotedEmptySuccessRes.diagnostics.founderEmailSource, 'default_fallback', '"" falls back to default_fallback');
   assertEqual(quotedEmptySuccessRes.diagnostics.rawEnvHadSurroundingQuotes, true, 'records rawEnvHadSurroundingQuotes');
@@ -354,20 +379,20 @@ async function runTests(): Promise<void> {
 
   // Case E: Successful founder provisioning with quoted/padded uppercase INITIAL_FOUNDER_EMAIL
   const quotedMatchStub = createStubClients({
-    authEmail: 'BC260436573MHA@vu.edu.pk',
+    authEmail: 'BC260436573@vu.edu.pk',
     emailConfirmed: true,
   });
   const quotedMatchRes = await verifyIsExplicitSuperAdminWithDiagnostics(
     {
       id: 'founder-uuid-1',
-      email: 'bc260436573mha@vu.edu.pk',
+      email: 'bc260436573@vu.edu.pk',
       emailConfirmed: true,
       jwt: 'stub-jwt',
     },
     {
       adminClient: quotedMatchStub.adminClient,
       userClient: quotedMatchStub.userClient,
-      rawFounderEnv: ' "BC260436573MHA@VU.EDU.PK" ',
+      rawFounderEnv: ' "BC260436573@VU.EDU.PK" ',
       rawAllowlistEnv: '',
     }
   );

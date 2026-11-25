@@ -161,7 +161,7 @@ function extractBearerToken(req: Request): string | null {
   return match ? match[1].trim() : null;
 }
 
-export const DEFAULT_INITIAL_FOUNDER_EMAIL = 'bc260436573mha@vu.edu.pk';
+export const DEFAULT_INITIAL_FOUNDER_EMAIL = 'bc260436573@vu.edu.pk';
 
 function stripZeroWidthChars(value: string): string {
   return value.replace(/[\u200B-\u200D\uFEFF]/g, '');

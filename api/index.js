@@ -307,7 +307,7 @@ function extractBearerToken(req) {
   const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
   return match ? match[1].trim() : null;
 }
-var DEFAULT_INITIAL_FOUNDER_EMAIL = "bc260436573mha@vu.edu.pk";
+var DEFAULT_INITIAL_FOUNDER_EMAIL = "bc260436573@vu.edu.pk";
 function stripZeroWidthChars(value) {
   return value.replace(/[\u200B-\u200D\uFEFF]/g, "");
 }
