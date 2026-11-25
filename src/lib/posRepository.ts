@@ -249,7 +249,7 @@ export async function checkIsSuperAdmin(userId: string): Promise<boolean> {
           console.info('[SmartBitz Admin]', {
             httpStatus: resp.status,
             isSuperAdmin: Boolean(body.isSuperAdmin),
-            diagnostics: body.diagnostics ?? null,
+            ...(body.diagnostics ?? {}),
           });
         }
         if (body.isSuperAdmin) {

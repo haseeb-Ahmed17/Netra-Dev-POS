@@ -29,7 +29,13 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // serverApp.ts
 var serverApp_exports = {};
 __export(serverApp_exports, {
-  createPosExpressApp: () => createPosExpressApp
+  DEFAULT_INITIAL_FOUNDER_EMAIL: () => DEFAULT_INITIAL_FOUNDER_EMAIL,
+  compareFounderEmails: () => compareFounderEmails,
+  createPosExpressApp: () => createPosExpressApp,
+  maskEmailForDiagnostics: () => maskEmailForDiagnostics,
+  normalizeEmailForComparison: () => normalizeEmailForComparison,
+  resolveFounderEmailConfig: () => resolveFounderEmailConfig,
+  verifyIsExplicitSuperAdminWithDiagnostics: () => verifyIsExplicitSuperAdminWithDiagnostics
 });
 module.exports = __toCommonJS(serverApp_exports);
 var import_config = require("dotenv/config");
@@ -301,10 +307,84 @@ function extractBearerToken(req) {
   const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
   return match ? match[1].trim() : null;
 }
-var INITIAL_FOUNDER_EMAIL = (process.env.INITIAL_FOUNDER_EMAIL || "bc260436573mha@vu.edu.pk").trim().toLowerCase();
-var SUPER_ADMIN_USER_IDS = new Set(
-  (process.env.SUPER_ADMIN_USER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean)
-);
+var DEFAULT_INITIAL_FOUNDER_EMAIL = "bc260436573mha@vu.edu.pk";
+function stripZeroWidthChars(value) {
+  return value.replace(/[\u200B-\u200D\uFEFF]/g, "");
+}
+function normalizeEmailForComparison(raw) {
+  if (typeof raw !== "string") return "";
+  let cleaned = stripZeroWidthChars(raw).trim();
+  cleaned = cleaned.replace(/^['"]+|['"]+$/g, "").trim();
+  return cleaned.toLowerCase();
+}
+function resolveFounderEmailConfig(rawEnvValue = process.env.INITIAL_FOUNDER_EMAIL) {
+  const raw = typeof rawEnvValue === "string" ? stripZeroWidthChars(rawEnvValue) : "";
+  const trimmed = raw.trim();
+  const rawEnvHadWhitespace = raw !== trimmed;
+  const rawEnvHadSurroundingQuotes = trimmed.length >= 2 && (trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("'") && trimmed.endsWith("'"));
+  const unquoted = trimmed.replace(/^['"]+|['"]+$/g, "").trim().toLowerCase();
+  if (unquoted && unquoted !== "undefined" && unquoted !== "null") {
+    return {
+      effectiveFounderEmail: unquoted,
+      founderEmailSource: "env_override",
+      rawEnvHadSurroundingQuotes,
+      rawEnvHadWhitespace
+    };
+  }
+  return {
+    effectiveFounderEmail: DEFAULT_INITIAL_FOUNDER_EMAIL,
+    founderEmailSource: "default_fallback",
+    rawEnvHadSurroundingQuotes,
+    rawEnvHadWhitespace
+  };
+}
+function maskEmailForDiagnostics(email) {
+  const normalized = normalizeEmailForComparison(email);
+  if (!normalized) return "(empty)";
+  const atIdx = normalized.indexOf("@");
+  if (atIdx <= 0) return "***";
+  const local = normalized.slice(0, atIdx);
+  const domain = normalized.slice(atIdx + 1);
+  const maskedLocal = local.length <= 2 ? `${local[0] || ""}***` : local.length <= 4 ? `${local[0]}***${local.slice(-1)}` : `${local.slice(0, 3)}***${local.slice(-1)}`;
+  return `${maskedLocal}@${domain}`;
+}
+function compareFounderEmails(verifiedEmail, effectiveFounderEmail) {
+  const normalizedUser = normalizeEmailForComparison(verifiedEmail);
+  const normalizedFounder = normalizeEmailForComparison(effectiveFounderEmail);
+  if (!normalizedFounder) {
+    return {
+      emailMatchesFounder: false,
+      domainsMatch: false,
+      localPartsMatch: false,
+      emailComparisonSummary: "founder_email_unconfigured"
+    };
+  }
+  if (!normalizedUser) {
+    return {
+      emailMatchesFounder: false,
+      domainsMatch: false,
+      localPartsMatch: false,
+      emailComparisonSummary: "authenticated_email_missing"
+    };
+  }
+  const [userLocal = "", userDomain = ""] = normalizedUser.split("@");
+  const [founderLocal = "", founderDomain = ""] = normalizedFounder.split("@");
+  const domainsMatch = Boolean(userDomain && founderDomain && userDomain === founderDomain);
+  const localPartsMatch = Boolean(userLocal && founderLocal && userLocal === founderLocal);
+  const emailMatchesFounder = normalizedUser === normalizedFounder;
+  const emailComparisonSummary = emailMatchesFounder ? "exact_match" : localPartsMatch && !domainsMatch ? "domain_mismatch" : !localPartsMatch && domainsMatch ? "local_part_mismatch" : "both_local_and_domain_mismatch";
+  return {
+    emailMatchesFounder,
+    domainsMatch,
+    localPartsMatch,
+    emailComparisonSummary
+  };
+}
+function resolveSuperAdminAllowlist(rawEnvValue = process.env.SUPER_ADMIN_USER_IDS) {
+  return new Set(
+    (rawEnvValue || "").replace(/['"]/g, "").split(",").map((s) => s.trim()).filter(Boolean)
+  );
+}
 var platformAuditMemoryLog = [];
 var unmigratedStatusOverlay = /* @__PURE__ */ new Map();
 async function recordSaasAuditLog(client, entry) {
@@ -338,7 +418,7 @@ async function authenticateSupabaseRequest(req) {
   const rawRole = typeof data.user.app_metadata?.role === "string" ? data.user.app_metadata.role.trim().toLowerCase() : void 0;
   return {
     id: data.user.id,
-    email: (data.user.email || "").trim().toLowerCase(),
+    email: normalizeEmailForComparison(data.user.email || ""),
     emailConfirmed: Boolean(
       data.user.email_confirmed_at || data.user.confirmed_at
     ),
@@ -346,17 +426,37 @@ async function authenticateSupabaseRequest(req) {
     jwt
   };
 }
-async function verifyIsExplicitSuperAdminWithDiagnostics(user) {
+async function verifyIsExplicitSuperAdminWithDiagnostics(user, overrides) {
+  const effectiveAdminClient = overrides && "adminClient" in overrides ? overrides.adminClient ?? null : adminSupabase;
+  const founderConfig = resolveFounderEmailConfig(
+    overrides && "rawFounderEnv" in overrides ? overrides.rawFounderEnv : process.env.INITIAL_FOUNDER_EMAIL
+  );
+  const allowlist = resolveSuperAdminAllowlist(
+    overrides && "rawAllowlistEnv" in overrides ? overrides.rawAllowlistEnv : process.env.SUPER_ADMIN_USER_IDS
+  );
+  const initialComparison = compareFounderEmails(
+    user.email,
+    founderConfig.effectiveFounderEmail
+  );
   const diagnostics = {
-    hasServiceRole: Boolean(adminSupabase),
-    allowlistMatched: SUPER_ADMIN_USER_IDS.has(user.id),
+    hasServiceRole: Boolean(effectiveAdminClient),
+    allowlistMatched: allowlist.has(user.id),
     jwtAppMetadataIsSuperAdmin: user.appMetadataRole === "super_admin",
     authAdminLookupSucceeded: false,
     authAdminAppMetadataIsSuperAdmin: false,
     superAdminsTableAvailable: false,
     inSuperAdminsTable: false,
-    emailMatchesFounder: false,
+    emailMatchesFounder: initialComparison.emailMatchesFounder,
     emailConfirmed: user.emailConfirmed,
+    founderEmailSource: founderConfig.founderEmailSource,
+    configuredFounderEmailMasked: maskEmailForDiagnostics(founderConfig.effectiveFounderEmail),
+    authenticatedUserEmailMasked: maskEmailForDiagnostics(user.email),
+    authenticatedEmailSource: user.email ? "jwt_user" : "none",
+    rawEnvHadSurroundingQuotes: founderConfig.rawEnvHadSurroundingQuotes,
+    rawEnvHadWhitespace: founderConfig.rawEnvHadWhitespace,
+    domainsMatch: initialComparison.domainsMatch,
+    localPartsMatch: initialComparison.localPartsMatch,
+    emailComparisonSummary: initialComparison.emailComparisonSummary,
     founderProvisioningAttempted: false,
     founderProvisionedNow: false,
     founderProvisioningBlockedReason: null,
@@ -365,10 +465,10 @@ async function verifyIsExplicitSuperAdminWithDiagnostics(user) {
   if (diagnostics.allowlistMatched || diagnostics.jwtAppMetadataIsSuperAdmin) {
     return { isSuperAdmin: true, diagnostics };
   }
-  if (adminSupabase) {
+  if (effectiveAdminClient) {
     let authUser = null;
     try {
-      const { data: authLookup, error: authErr } = await adminSupabase.auth.admin.getUserById(user.id);
+      const { data: authLookup, error: authErr } = await effectiveAdminClient.auth.admin.getUserById(user.id);
       if (!authErr && authLookup?.user) {
         diagnostics.authAdminLookupSucceeded = true;
         authUser = authLookup.user;
@@ -380,12 +480,12 @@ async function verifyIsExplicitSuperAdminWithDiagnostics(user) {
     } catch {
       diagnostics.authAdminLookupSucceeded = false;
     }
-    const saLookup = await adminSupabase.from("super_admins").select("user_id").eq("user_id", user.id).maybeSingle();
+    const saLookup = await effectiveAdminClient.from("super_admins").select("user_id").eq("user_id", user.id).maybeSingle();
     diagnostics.superAdminsTableAvailable = !isTableMissingError(saLookup.error);
     if (!saLookup.error && saLookup.data?.user_id) {
       diagnostics.inSuperAdminsTable = true;
       if (diagnostics.authAdminLookupSucceeded && authUser?.app_metadata?.role !== "super_admin") {
-        await adminSupabase.auth.admin.updateUserById(user.id, {
+        await effectiveAdminClient.auth.admin.updateUserById(user.id, {
           app_metadata: {
             ...authUser?.app_metadata || {},
             role: "super_admin",
@@ -395,17 +495,23 @@ async function verifyIsExplicitSuperAdminWithDiagnostics(user) {
       }
       return { isSuperAdmin: true, diagnostics };
     }
-    const verifiedEmail = (authUser?.email || user.email || "").trim().toLowerCase();
+    const rawAuthAdminEmail = typeof authUser?.email === "string" ? authUser.email : "";
+    const rawJwtEmail = typeof user.email === "string" ? user.email : "";
+    diagnostics.authenticatedEmailSource = rawAuthAdminEmail.trim() ? "auth_admin" : rawJwtEmail.trim() ? "jwt_user" : "none";
+    const verifiedEmail = normalizeEmailForComparison(rawAuthAdminEmail || rawJwtEmail);
+    diagnostics.authenticatedUserEmailMasked = maskEmailForDiagnostics(verifiedEmail);
     diagnostics.emailConfirmed = Boolean(
       authUser?.email_confirmed_at || authUser?.confirmed_at || user.emailConfirmed
     );
-    diagnostics.emailMatchesFounder = Boolean(
-      INITIAL_FOUNDER_EMAIL && verifiedEmail === INITIAL_FOUNDER_EMAIL
-    );
-    if (diagnostics.emailMatchesFounder) {
+    const comparison = compareFounderEmails(verifiedEmail, founderConfig.effectiveFounderEmail);
+    diagnostics.emailMatchesFounder = comparison.emailMatchesFounder;
+    diagnostics.domainsMatch = comparison.domainsMatch;
+    diagnostics.localPartsMatch = comparison.localPartsMatch;
+    diagnostics.emailComparisonSummary = comparison.emailComparisonSummary;
+    if (diagnostics.emailMatchesFounder && diagnostics.emailConfirmed) {
       diagnostics.founderProvisioningAttempted = true;
       try {
-        const { error: metaErr } = await adminSupabase.auth.admin.updateUserById(user.id, {
+        const { error: metaErr } = await effectiveAdminClient.auth.admin.updateUserById(user.id, {
           app_metadata: {
             ...authUser?.app_metadata || {},
             role: "super_admin",
@@ -415,18 +521,18 @@ async function verifyIsExplicitSuperAdminWithDiagnostics(user) {
         if (!metaErr) {
           diagnostics.founderProvisionedNow = true;
           if (diagnostics.superAdminsTableAvailable) {
-            const byEmailUpsert = await adminSupabase.from("super_admins").upsert(
+            const byEmailUpsert = await effectiveAdminClient.from("super_admins").upsert(
               { user_id: user.id, email: verifiedEmail },
               { onConflict: "email" }
             );
             if (byEmailUpsert.error) {
-              await adminSupabase.from("super_admins").upsert(
+              await effectiveAdminClient.from("super_admins").upsert(
                 { user_id: user.id, email: verifiedEmail },
                 { onConflict: "user_id" }
               );
             }
           }
-          await recordSaasAuditLog(adminSupabase, {
+          await recordSaasAuditLog(effectiveAdminClient, {
             actor_user_id: user.id,
             actor_email: verifiedEmail,
             target_user_id: user.id,
@@ -443,13 +549,15 @@ async function verifyIsExplicitSuperAdminWithDiagnostics(user) {
       } catch {
         diagnostics.founderProvisioningBlockedReason = "auth_admin_update_exception";
       }
+    } else if (diagnostics.emailMatchesFounder && !diagnostics.emailConfirmed) {
+      diagnostics.founderProvisioningBlockedReason = "email_unconfirmed";
     } else {
       diagnostics.founderProvisioningBlockedReason = "email_mismatch";
     }
   } else {
     diagnostics.founderProvisioningBlockedReason = "service_role_unavailable";
   }
-  const userClient = createUserScopedSupabase(user.jwt);
+  const userClient = overrides && "userClient" in overrides ? overrides.userClient ?? null : createUserScopedSupabase(user.jwt);
   if (userClient) {
     const { data: rpcOk, error: rpcErr } = await userClient.rpc("is_super_admin");
     if (!rpcErr && rpcOk === true) {
@@ -1464,6 +1572,12 @@ function createPosExpressApp() {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  createPosExpressApp
+  DEFAULT_INITIAL_FOUNDER_EMAIL,
+  compareFounderEmails,
+  createPosExpressApp,
+  maskEmailForDiagnostics,
+  normalizeEmailForComparison,
+  resolveFounderEmailConfig,
+  verifyIsExplicitSuperAdminWithDiagnostics
 });
 module.exports = module.exports.createPosExpressApp();
