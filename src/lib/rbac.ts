@@ -19,6 +19,7 @@ export const ROLE_ALLOWED_TABS: Record<EmployeeRole, AppTabId[]> = {
     'staff',
     'settings',
     'audit_logs',
+    'ai_assistant',
   ],
   manager: [
     'pos',
@@ -34,8 +35,9 @@ export const ROLE_ALLOWED_TABS: Record<EmployeeRole, AppTabId[]> = {
     'udhaar',
     'branches',
     'audit_logs',
+    'ai_assistant',
   ],
-  cashier: ['pos', 'transactions', 'shifts', 'customers'],
+  cashier: ['pos', 'transactions', 'shifts', 'customers', 'ai_assistant'],
 };
 
 export type RoleAction =
@@ -62,7 +64,8 @@ export type RoleAction =
   | 'backup.manage'
   | 'staff.manage'
   | 'settings.write'
-  | 'workspace.reset';
+  | 'workspace.reset'
+  | 'ai.assist';
 
 export const ALL_ROLE_ACTIONS: RoleAction[] = [
   'dashboard.view',
@@ -89,6 +92,7 @@ export const ALL_ROLE_ACTIONS: RoleAction[] = [
   'staff.manage',
   'settings.write',
   'workspace.reset',
+  'ai.assist',
 ];
 
 const ACTION_REQUIRED_ROLES: Record<RoleAction, EmployeeRole[]> = {
@@ -116,6 +120,7 @@ const ACTION_REQUIRED_ROLES: Record<RoleAction, EmployeeRole[]> = {
   'staff.manage': ['admin'],
   'settings.write': ['admin'],
   'workspace.reset': ['admin'],
+  'ai.assist': ['admin', 'manager', 'cashier'],
 };
 
 export function getRequiredRolesForAction(action: RoleAction): EmployeeRole[] {

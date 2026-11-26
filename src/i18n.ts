@@ -15,6 +15,7 @@ export interface TranslationStrings {
   navStaff: string;
   navSettings: string;
   navSaasAdmin: string;
+  navAiAssistant: string;
   navGroupOperations: string;
   navGroupInventory: string;
   navGroupFinance: string;
@@ -734,6 +735,32 @@ export interface TranslationStrings {
   employeeActivityTitle: string;
   branchLimitReachedMsg: string;
   employeeLimitReachedMsg: string;
+
+  // AI Assistant
+  aiAssistantTitle: string;
+  aiAssistantSubtitle: string;
+  aiLanguageAuto: string;
+  aiLanguageEnglish: string;
+  aiLanguageUrdu: string;
+  aiLanguageRomanUrdu: string;
+  aiClearChatBtn: string;
+  aiUploadScreenshotBtn: string;
+  aiRemoveAttachmentBtn: string;
+  aiInputPlaceholder: string;
+  aiSendBtn: string;
+  aiStopBtn: string;
+  aiSendingLabel: string;
+  aiCancelledMsg: string;
+  aiUnavailableTitle: string;
+  aiUnavailableFallback: string;
+  aiQuotaReachedMsg: string;
+  aiPrivacyNotice: string;
+  aiEmptyTitle: string;
+  aiEmptySubtitle: string;
+  aiRemainingQuotaLabel: string;
+  aiDropHint: string;
+  aiInvalidFileError: string;
+  aiFileTooLargeError: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -752,6 +779,7 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navStaff: 'Staff & Permissions',
     navSettings: 'Store Settings',
     navSaasAdmin: 'SaaS Admin',
+    navAiAssistant: 'AI Assistant',
     navGroupOperations: 'Operations',
     navGroupInventory: 'Inventory & Supply',
     navGroupFinance: 'Finance & Khata',
@@ -1456,6 +1484,31 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     employeeActivityTitle: 'Employee Login & Switch Activity',
     branchLimitReachedMsg: 'Branch limit reached for your current SaaS subscription plan.',
     employeeLimitReachedMsg: 'Employee limit reached for your current SaaS subscription plan.',
+
+    aiAssistantTitle: 'SmartBitz AI Assistant',
+    aiAssistantSubtitle: 'Ask POS questions or upload screenshots in English, Urdu, or Roman Urdu for step-by-step guidance',
+    aiLanguageAuto: 'Auto',
+    aiLanguageEnglish: 'English',
+    aiLanguageUrdu: 'اردو',
+    aiLanguageRomanUrdu: 'Roman Urdu',
+    aiClearChatBtn: 'Clear Chat',
+    aiUploadScreenshotBtn: 'Attach Screenshot',
+    aiRemoveAttachmentBtn: 'Remove',
+    aiInputPlaceholder: 'Ask about billing, stock, Udhaar, shifts, errors, or paste a screenshot...',
+    aiSendBtn: 'Send',
+    aiStopBtn: 'Stop',
+    aiSendingLabel: 'Thinking...',
+    aiCancelledMsg: 'Request cancelled.',
+    aiUnavailableTitle: 'AI Assistant Unavailable',
+    aiUnavailableFallback: 'AI Assistant is optional and currently unavailable because server AI credentials are not configured. All POS billing, inventory, and reporting features continue working normally.',
+    aiQuotaReachedMsg: 'Daily AI Assistant usage limit reached for this store. Please try again tomorrow.',
+    aiPrivacyNotice: 'Read-only guidance only: never enter PINs, passwords, or private customer card numbers. Database or stock changes always require your manual action.',
+    aiEmptyTitle: 'How can I help with SmartBitz POS?',
+    aiEmptySubtitle: 'Ask a question in English, Urdu, or Roman Urdu, or upload a screenshot of any POS screen, error, setting, or report.',
+    aiRemainingQuotaLabel: 'Daily queries left',
+    aiDropHint: 'PNG, JPG, WEBP, GIF up to 4 MB',
+    aiInvalidFileError: 'Please upload a valid PNG, JPG, WEBP, or GIF screenshot.',
+    aiFileTooLargeError: 'Screenshot must be 4 MB or smaller.',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -1472,6 +1525,7 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navStaff: 'اسٹاف و پرمیشنز',
     navSettings: 'اسٹور سیٹنگز',
     navSaasAdmin: 'سپر ایڈمن پینل',
+    navAiAssistant: 'اے آئی اسسٹنٹ',
     navGroupOperations: 'روزمرہ کاروبار',
     navGroupInventory: 'اسٹاک اور خریداری',
     navGroupFinance: 'مالیات اور کھاتہ',
@@ -2176,6 +2230,31 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     employeeActivityTitle: 'اسٹاف لاگ ان اور تبدیلی ریکارڈ',
     branchLimitReachedMsg: 'آپ کے موجودہ پلان میں برانچز کی حد مکمل ہو چکی ہے۔',
     employeeLimitReachedMsg: 'آپ کے موجودہ پلان میں اسٹاف ممبران کی حد مکمل ہو چکی ہے۔',
+
+    aiAssistantTitle: 'اسمارٹ بٹز اے آئی اسسٹنٹ',
+    aiAssistantSubtitle: 'انگریزی، اردو یا رومن اردو میں POS کے سوالات پوچھیں یا اسکرین شاٹ اپ لوڈ کر کے رہنمائی حاصل کریں',
+    aiLanguageAuto: 'خودکار',
+    aiLanguageEnglish: 'English',
+    aiLanguageUrdu: 'اردو',
+    aiLanguageRomanUrdu: 'Roman Urdu',
+    aiClearChatBtn: 'چیٹ صاف کریں',
+    aiUploadScreenshotBtn: 'اسکرین شاٹ منسلک کریں',
+    aiRemoveAttachmentBtn: 'ہٹائیں',
+    aiInputPlaceholder: 'بلنگ، اسٹاک، ادھار، شفٹ یا کسی ایرر کے بارے میں پوچھیں یا اسکرین شاٹ پیسٹ کریں...',
+    aiSendBtn: 'بھیجیں',
+    aiStopBtn: 'روکیں',
+    aiSendingLabel: 'جواب تیار ہو رہا ہے...',
+    aiCancelledMsg: 'درخواست منسوخ کر دی گئی۔',
+    aiUnavailableTitle: 'اے آئی اسسٹنٹ دستیاب نہیں ہے',
+    aiUnavailableFallback: 'اے آئی اسسٹنٹ اختیاری ہے اور اس وقت سرور پر AI کی ترتیبات موجود نہ ہونے کی وجہ سے غیر فعال ہے۔ POS کے تمام دیگر فیچرز معمول کے مطابق کام کر رہے ہیں۔',
+    aiQuotaReachedMsg: 'اس اسٹور کے لیے آج کی اے آئی اسسٹنٹ حد مکمل ہو چکی ہے۔ کل دوبارہ کوشش کریں۔',
+    aiPrivacyNotice: 'یہ صرف رہنمائی کے لیے ہے: براہِ کرم پن کوڈ، پاسورڈ یا خفیہ کسٹمر معلومات نہ لکھیں۔ اسٹاک یا ریکارڈ میں کوئی بھی تبدیلی صرف آپ کی تصدیق سے POS اسکرین پر ہوتی ہے۔',
+    aiEmptyTitle: 'SmartBitz POS میں آپ کی کیا مدد کر سکتا ہوں؟',
+    aiEmptySubtitle: 'انگریزی، اردو یا رومن اردو میں سوال لکھیں، یا کسی بھی POS اسکرین، ایرر، سیٹنگ یا رپورٹ کا اسکرین شاٹ اپ لوڈ کریں۔',
+    aiRemainingQuotaLabel: 'آج کے باقی سوالات',
+    aiDropHint: 'PNG، JPG، WEBP، GIF زیادہ سے زیادہ 4 MB',
+    aiInvalidFileError: 'براہِ کرم صرف PNG، JPG، WEBP یا GIF اسکرین شاٹ اپ لوڈ کریں۔',
+    aiFileTooLargeError: 'اسکرین شاٹ کا سائز 4 MB یا اس سے کم ہونا چاہیے۔',
   },
 };
 

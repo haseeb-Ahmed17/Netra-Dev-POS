@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import {
   BookOpenCheck,
+  Bot,
   Boxes,
   Building2,
   ClipboardList,
@@ -81,6 +82,7 @@ export function SidebarNav({
         { id: 'dashboard', label: t.navDashboard, icon: LayoutDashboard },
         { id: 'transactions', label: t.navTransactions, icon: ReceiptText },
         { id: 'shifts', label: t.navShifts, icon: Clock },
+        { id: 'ai_assistant', label: t.navAiAssistant, icon: Bot },
       ],
     },
     {

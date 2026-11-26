@@ -13,6 +13,16 @@ import {
   verifyPinHashAsync,
 } from './src/lib/pinSecurity';
 import type { EmployeeRole, ShopSubscriptionStatus } from './src/types';
+import {
+  AiUsageTracker,
+  SafePosHowToCache,
+  buildAiAssistantStatusPayload,
+  generatePosAssistantReply,
+  mapAiProviderError,
+  resolveAiAssistantConfig,
+  validateAiAssistRequestBody,
+  type AiGenerateContentFn,
+} from './serverAiAssistant';
 
 function isRpcMissingError(message?: string | null): boolean {
   return /PGRST202|Could not find the function/i.test(message || '');
@@ -795,16 +805,40 @@ async function issueFallbackStaffToken(
   return { token: signedToken, signedToken, expiresAt };
 }
 
-export function createPosExpressApp() {
+export interface CreatePosExpressAppOptions {
+  aiGenerator?: AiGenerateContentFn;
+  aiEnv?: Record<string, string | undefined>;
+  authenticateOverride?: (req: Request) => Promise<VerifiedSupabaseUser | null>;
+  tenantAccessOverride?: (user: VerifiedSupabaseUser) => Promise<{
+    allowed: boolean;
+    status?: ShopSubscriptionStatus;
+    reason?: string;
+  }>;
+  staffRoleOverride?: (
+    req: Request,
+    user: VerifiedSupabaseUser
+  ) => Promise<{ role: EmployeeRole | null; employeeId: string | null }>;
+}
+
+export function createPosExpressApp(options?: CreatePosExpressAppOptions) {
   const app = express();
+  const aiUsageTracker = new AiUsageTracker();
+  const aiHowToCache = new SafePosHowToCache();
+  app.use('/api/ai/assist', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '1mb' }));
 
+  const authenticateReq = options?.authenticateOverride ?? authenticateSupabaseRequest;
+  const checkOpAccess = options?.tenantAccessOverride ?? checkTenantOperationalAccess;
+  const resolveStaff = options?.staffRoleOverride ?? resolveVerifiedStaffRole;
+
   app.get('/api/health', (_req: Request, res: Response) => {
+    const aiConfig = resolveAiAssistantConfig(options?.aiEnv);
     res.json({
       ok: true,
       supabaseConfigured: hasPublicSupabase,
       adminServiceConfigured: hasServiceRole,
       whatsappConfigured: Boolean(WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID),
+      aiConfigured: aiConfig.configured && aiConfig.enabled,
     });
   });
 
@@ -1998,6 +2032,280 @@ export function createPosExpressApp() {
         configured: true,
         error: err instanceof Error ? err.message : 'Network error calling WhatsApp Cloud API.',
       });
+    }
+  });
+
+  // Optional Server-Side AI Assistant Status (strictly authenticated & tenant/staff isolated)
+  app.get('/api/ai/status', async (req: Request, res: Response) => {
+    const user = await authenticateReq(req);
+    if (!user) {
+      return res.status(401).json({ available: false, error: 'Authentication required.' });
+    }
+
+    const opAccess = await checkOpAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        available: false,
+        error:
+          opAccess.status === 'suspended'
+            ? 'Store access is suspended. AI Assistant is unavailable while records remain preserved.'
+            : 'Store account is blocked.',
+      });
+    }
+
+    const staff = await resolveStaff(req, user);
+    if (!staff.role) {
+      return res.status(401).json({
+        available: false,
+        error: 'Verified staff PIN session is required.',
+      });
+    }
+
+    if (!hasRolePermission(staff.role, 'ai.assist')) {
+      return res.status(403).json({
+        available: false,
+        error: `Role '${staff.role}' is not authorized to access AI Assistant.`,
+      });
+    }
+
+    const aiConfig = resolveAiAssistantConfig(options?.aiEnv);
+    return res.json(buildAiAssistantStatusPayload(user.id, aiConfig, aiUsageTracker));
+  });
+
+  // Optional Server-Side AI Assistant Query & Screenshot Analysis
+  app.post('/api/ai/assist', async (req: Request, res: Response) => {
+    const user = await authenticateReq(req);
+    if (!user) {
+      return res.status(401).json({ ok: false, error: 'Authentication required.' });
+    }
+
+    const opAccess = await checkOpAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        ok: false,
+        error:
+          opAccess.status === 'suspended'
+            ? 'Store access is suspended. AI Assistant is unavailable while records remain preserved.'
+            : 'Store account is blocked.',
+      });
+    }
+
+    const staff = await resolveStaff(req, user);
+    if (!staff.role) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Verified staff PIN session is required.',
+      });
+    }
+
+    const aiConfig = resolveAiAssistantConfig(options?.aiEnv);
+    const validated = validateAiAssistRequestBody(req.body, aiConfig.maxImageBytes);
+    if (!validated.ok) {
+      return res.status(validated.status).json({
+        ok: false,
+        error: validated.error,
+      });
+    }
+
+    if (!hasRolePermission(staff.role, 'ai.assist', validated.value.customPermissions)) {
+      return res.status(403).json({
+        ok: false,
+        role: staff.role,
+        error: `Role '${staff.role}' is not authorized to use AI Assistant.`,
+      });
+    }
+
+    if (!aiConfig.enabled) {
+      return res.status(503).json({
+        ok: false,
+        configured: aiConfig.configured,
+        enabled: false,
+        code: 'AI_DISABLED',
+        error: 'AI Assistant is currently disabled on the server.',
+      });
+    }
+
+    if (!aiConfig.configured) {
+      return res.status(503).json({
+        ok: false,
+        configured: false,
+        enabled: true,
+        code: 'AI_NOT_CONFIGURED',
+        error:
+          'AI Assistant is not configured on the server yet (OPENROUTER_API_KEY missing). All POS features remain fully operational.',
+      });
+    }
+
+    const quota = aiUsageTracker.tryConsume(user.id, aiConfig);
+    if (!quota.allowed) {
+      res.setHeader('Retry-After', String(quota.retryAfterSeconds));
+      return res.status(429).json({
+        ok: false,
+        configured: true,
+        enabled: true,
+        code: quota.code,
+        error: quota.error,
+        usage: {
+          dailyLimit: aiConfig.dailyLimitPerTenant,
+          usedToday: quota.usedToday,
+          remainingToday: quota.remainingToday,
+        },
+      });
+    }
+
+    const usageSnapshot = {
+      dailyLimit: aiConfig.dailyLimitPerTenant,
+      usedToday: quota.usedToday,
+      remainingToday: quota.remainingToday,
+    };
+
+    const wantsStream =
+      validated.value.stream ||
+      (req.header('accept') || '').toLowerCase().includes('text/event-stream');
+
+    const cached = aiHowToCache.get({
+      model: aiConfig.model,
+      staffRole: staff.role,
+      input: validated.value,
+    });
+
+    if (cached) {
+      if (wantsStream) {
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.write(
+          `event: chunk\ndata: ${JSON.stringify({ delta: cached.reply, model: cached.model })}\n\n`
+        );
+        res.write(
+          `event: done\ndata: ${JSON.stringify({
+            ok: true,
+            reply: cached.reply,
+            model: cached.model,
+            cached: true,
+            usage: usageSnapshot,
+          })}\n\n`
+        );
+        return res.end();
+      }
+      return res.json({
+        ok: true,
+        reply: cached.reply,
+        model: cached.model,
+        cached: true,
+        usage: usageSnapshot,
+      });
+    }
+
+    const abortController = new AbortController();
+    const onResponseClose = () => {
+      if (!res.writableEnded) {
+        abortController.abort();
+      }
+    };
+    res.on('close', onResponseClose);
+
+    let streamHeadersSent = false;
+    let chunksSent = 0;
+
+    const ensureStreamHeaders = () => {
+      if (!streamHeadersSent) {
+        streamHeadersSent = true;
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+      }
+    };
+
+    try {
+      const result = await generatePosAssistantReply({
+        input: validated.value,
+        staffRole: staff.role,
+        config: aiConfig,
+        generator: options?.aiGenerator,
+        signal: abortController.signal,
+        onChunk: wantsStream
+          ? (delta, resolvedModel) => {
+              if (res.writableEnded || abortController.signal.aborted) return;
+              ensureStreamHeaders();
+              chunksSent += 1;
+              res.write(
+                `event: chunk\ndata: ${JSON.stringify({
+                  delta,
+                  model: resolvedModel || aiConfig.model,
+                })}\n\n`
+              );
+            }
+          : undefined,
+      });
+
+      aiHowToCache.set({
+        model: aiConfig.model,
+        staffRole: staff.role,
+        input: validated.value,
+        reply: result.reply,
+        resolvedModel: result.model,
+      });
+
+      if (wantsStream) {
+        ensureStreamHeaders();
+        res.write(
+          `event: done\ndata: ${JSON.stringify({
+            ok: true,
+            reply: result.reply,
+            model: result.model,
+            cached: false,
+            usage: usageSnapshot,
+          })}\n\n`
+        );
+        return res.end();
+      }
+
+      return res.json({
+        ok: true,
+        reply: result.reply,
+        model: result.model,
+        cached: false,
+        usage: usageSnapshot,
+      });
+    } catch (err) {
+      if (chunksSent === 0) {
+        aiUsageTracker.refund(user.id);
+      }
+      const mapped = mapAiProviderError(err, Boolean(validated.value.attachment));
+      const updatedUsage = aiUsageTracker.getSnapshot(user.id, aiConfig);
+
+      if (abortController.signal.aborted && res.writableEnded) {
+        return;
+      }
+
+      if (streamHeadersSent) {
+        if (!res.writableEnded) {
+          res.write(
+            `event: error\ndata: ${JSON.stringify({
+              ok: false,
+              code: mapped.code,
+              error: mapped.error,
+              usage: updatedUsage,
+            })}\n\n`
+          );
+          res.end();
+        }
+        return;
+      }
+
+      return res.status(mapped.status).json({
+        ok: false,
+        configured: true,
+        enabled: true,
+        code: mapped.code,
+        error: mapped.error,
+        usage: updatedUsage,
+      });
+    } finally {
+      res.off('close', onResponseClose);
     }
   });
 

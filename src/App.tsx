@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, WifiOff, X } from 'lucide-react';
 import { AuditBackupView } from './components/AuditBackupView';
 import { AuthView } from './components/AuthView';
@@ -23,6 +23,10 @@ import {
 import { ReceiptModal } from './components/ReceiptModal';
 import { SaasAdminView } from './components/SaasAdminView';
 import { SidebarNav } from './components/SidebarNav';
+
+const AiAssistantView = lazy(() =>
+  import('./components/AiAssistantView').then((m) => ({ default: m.AiAssistantView }))
+);
 import { StaffPinModal } from './components/StaffPinModal';
 import { StaffView } from './components/StaffView';
 import { StoreSettingsView } from './components/StoreSettingsView';
@@ -3747,6 +3751,28 @@ export default function App() {
                 t={t}
               />
             )}
+
+            {activeTab === 'ai_assistant' &&
+              hasRolePermission(activeRole, 'ai.assist', activeEmployee?.customPermissions) && (
+                <Suspense
+                  fallback={
+                    <div className="bg-white border border-slate-200 rounded-xl p-6 text-sm text-slate-500">
+                      {t.loadingWorkspace}
+                    </div>
+                  }
+                >
+                  <AiAssistantView
+                    userId={user.id}
+                    employeeId={activeEmployee?.id ?? null}
+                    activeRole={activeRole}
+                    customPermissions={activeEmployee?.customPermissions}
+                    shopName={activeStoreName}
+                    activeBranchName={activeBranch?.name}
+                    lang={lang}
+                    t={t}
+                  />
+                </Suspense>
+              )}
 
             {activeTab === 'inventory' &&
               hasRolePermission(activeRole, 'inventory.write', activeEmployee?.customPermissions) && (

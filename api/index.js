@@ -68,7 +68,8 @@ var ACTION_REQUIRED_ROLES = {
   "backup.manage": ["admin"],
   "staff.manage": ["admin"],
   "settings.write": ["admin"],
-  "workspace.reset": ["admin"]
+  "workspace.reset": ["admin"],
+  "ai.assist": ["admin", "manager", "cashier"]
 };
 function hasRolePermission(role, action, customPermissions) {
   if (!role) return false;
@@ -211,6 +212,1037 @@ function classifyEmployeePin(opts) {
     return "legacy_4digit";
   }
   return "unconfigured";
+}
+
+// src/lib/posKnowledgeBase.ts
+var SMARTBITZ_POS_KNOWLEDGE_MODULES = [
+  {
+    id: "pos_billing",
+    title: "POS Billing & Checkout",
+    navLabel: "POS Billing",
+    minRoles: ["admin", "manager", "cashier"],
+    capabilities: [
+      "Search products by name, SKU, or barcode and filter by category (Beverages, Bakery, Pantry).",
+      "Enter integer or decimal quantities using each product\u2019s configured sellingUnit (kg, g, litre, ml, metre, cm, piece, packet, box, bottle).",
+      "Apply per-item or bill-level discounts (% or fixed Rs.).",
+      "Hold active bills (Held Bills) and resume or discard them later.",
+      "Process Split Payments across Cash, JazzCash, EasyPaisa, Card, Bank Transfer, and Udhaar, with transaction ID tracking.",
+      "Toggle Return Mode on the register or issue printable 58mm/80mm thermal receipts and live Customer Display updates."
+    ]
+  },
+  {
+    id: "barcode_qr_scanner",
+    title: "Barcode & QR Scanner",
+    navLabel: "POS Billing (Scanner)",
+    minRoles: ["admin", "manager", "cashier"],
+    capabilities: [
+      "Supports USB/Bluetooth HID keyboard barcode scanners directly in the POS search/scan input.",
+      "Built-in camera scanner supports barcode and QR code detection (@zxing/browser) and adds matching products to the cart.",
+      "Products can store both barcode and qrCode values, and barcode stickers can be printed from Inventory."
+    ]
+  },
+  {
+    id: "inventory_products",
+    title: "Inventory & Products",
+    navLabel: "Stock & Adjustments / Inventory Report",
+    minRoles: ["admin", "manager"],
+    capabilities: [
+      "Create, edit, and (Admin/Manager) delete products with SKU, barcode, QR code, retail/wholesale/cost price, tax rate, and required sellingUnit selection.",
+      "Track stock quantities with decimal precision, minStock/reorderLevel alerts, batchNumber, and expiryDate.",
+      "Bulk import/update products via CSV and record audited stock adjustments (Damaged, Expired, Lost/Theft, Stock Count Correction).",
+      "View Inventory Report with low-stock, out-of-stock, fast-moving, and slow-moving insights."
+    ]
+  },
+  {
+    id: "cash_drawer_shifts",
+    title: "Cash Drawer & Shifts",
+    navLabel: "Cash Drawer & Shifts",
+    minRoles: ["admin", "manager", "cashier"],
+    capabilities: [
+      "Open a register shift with opening cash balance before cash billing.",
+      "Automatically records cash_sale, cash_refund, and expense drawer movements linked to the active shift.",
+      "Supports manual Cash In / Cash Out movements and hardware cash drawer kick when enabled in Store Settings.",
+      "Close Shift reconciles expectedCash vs actualCash and records variance (closing requires Admin or Manager permission)."
+    ]
+  },
+  {
+    id: "purchases_suppliers",
+    title: "Purchases & Suppliers (Vendors)",
+    navLabel: "Purchases / Vendors",
+    minRoles: ["admin", "manager"],
+    capabilities: [
+      "Manage vendor profiles, phone/address details, and payable balances.",
+      "Create purchase invoices with status workflow (ordered, partial, received, returned), batch numbers, and expiry dates.",
+      "Receiving stock automatically increments product inventory and logs purchase stock-in adjustments.",
+      "Record vendor payments (cash, bank transfer, JazzCash, EasyPaisa) and purchase returns."
+    ]
+  },
+  {
+    id: "customers_udhaar",
+    title: "Customers & Udhaar (Khata)",
+    navLabel: "Customers / Udhaar / Khata",
+    minRoles: ["admin", "manager", "cashier"],
+    capabilities: [
+      "Maintain customer CRM profiles with creditLimit, customer discount %, WhatsApp opt-in, and balance tracking.",
+      "Dedicated Udhaar / Khata register for credit sales, partial/full payments, due dates, and reminder schedules (3 days, 1 week, 2 weeks, 1 month, custom).",
+      "Send receipts and Udhaar reminders via manual WhatsApp wa.me links (always available) or optional server-side Meta WhatsApp Cloud API when configured."
+    ]
+  },
+  {
+    id: "returns_refunds",
+    title: "Returns, Exchanges & Cancellations",
+    navLabel: "Transactions",
+    minRoles: ["admin", "manager", "cashier"],
+    capabilities: [
+      "Search completed orders by receipt number or customer and reprint thermal receipts.",
+      "Process partial or full Return / Exchange from Transactions (cashiers/managers/admins), restoring returned stock quantities accurately.",
+      "Cancel orders with mandatory cancellation reason (Admin/Manager permission required)."
+    ]
+  },
+  {
+    id: "expenses",
+    title: "Shop Expenses",
+    navLabel: "Expenses",
+    minRoles: ["admin", "manager"],
+    capabilities: [
+      "Log expenses under Rent, Electricity, Staff Salary, Supplies, Maintenance, or Other.",
+      "Optionally deduct an expense directly from an open Cash Drawer shift (paidFromDrawer).",
+      "Supports recurring expenses (weekly, monthly, yearly) and pending/approved/rejected approval status."
+    ]
+  },
+  {
+    id: "analytics_reports",
+    title: "Executive Dashboard & Reports",
+    navLabel: "Dashboard / Audit Logs & Backups",
+    minRoles: ["admin", "manager"],
+    capabilities: [
+      "View Revenue, COGS, Gross Profit, Expenses, Net Profit, Tax, hourly/daily/weekly/monthly/yearly sales charts, and payment method breakdowns.",
+      "Review top-selling products and inventory alerts (low/out-of-stock, fast-moving, slow-moving).",
+      "Inspect Business Audit Logs, Employee Login/PIN Switch Activity, Offline Sync History, and export/restore full JSON backups (Admin only for backups)."
+    ]
+  },
+  {
+    id: "staff_permissions",
+    title: "Staff & Permissions",
+    navLabel: "Staff & Permissions",
+    minRoles: ["admin"],
+    capabilities: [
+      "Three roles: Admin, Manager, and Cashier, each authenticated with a hashed 4-digit Staff PIN (PBKDF2-SHA256 / pgcrypto).",
+      "First-time store owners create their initial Store Admin PIN before standard PIN switching activates.",
+      "Admins can add/edit/deactivate staff, assign branches/shifts, and grant safe custom operational permissions while keeping Admin-only actions protected."
+    ]
+  },
+  {
+    id: "branch_management",
+    title: "Branch Management & Transfers",
+    navLabel: "Branches",
+    minRoles: ["admin", "manager"],
+    capabilities: [
+      "Create and switch active store branches (Admin manages branches within SaaS subscription limits).",
+      "Track branch-specific stock levels and create inter-branch Stock Transfers (pending -> approved -> completed/rejected)."
+    ]
+  },
+  {
+    id: "online_orders_sync",
+    title: "Online Sync & Order Status",
+    navLabel: "Top Bar Sync / Audit Logs",
+    minRoles: ["admin", "manager", "cashier"],
+    capabilities: [
+      "Cloud sync saves orders, inventory, customers, and Udhaar entries to Supabase when online.",
+      "Offline sales queue safely in browser IndexedDB/localStorage and auto-sync when connectivity returns."
+    ],
+    limitations: [
+      "SmartBitz POS does NOT currently include a public customer-facing e-commerce storefront or external web checkout for online shopper orders. Orders are created at the POS terminal and synced to cloud."
+    ]
+  }
+];
+var SENSITIVE_PATTERNS = [
+  // JWT tokens (3 base64url segments)
+  { pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, replacement: "[REDACTED_TOKEN]" },
+  // Bearer headers
+  { pattern: /\bBearer\s+[A-Za-z0-9._-]{12,}/gi, replacement: "Bearer [REDACTED_TOKEN]" },
+  // Common API keys (Google AIza, OpenAI/Stripe sk-, Supabase sb_, GitHub ghp_)
+  { pattern: /\b(?:AIza[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z_-]{16,}|sb_[a-z]+_[0-9A-Za-z_-]{12,}|ghp_[0-9A-Za-z]{20,})\b/g, replacement: "[REDACTED_API_KEY]" },
+  // Explicit password / pin / secret assignments
+  {
+    pattern: /\b(password|passcode|pin|pin_code|pinCode|pin_hash|pinHash|service_role|secret|api_key|apiKey)\b(\s*[:=]\s*)([^\s,;]+)/gi,
+    replacement: "$1$2[REDACTED]"
+  },
+  // PBKDF2 hashes
+  { pattern: /\bpbkdf2_sha256\$[^\s]+/gi, replacement: "[REDACTED_HASH]" },
+  // 13-19 digit payment card sequences
+  { pattern: /\b(?:\d[ -]*?){13,19}\b/g, replacement: "[REDACTED_CARD]" },
+  // Pakistani CNIC (xxxxx-xxxxxxx-x)
+  { pattern: /\b\d{5}-\d{7}-\d\b/g, replacement: "[REDACTED_ID]" }
+];
+function sanitizeTextForAi(input, maxLength = 2e3) {
+  let cleaned = typeof input === "string" ? input.trim() : "";
+  if (!cleaned) return "";
+  for (const rule of SENSITIVE_PATTERNS) {
+    cleaned = cleaned.replace(rule.pattern, rule.replacement);
+  }
+  if (cleaned.length > maxLength) {
+    cleaned = `${cleaned.slice(0, maxLength)}\u2026`;
+  }
+  return cleaned;
+}
+var MODULE_KEYWORDS = {
+  pos_billing: [
+    "bill",
+    "billing",
+    "checkout",
+    "cart",
+    "sale",
+    "sell",
+    "discount",
+    "hold",
+    "held",
+    "split",
+    "payment",
+    "cash",
+    "jazzcash",
+    "easypaisa",
+    "card",
+    "bank",
+    "receipt",
+    "print",
+    "thermal",
+    "customer display",
+    "\u0628\u0644",
+    "\u0633\u06CC\u0644",
+    "\u0631\u0639\u0627\u06CC\u062A",
+    "\u0631\u0633\u06CC\u062F",
+    "\u0627\u062F\u0627\u0626\u06CC\u06AF\u06CC"
+  ],
+  barcode_qr_scanner: [
+    "barcode",
+    "qr",
+    "scan",
+    "scanner",
+    "camera",
+    "usb",
+    "sticker",
+    "sku",
+    "\u0628\u0627\u0631\u06A9\u0648\u0688",
+    "\u0627\u0633\u06A9\u06CC\u0646",
+    "\u06A9\u06CC\u0645\u0631\u06C1"
+  ],
+  inventory_products: [
+    "stock",
+    "inventory",
+    "product",
+    "item",
+    "unit",
+    "kg",
+    "litre",
+    "reorder",
+    "minstock",
+    "expiry",
+    "expired",
+    "batch",
+    "csv",
+    "import",
+    "adjust",
+    "damage",
+    "\u0627\u0633\u0679\u0627\u06A9",
+    "\u0622\u0626\u0679\u0645",
+    "\u0642\u06CC\u0645\u062A",
+    "\u0627\u06CC\u06A9\u0633\u067E\u0627\u0626\u0631\u06CC"
+  ],
+  cash_drawer_shifts: [
+    "shift",
+    "drawer",
+    "cash in",
+    "cash out",
+    "opening",
+    "closing",
+    "variance",
+    "till",
+    "\u0634\u0641\u0679",
+    "\u0688\u0631\u0627\u0648\u0631",
+    "\u06A9\u06CC\u0634"
+  ],
+  purchases_suppliers: [
+    "purchase",
+    "supplier",
+    "vendor",
+    "po",
+    "payable",
+    "receive",
+    "\u062E\u0631\u06CC\u062F\u0627\u0631\u06CC",
+    "\u0633\u067E\u0644\u0627\u0626\u0631"
+  ],
+  customers_udhaar: [
+    "udhaar",
+    "khata",
+    "credit",
+    "receivable",
+    "reminder",
+    "whatsapp",
+    "customer",
+    "\u0627\u062F\u06BE\u0627\u0631",
+    "\u06A9\u06BE\u0627\u062A\u06C1",
+    "\u06AF\u0627\u06C1\u06A9",
+    "\u0648\u0627\u0679\u0633 \u0627\u06CC\u067E"
+  ],
+  returns_refunds: [
+    "return",
+    "refund",
+    "exchange",
+    "cancel",
+    "void",
+    "transaction",
+    "\u0648\u0627\u067E\u0633\u06CC",
+    "\u0631\u06CC\u0641\u0646\u0688",
+    "\u0645\u0646\u0633\u0648\u062E"
+  ],
+  expenses: [
+    "expense",
+    "expenses",
+    "rent",
+    "salary",
+    "electricity",
+    "recurring",
+    "kharcha",
+    "\u0627\u062E\u0631\u0627\u062C\u0627\u062A",
+    "\u062E\u0631\u0686\u06C1"
+  ],
+  analytics_reports: [
+    "report",
+    "dashboard",
+    "profit",
+    "cogs",
+    "revenue",
+    "analytics",
+    "audit",
+    "backup",
+    "restore",
+    "json",
+    "\u0631\u067E\u0648\u0631\u0679",
+    "\u0688\u06CC\u0634 \u0628\u0648\u0631\u0688",
+    "\u0645\u0646\u0627\u0641\u0639",
+    "\u0628\u06CC\u06A9 \u0627\u067E"
+  ],
+  staff_permissions: [
+    "staff",
+    "pin",
+    "role",
+    "permission",
+    "admin",
+    "manager",
+    "cashier",
+    "switch",
+    "\u0627\u0633\u0679\u0627\u0641",
+    "\u067E\u0646"
+  ],
+  branch_management: [
+    "branch",
+    "branches",
+    "transfer",
+    "\u0628\u0631\u0627\u0646\u0686",
+    "\u0679\u0631\u0627\u0646\u0633\u0641\u0631"
+  ],
+  online_orders_sync: [
+    "online",
+    "ecommerce",
+    "storefront",
+    "web order",
+    "sync",
+    "offline",
+    "internet",
+    "\u0622\u0646 \u0644\u0627\u0626\u0646",
+    "\u0622\u0641 \u0644\u0627\u0626\u0646",
+    "\u0633\u0646\u06A9"
+  ]
+};
+function selectModuleRelevance(prompt, accessibleModules) {
+  const lower = (prompt || "").toLowerCase();
+  if (!lower) {
+    return { detailed: accessibleModules, compact: [] };
+  }
+  const matched = accessibleModules.filter(
+    (mod) => (MODULE_KEYWORDS[mod.id] || []).some((kw) => lower.includes(kw))
+  );
+  if (matched.length === 0) {
+    return { detailed: [], compact: accessibleModules };
+  }
+  const detailed = matched.slice(0, 4);
+  const detailedIds = new Set(detailed.map((m) => m.id));
+  const compact = accessibleModules.filter((m) => !detailedIds.has(m.id));
+  return { detailed, compact };
+}
+function buildPosAssistantSystemPrompt(options) {
+  const accessibleModules = SMARTBITZ_POS_KNOWLEDGE_MODULES.filter(
+    (mod) => mod.minRoles.includes(options.staffRole)
+  );
+  const restrictedModules = SMARTBITZ_POS_KNOWLEDGE_MODULES.filter(
+    (mod) => !mod.minRoles.includes(options.staffRole)
+  );
+  const { detailed, compact } = selectModuleRelevance(options.prompt, accessibleModules);
+  const detailedDocs = detailed.map((m) => {
+    const caps = m.capabilities.map((c) => `- ${c}`).join("\n");
+    const lims = m.limitations?.length ? `
+Limitations:
+${m.limitations.map((l) => `- ${l}`).join("\n")}` : "";
+    return `[${m.title} | ${m.navLabel}]
+${caps}${lims}`;
+  }).join("\n\n");
+  const compactDocs = compact.map((m) => {
+    const firstCap = m.capabilities[0] ?? "";
+    const limNote = m.limitations?.[0] ? ` Note: ${m.limitations[0]}` : "";
+    return `- ${m.title} (${m.navLabel}): ${firstCap}${limNote}`;
+  }).join("\n");
+  const restrictedList = restrictedModules.length > 0 ? restrictedModules.map((m) => `${m.title} (${m.minRoles.join("/")})`).join(", ") : "None";
+  const languageDirective = options.languageMode === "ur" ? "Reply in clear natural Urdu (\u0627\u0631\u062F\u0648 script)." : options.languageMode === "roman_ur" ? "Reply in clear Roman Urdu (Urdu in Latin script)." : options.languageMode === "en" ? "Reply in clear concise English." : "Match the user language: English -> English, Urdu script -> Urdu (\u0627\u0631\u062F\u0648), Roman Urdu -> Roman Urdu.";
+  const safeShopName = sanitizeTextForAi(options.shopName || "Store", 80) || "Store";
+  const safeBranchName = sanitizeTextForAi(options.activeBranchName || "", 60);
+  return [
+    `You are SmartBitz POS (Khaas Retail) Assistant for "${safeShopName}"${safeBranchName ? ` (${safeBranchName})` : ""}, Role: ${options.staffRole}.`,
+    languageDirective,
+    "Rules:",
+    "1. Answer strictly from the verified POS modules below; never invent screens or features (note: no public e-commerce storefront exists).",
+    "2. Respect role limits; mention Admin/Manager approval if asked about restricted features.",
+    "3. Read-only guidance only; never claim you changed DB records, sales, stock, or PINs.",
+    "4. Never ask for or repeat PINs, passwords, API keys, tokens, or card/CNIC numbers.",
+    "5. If an image/screenshot is provided, explain what is visible and give numbered steps.",
+    detailedDocs ? `
+RELEVANT MODULES:
+${detailedDocs}` : "",
+    compactDocs ? `
+OTHER ACCESSIBLE MODULES:
+${compactDocs}` : "",
+    `
+RESTRICTED MODULES REQUIRING HIGHER ROLE: ${restrictedList}`
+  ].filter(Boolean).join("\n");
+}
+
+// serverAiAssistant.ts
+var OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
+var DEFAULT_AI_ASSISTANT_MODEL = "openrouter/free";
+var DEFAULT_OPENROUTER_TIMEOUT_MS = 25e3;
+var ALLOWED_IMAGE_MIME_TYPES = /* @__PURE__ */ new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif"
+]);
+function parsePositiveInt(raw, fallback, min, max) {
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(num)));
+}
+function resolveAiAssistantConfig(env = process.env) {
+  const rawEnabled = (env.AI_ASSISTANT_ENABLED ?? "true").trim().toLowerCase();
+  const enabled = !["false", "0", "no", "off", "disabled"].includes(rawEnabled);
+  const rawKey = (env.OPENROUTER_API_KEY || "").trim();
+  const configured = rawKey.length > 10 && !rawKey.includes("MY_OPENROUTER_API_KEY") && !rawKey.includes("YOUR_");
+  const requestedModel = (env.OPENROUTER_MODEL || "").trim();
+  const model = requestedModel || DEFAULT_AI_ASSISTANT_MODEL;
+  const rawAppUrl = (env.APP_URL || "").trim();
+  const appUrl = /^https?:\/\//i.test(rawAppUrl) ? rawAppUrl : "https://smartbitz-pos.local";
+  return {
+    enabled,
+    configured,
+    apiKey: configured ? rawKey : "",
+    model,
+    dailyLimitPerTenant: parsePositiveInt(
+      env.AI_ASSISTANT_DAILY_LIMIT_PER_TENANT,
+      50,
+      1,
+      5e3
+    ),
+    rateLimitPerMinute: parsePositiveInt(
+      env.AI_ASSISTANT_RATE_LIMIT_PER_MINUTE,
+      10,
+      1,
+      120
+    ),
+    maxImageBytes: parsePositiveInt(
+      env.AI_ASSISTANT_MAX_IMAGE_BYTES,
+      4 * 1024 * 1024,
+      262144,
+      8 * 1024 * 1024
+    ),
+    timeoutMs: parsePositiveInt(
+      env.OPENROUTER_TIMEOUT_MS,
+      DEFAULT_OPENROUTER_TIMEOUT_MS,
+      5e3,
+      6e4
+    ),
+    appUrl
+  };
+}
+var AiUsageTracker = class {
+  constructor() {
+    this.store = /* @__PURE__ */ new Map();
+  }
+  getTodayKey(nowMs = Date.now()) {
+    return new Date(nowMs).toISOString().slice(0, 10);
+  }
+  getOrCreate(tenantUserId, nowMs = Date.now()) {
+    const dayKey = this.getTodayKey(nowMs);
+    const existing = this.store.get(tenantUserId);
+    if (!existing || existing.dayKey !== dayKey) {
+      const fresh = {
+        dayKey,
+        countToday: 0,
+        minuteTimestamps: existing ? existing.minuteTimestamps.filter((ts) => nowMs - ts < 6e4) : []
+      };
+      this.store.set(tenantUserId, fresh);
+      return fresh;
+    }
+    existing.minuteTimestamps = existing.minuteTimestamps.filter(
+      (ts) => nowMs - ts < 6e4
+    );
+    return existing;
+  }
+  getSnapshot(tenantUserId, config, nowMs = Date.now()) {
+    const rec = this.getOrCreate(tenantUserId, nowMs);
+    return {
+      usedToday: rec.countToday,
+      remainingToday: Math.max(0, config.dailyLimitPerTenant - rec.countToday),
+      dailyLimit: config.dailyLimitPerTenant
+    };
+  }
+  tryConsume(tenantUserId, config, nowMs = Date.now()) {
+    const rec = this.getOrCreate(tenantUserId, nowMs);
+    if (rec.minuteTimestamps.length >= config.rateLimitPerMinute) {
+      const oldestTs = rec.minuteTimestamps[0] ?? nowMs;
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((6e4 - (nowMs - oldestTs)) / 1e3)
+      );
+      return {
+        allowed: false,
+        code: "RATE_LIMIT_EXCEEDED",
+        error: `Too many AI requests in a short time. Please wait ${retryAfterSeconds}s before asking again.`,
+        retryAfterSeconds,
+        usedToday: rec.countToday,
+        remainingToday: Math.max(0, config.dailyLimitPerTenant - rec.countToday)
+      };
+    }
+    if (rec.countToday >= config.dailyLimitPerTenant) {
+      return {
+        allowed: false,
+        code: "DAILY_LIMIT_REACHED",
+        error: `Daily AI Assistant limit (${config.dailyLimitPerTenant} requests) reached for this store.`,
+        retryAfterSeconds: 3600,
+        usedToday: rec.countToday,
+        remainingToday: 0
+      };
+    }
+    rec.countToday += 1;
+    rec.minuteTimestamps.push(nowMs);
+    return {
+      allowed: true,
+      usedToday: rec.countToday,
+      remainingToday: Math.max(0, config.dailyLimitPerTenant - rec.countToday)
+    };
+  }
+  refund(tenantUserId, nowMs = Date.now()) {
+    const rec = this.getOrCreate(tenantUserId, nowMs);
+    if (rec.countToday > 0) {
+      rec.countToday -= 1;
+    }
+    if (rec.minuteTimestamps.length > 0) {
+      rec.minuteTimestamps.pop();
+    }
+  }
+};
+function validateAiAssistRequestBody(rawBody, maxImageBytes) {
+  if (!rawBody || typeof rawBody !== "object") {
+    return { ok: false, status: 400, error: "Request body must be a JSON object." };
+  }
+  const body = rawBody;
+  const rawPrompt = typeof body.prompt === "string" ? body.prompt : typeof body.message === "string" ? body.message : "";
+  const prompt = sanitizeTextForAi(rawPrompt, 2e3);
+  const rawLang = typeof body.languageMode === "string" ? body.languageMode.trim() : typeof body.language === "string" ? body.language.trim() : "auto";
+  const languageMode = rawLang === "en" || rawLang === "ur" || rawLang === "roman_ur" || rawLang === "auto" ? rawLang : "auto";
+  let attachment = null;
+  if (body.attachment !== void 0 && body.attachment !== null) {
+    if (typeof body.attachment !== "object") {
+      return {
+        ok: false,
+        status: 400,
+        error: "Invalid screenshot attachment payload."
+      };
+    }
+    const att = body.attachment;
+    const mimeType = typeof att.mimeType === "string" ? att.mimeType.trim().toLowerCase() : "";
+    if (!ALLOWED_IMAGE_MIME_TYPES.has(mimeType)) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Unsupported image format. Please upload PNG, JPEG, WEBP, or GIF screenshots only."
+      };
+    }
+    const rawBase64 = typeof att.base64Data === "string" ? att.base64Data.trim() : "";
+    const strippedBase64 = rawBase64.replace(/^data:image\/[a-z0-9+.-]+;base64,/i, "").replace(/\s+/g, "");
+    if (!strippedBase64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(strippedBase64)) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Screenshot base64 image data is invalid."
+      };
+    }
+    const decoded = Buffer.from(strippedBase64, "base64");
+    if (decoded.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Screenshot file appears to be empty."
+      };
+    }
+    if (decoded.length > maxImageBytes) {
+      return {
+        ok: false,
+        status: 413,
+        error: `Screenshot exceeds the maximum allowed size (${Math.round(maxImageBytes / (1024 * 1024))} MB).`
+      };
+    }
+    attachment = {
+      mimeType,
+      base64Data: strippedBase64,
+      sizeBytes: decoded.length
+    };
+  }
+  if (!prompt && !attachment) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Please enter a question or attach a screenshot for guidance."
+    };
+  }
+  const history = [];
+  if (Array.isArray(body.history)) {
+    const recent = body.history.slice(-4);
+    for (const item of recent) {
+      if (!item || typeof item !== "object") continue;
+      const turn = item;
+      const role = turn.role === "assistant" ? "assistant" : turn.role === "user" ? "user" : null;
+      const text = typeof turn.text === "string" ? sanitizeTextForAi(turn.text, 600) : "";
+      if (role && text) {
+        history.push({ role, text });
+      }
+    }
+  }
+  const customPermissions = Array.isArray(body.customPermissions) ? body.customPermissions.filter((p) => typeof p === "string").slice(0, 30) : void 0;
+  const rawBranchName = typeof body.activeBranchName === "string" ? body.activeBranchName : typeof body.branchName === "string" ? body.branchName : "";
+  return {
+    ok: true,
+    value: {
+      prompt: prompt || "Examine this SmartBitz POS screenshot, explain what is visible, and give safe numbered steps.",
+      languageMode,
+      history,
+      attachment,
+      shopName: typeof body.shopName === "string" ? sanitizeTextForAi(body.shopName, 80) : void 0,
+      activeBranchName: rawBranchName ? sanitizeTextForAi(rawBranchName, 60) : void 0,
+      customPermissions,
+      stream: body.stream === true
+    }
+  };
+}
+function buildAiAssistantStatusPayload(tenantUserId, config, tracker) {
+  const usage = tracker.getSnapshot(tenantUserId, config);
+  const available = config.enabled && config.configured && usage.remainingToday > 0;
+  let reason;
+  if (!config.enabled) {
+    reason = "AI Assistant is disabled by server configuration.";
+  } else if (!config.configured) {
+    reason = "Server AI provider credentials (OPENROUTER_API_KEY) are not configured. All POS features continue working normally.";
+  } else if (usage.remainingToday <= 0) {
+    reason = "Daily AI Assistant usage limit reached for this store.";
+  }
+  return {
+    available,
+    configured: config.configured,
+    enabled: config.enabled,
+    model: config.model,
+    dailyLimit: usage.dailyLimit,
+    usedToday: usage.usedToday,
+    remainingToday: usage.remainingToday,
+    maxImageBytes: config.maxImageBytes,
+    reason
+  };
+}
+function isSafeCacheablePosQuery(input) {
+  if (input.attachment) return false;
+  if (input.history.length > 0) return false;
+  const prompt = input.prompt.trim();
+  if (prompt.length < 8 || prompt.length > 220) return false;
+  if (/\d/.test(prompt)) return false;
+  if (prompt.includes("@") || prompt.includes("[REDACTED")) return false;
+  if (/\b(?:rs\.?|pkr|usd|invoice|receipt|bill\s*#|order\s*#|customer|vendor|supplier|employee|cashier|balance|salary|profit|revenue|my\s+shop|my\s+store|hamari|mera)\b/i.test(
+    prompt
+  )) {
+    return false;
+  }
+  return true;
+}
+var SafePosHowToCache = class {
+  constructor(maxEntries = 64, ttlMs = 5 * 6e4) {
+    this.store = /* @__PURE__ */ new Map();
+    this.maxEntries = maxEntries;
+    this.ttlMs = ttlMs;
+  }
+  makeKey(params) {
+    const normalized = params.prompt.trim().toLowerCase().replace(/\s+/g, " ");
+    return `${params.model}::${params.staffRole}::${params.languageMode}::${normalized}`;
+  }
+  get(params, nowMs = Date.now()) {
+    if (!isSafeCacheablePosQuery(params.input)) return null;
+    const key = this.makeKey({
+      model: params.model,
+      staffRole: params.staffRole,
+      languageMode: params.input.languageMode,
+      prompt: params.input.prompt
+    });
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= nowMs) {
+      this.store.delete(key);
+      return null;
+    }
+    return { reply: entry.reply, model: entry.model };
+  }
+  set(params, nowMs = Date.now()) {
+    if (!isSafeCacheablePosQuery(params.input)) return;
+    if (!params.reply.trim()) return;
+    const key = this.makeKey({
+      model: params.model,
+      staffRole: params.staffRole,
+      languageMode: params.input.languageMode,
+      prompt: params.input.prompt
+    });
+    if (this.store.size >= this.maxEntries && !this.store.has(key)) {
+      const oldestKey = this.store.keys().next().value;
+      if (oldestKey) this.store.delete(oldestKey);
+    }
+    this.store.set(key, {
+      reply: params.reply,
+      model: params.resolvedModel,
+      expiresAt: nowMs + this.ttlMs
+    });
+  }
+};
+var AiProviderError = class extends Error {
+  constructor(message, options) {
+    super(message);
+    this.name = "AiProviderError";
+    this.httpStatus = options?.httpStatus ?? 502;
+    this.isTimeout = Boolean(options?.isTimeout);
+    this.isCancelled = Boolean(options?.isCancelled);
+  }
+};
+function buildOpenRouterMessages(input, systemInstruction) {
+  const messages = [
+    { role: "system", content: systemInstruction }
+  ];
+  for (const turn of input.history) {
+    messages.push({
+      role: turn.role === "assistant" ? "assistant" : "user",
+      content: turn.text
+    });
+  }
+  if (input.attachment) {
+    messages.push({
+      role: "user",
+      content: [
+        { type: "text", text: input.prompt },
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${input.attachment.mimeType};base64,${input.attachment.base64Data}`
+          }
+        }
+      ]
+    });
+  } else {
+    messages.push({
+      role: "user",
+      content: input.prompt
+    });
+  }
+  return messages;
+}
+function extractOpenRouterTextContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (part && typeof part === "object" && "text" in part) {
+        return typeof part.text === "string" ? part.text : "";
+      }
+      return "";
+    }).join("");
+  }
+  return "";
+}
+async function defaultOpenRouterChatCompletion(params) {
+  const controller = new AbortController();
+  let timedOut = false;
+  let cancelled = false;
+  const onExternalAbort = () => {
+    cancelled = true;
+    controller.abort();
+  };
+  if (params.signal) {
+    if (params.signal.aborted) {
+      throw new AiProviderError("AI request was cancelled.", {
+        httpStatus: 499,
+        isCancelled: true
+      });
+    }
+    params.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, params.timeoutMs);
+  try {
+    const resp = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": params.appUrl,
+        "X-Title": "SmartBitz POS"
+      },
+      body: JSON.stringify({
+        model: params.model,
+        messages: params.messages,
+        stream: params.stream,
+        max_tokens: 700
+      }),
+      signal: controller.signal
+    });
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => "");
+      let parsedMsg = errBody;
+      try {
+        const parsed = JSON.parse(errBody);
+        if (typeof parsed.error === "string") parsedMsg = parsed.error;
+        else if (parsed.error && typeof parsed.error.message === "string") {
+          parsedMsg = parsed.error.message;
+        } else if (typeof parsed.message === "string") {
+          parsedMsg = parsed.message;
+        }
+      } catch {
+      }
+      throw new AiProviderError(
+        parsedMsg || `OpenRouter returned HTTP ${resp.status}.`,
+        { httpStatus: resp.status }
+      );
+    }
+    const contentType = (resp.headers.get("content-type") || "").toLowerCase();
+    if (params.stream && resp.body && contentType.includes("text/event-stream")) {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullReply = "";
+      let resolvedModel2 = params.model;
+      const processSseLine = (rawLine) => {
+        const line = rawLine.trim();
+        if (!line || line.startsWith(":")) return false;
+        if (!line.startsWith("data:")) return false;
+        const dataStr = line.slice(5).trim();
+        if (dataStr === "[DONE]") {
+          return true;
+        }
+        try {
+          const chunk = JSON.parse(dataStr);
+          if (chunk.error?.message) {
+            throw new AiProviderError(chunk.error.message, {
+              httpStatus: typeof chunk.error.code === "number" ? chunk.error.code : 502
+            });
+          }
+          if (typeof chunk.model === "string" && chunk.model.trim()) {
+            resolvedModel2 = chunk.model.trim();
+          }
+          const deltaText = extractOpenRouterTextContent(
+            chunk.choices?.[0]?.delta?.content ?? chunk.choices?.[0]?.message?.content
+          );
+          if (deltaText) {
+            fullReply += deltaText;
+            params.onChunk?.(deltaText, resolvedModel2);
+          }
+        } catch (parseErr) {
+          if (parseErr instanceof AiProviderError) throw parseErr;
+        }
+        return false;
+      };
+      let reachedDone = false;
+      while (!reachedDone) {
+        const { value, done } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const rawLine of lines) {
+          if (processSseLine(rawLine)) {
+            reachedDone = true;
+            break;
+          }
+        }
+      }
+      if (!reachedDone && buffer.trim()) {
+        processSseLine(buffer);
+      }
+      const finalText = fullReply.trim();
+      if (!finalText) {
+        throw new AiProviderError(
+          "The free AI model returned an empty response. Please try again.",
+          { httpStatus: 502 }
+        );
+      }
+      return { reply: finalText, model: resolvedModel2 };
+    }
+    const data = await resp.json();
+    if (data.error?.message) {
+      throw new AiProviderError(data.error.message, {
+        httpStatus: typeof data.error.code === "number" ? data.error.code : 502
+      });
+    }
+    const text = extractOpenRouterTextContent(
+      data.choices?.[0]?.message?.content
+    ).trim();
+    if (!text) {
+      throw new AiProviderError(
+        "The free AI model returned an empty response. Please try rephrasing your question.",
+        { httpStatus: 502 }
+      );
+    }
+    const resolvedModel = typeof data.model === "string" && data.model.trim() ? data.model.trim() : params.model;
+    if (params.onChunk) {
+      params.onChunk(text, resolvedModel);
+    }
+    return { reply: text, model: resolvedModel };
+  } catch (err) {
+    if (err instanceof AiProviderError) {
+      throw err;
+    }
+    if (cancelled || params.signal?.aborted && !timedOut) {
+      throw new AiProviderError("AI request was cancelled.", {
+        httpStatus: 499,
+        isCancelled: true
+      });
+    }
+    if (timedOut || err instanceof Error && err.name === "AbortError") {
+      throw new AiProviderError(
+        "AI request timed out while waiting for the free model.",
+        { httpStatus: 504, isTimeout: true }
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    params.signal?.removeEventListener("abort", onExternalAbort);
+  }
+}
+async function generatePosAssistantReply(params) {
+  const systemInstruction = buildPosAssistantSystemPrompt({
+    staffRole: params.staffRole,
+    shopName: params.input.shopName,
+    activeBranchName: params.input.activeBranchName,
+    languageMode: params.input.languageMode,
+    prompt: params.input.prompt
+  });
+  const messages = buildOpenRouterMessages(params.input, systemInstruction);
+  const generateFn = params.generator ?? defaultOpenRouterChatCompletion;
+  const output = await generateFn({
+    model: params.config.model,
+    messages,
+    apiKey: params.config.apiKey,
+    timeoutMs: params.config.timeoutMs,
+    appUrl: params.config.appUrl,
+    stream: Boolean(params.onChunk),
+    signal: params.signal,
+    onChunk: params.onChunk
+  });
+  if (typeof output === "string") {
+    const trimmed = output.trim();
+    if (!trimmed) {
+      throw new AiProviderError("The AI assistant returned an empty response.", {
+        httpStatus: 502
+      });
+    }
+    if (params.onChunk) {
+      params.onChunk(trimmed, params.config.model);
+    }
+    return { reply: trimmed, model: params.config.model };
+  }
+  return {
+    reply: output.reply,
+    model: output.model || params.config.model
+  };
+}
+function isVisionUnsupportedError(err, hadAttachment) {
+  if (!hadAttachment) return false;
+  const status = err instanceof AiProviderError ? err.httpStatus : void 0;
+  const raw = err instanceof Error ? err.message : String(err || "");
+  const looksLikeVisionRejection = /image|vision|multimodal|content must be a string|expected string|does not support.*image|no endpoints found.*image/i.test(
+    raw
+  );
+  if (looksLikeVisionRejection) return true;
+  if (status === 400 || status === 404 || status === 422) {
+    return /unsupported|invalid content|media|endpoint/i.test(raw);
+  }
+  return false;
+}
+function mapAiProviderError(err, hadAttachment = false) {
+  if (err instanceof AiProviderError) {
+    if (err.isCancelled || err.httpStatus === 499) {
+      return {
+        status: 499,
+        code: "REQUEST_CANCELLED",
+        error: "AI request was cancelled."
+      };
+    }
+    if (err.isTimeout || err.httpStatus === 504) {
+      return {
+        status: 504,
+        code: "AI_TIMEOUT",
+        error: "The free AI model took too long to respond. Please try a shorter question or try again."
+      };
+    }
+  }
+  if (isVisionUnsupportedError(err, hadAttachment)) {
+    return {
+      status: 422,
+      code: "VISION_UNSUPPORTED",
+      error: "The currently routed free AI model does not support screenshot/image analysis right now. Please type the error or screen text instead."
+    };
+  }
+  const status = err instanceof AiProviderError ? err.httpStatus : void 0;
+  const raw = err instanceof Error ? err.message : String(err || "");
+  if (status === 429 || /RESOURCE_EXHAUSTED|429|rate limit|too many requests/i.test(raw)) {
+    return {
+      status: 429,
+      code: "PROVIDER_RATE_LIMITED",
+      error: "Free AI model rate limit reached temporarily. Please wait a moment and try again."
+    };
+  }
+  if (status === 401 || status === 403 || /API_KEY_INVALID|invalid.*key|unauthorized|PERMISSION_DENIED/i.test(raw)) {
+    return {
+      status: 502,
+      code: "PROVIDER_AUTH_ERROR",
+      error: "Server OpenRouter credentials were rejected. Contact your platform administrator."
+    };
+  }
+  if (status === 404 || status === 503 || /NOT_FOUND|no endpoints found|unavailable/i.test(raw)) {
+    return {
+      status: 502,
+      code: "PROVIDER_MODEL_UNAVAILABLE",
+      error: "No free AI model is currently available for this request. Your POS continues operating normally."
+    };
+  }
+  return {
+    status: 502,
+    code: "AI_UPSTREAM_ERROR",
+    error: "Unable to reach the AI Assistant right now. Your POS terminal continues working normally."
+  };
 }
 
 // serverApp.ts
@@ -684,15 +1716,23 @@ async function issueFallbackStaffToken(userId, employeeId, role) {
   }
   return { token: signedToken, signedToken, expiresAt };
 }
-function createPosExpressApp() {
+function createPosExpressApp(options) {
   const app = (0, import_express.default)();
+  const aiUsageTracker = new AiUsageTracker();
+  const aiHowToCache = new SafePosHowToCache();
+  app.use("/api/ai/assist", import_express.default.json({ limit: "8mb" }));
   app.use(import_express.default.json({ limit: "1mb" }));
+  const authenticateReq = options?.authenticateOverride ?? authenticateSupabaseRequest;
+  const checkOpAccess = options?.tenantAccessOverride ?? checkTenantOperationalAccess;
+  const resolveStaff = options?.staffRoleOverride ?? resolveVerifiedStaffRole;
   app.get("/api/health", (_req, res) => {
+    const aiConfig = resolveAiAssistantConfig(options?.aiEnv);
     res.json({
       ok: true,
       supabaseConfigured: hasPublicSupabase,
       adminServiceConfigured: hasServiceRole,
-      whatsappConfigured: Boolean(WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID)
+      whatsappConfigured: Boolean(WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID),
+      aiConfigured: aiConfig.configured && aiConfig.enabled
     });
   });
   app.get("/api/admin/me", async (req, res) => {
@@ -1566,6 +2606,255 @@ function createPosExpressApp() {
         configured: true,
         error: err instanceof Error ? err.message : "Network error calling WhatsApp Cloud API."
       });
+    }
+  });
+  app.get("/api/ai/status", async (req, res) => {
+    const user = await authenticateReq(req);
+    if (!user) {
+      return res.status(401).json({ available: false, error: "Authentication required." });
+    }
+    const opAccess = await checkOpAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        available: false,
+        error: opAccess.status === "suspended" ? "Store access is suspended. AI Assistant is unavailable while records remain preserved." : "Store account is blocked."
+      });
+    }
+    const staff = await resolveStaff(req, user);
+    if (!staff.role) {
+      return res.status(401).json({
+        available: false,
+        error: "Verified staff PIN session is required."
+      });
+    }
+    if (!hasRolePermission(staff.role, "ai.assist")) {
+      return res.status(403).json({
+        available: false,
+        error: `Role '${staff.role}' is not authorized to access AI Assistant.`
+      });
+    }
+    const aiConfig = resolveAiAssistantConfig(options?.aiEnv);
+    return res.json(buildAiAssistantStatusPayload(user.id, aiConfig, aiUsageTracker));
+  });
+  app.post("/api/ai/assist", async (req, res) => {
+    const user = await authenticateReq(req);
+    if (!user) {
+      return res.status(401).json({ ok: false, error: "Authentication required." });
+    }
+    const opAccess = await checkOpAccess(user);
+    if (!opAccess.allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: opAccess.status === "suspended" ? "Store access is suspended. AI Assistant is unavailable while records remain preserved." : "Store account is blocked."
+      });
+    }
+    const staff = await resolveStaff(req, user);
+    if (!staff.role) {
+      return res.status(401).json({
+        ok: false,
+        error: "Verified staff PIN session is required."
+      });
+    }
+    const aiConfig = resolveAiAssistantConfig(options?.aiEnv);
+    const validated = validateAiAssistRequestBody(req.body, aiConfig.maxImageBytes);
+    if (!validated.ok) {
+      return res.status(validated.status).json({
+        ok: false,
+        error: validated.error
+      });
+    }
+    if (!hasRolePermission(staff.role, "ai.assist", validated.value.customPermissions)) {
+      return res.status(403).json({
+        ok: false,
+        role: staff.role,
+        error: `Role '${staff.role}' is not authorized to use AI Assistant.`
+      });
+    }
+    if (!aiConfig.enabled) {
+      return res.status(503).json({
+        ok: false,
+        configured: aiConfig.configured,
+        enabled: false,
+        code: "AI_DISABLED",
+        error: "AI Assistant is currently disabled on the server."
+      });
+    }
+    if (!aiConfig.configured) {
+      return res.status(503).json({
+        ok: false,
+        configured: false,
+        enabled: true,
+        code: "AI_NOT_CONFIGURED",
+        error: "AI Assistant is not configured on the server yet (OPENROUTER_API_KEY missing). All POS features remain fully operational."
+      });
+    }
+    const quota = aiUsageTracker.tryConsume(user.id, aiConfig);
+    if (!quota.allowed) {
+      res.setHeader("Retry-After", String(quota.retryAfterSeconds));
+      return res.status(429).json({
+        ok: false,
+        configured: true,
+        enabled: true,
+        code: quota.code,
+        error: quota.error,
+        usage: {
+          dailyLimit: aiConfig.dailyLimitPerTenant,
+          usedToday: quota.usedToday,
+          remainingToday: quota.remainingToday
+        }
+      });
+    }
+    const usageSnapshot = {
+      dailyLimit: aiConfig.dailyLimitPerTenant,
+      usedToday: quota.usedToday,
+      remainingToday: quota.remainingToday
+    };
+    const wantsStream = validated.value.stream || (req.header("accept") || "").toLowerCase().includes("text/event-stream");
+    const cached = aiHowToCache.get({
+      model: aiConfig.model,
+      staffRole: staff.role,
+      input: validated.value
+    });
+    if (cached) {
+      if (wantsStream) {
+        res.status(200);
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.write(
+          `event: chunk
+data: ${JSON.stringify({ delta: cached.reply, model: cached.model })}
+
+`
+        );
+        res.write(
+          `event: done
+data: ${JSON.stringify({
+            ok: true,
+            reply: cached.reply,
+            model: cached.model,
+            cached: true,
+            usage: usageSnapshot
+          })}
+
+`
+        );
+        return res.end();
+      }
+      return res.json({
+        ok: true,
+        reply: cached.reply,
+        model: cached.model,
+        cached: true,
+        usage: usageSnapshot
+      });
+    }
+    const abortController = new AbortController();
+    const onResponseClose = () => {
+      if (!res.writableEnded) {
+        abortController.abort();
+      }
+    };
+    res.on("close", onResponseClose);
+    let streamHeadersSent = false;
+    let chunksSent = 0;
+    const ensureStreamHeaders = () => {
+      if (!streamHeadersSent) {
+        streamHeadersSent = true;
+        res.status(200);
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+      }
+    };
+    try {
+      const result = await generatePosAssistantReply({
+        input: validated.value,
+        staffRole: staff.role,
+        config: aiConfig,
+        generator: options?.aiGenerator,
+        signal: abortController.signal,
+        onChunk: wantsStream ? (delta, resolvedModel) => {
+          if (res.writableEnded || abortController.signal.aborted) return;
+          ensureStreamHeaders();
+          chunksSent += 1;
+          res.write(
+            `event: chunk
+data: ${JSON.stringify({
+              delta,
+              model: resolvedModel || aiConfig.model
+            })}
+
+`
+          );
+        } : void 0
+      });
+      aiHowToCache.set({
+        model: aiConfig.model,
+        staffRole: staff.role,
+        input: validated.value,
+        reply: result.reply,
+        resolvedModel: result.model
+      });
+      if (wantsStream) {
+        ensureStreamHeaders();
+        res.write(
+          `event: done
+data: ${JSON.stringify({
+            ok: true,
+            reply: result.reply,
+            model: result.model,
+            cached: false,
+            usage: usageSnapshot
+          })}
+
+`
+        );
+        return res.end();
+      }
+      return res.json({
+        ok: true,
+        reply: result.reply,
+        model: result.model,
+        cached: false,
+        usage: usageSnapshot
+      });
+    } catch (err) {
+      if (chunksSent === 0) {
+        aiUsageTracker.refund(user.id);
+      }
+      const mapped = mapAiProviderError(err, Boolean(validated.value.attachment));
+      const updatedUsage = aiUsageTracker.getSnapshot(user.id, aiConfig);
+      if (abortController.signal.aborted && res.writableEnded) {
+        return;
+      }
+      if (streamHeadersSent) {
+        if (!res.writableEnded) {
+          res.write(
+            `event: error
+data: ${JSON.stringify({
+              ok: false,
+              code: mapped.code,
+              error: mapped.error,
+              usage: updatedUsage
+            })}
+
+`
+          );
+          res.end();
+        }
+        return;
+      }
+      return res.status(mapped.status).json({
+        ok: false,
+        configured: true,
+        enabled: true,
+        code: mapped.code,
+        error: mapped.error,
+        usage: updatedUsage
+      });
+    } finally {
+      res.off("close", onResponseClose);
     }
   });
   return app;

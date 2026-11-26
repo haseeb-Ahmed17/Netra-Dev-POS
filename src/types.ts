@@ -19,7 +19,8 @@ export type NavTab =
   | 'staff'
   | 'settings'
   | 'audit_logs'
-  | 'saas_admin';
+  | 'saas_admin'
+  | 'ai_assistant';
 
 export type CategoryId = 'all' | 'beverages' | 'bakery' | 'pantry';
 
@@ -603,3 +604,47 @@ export interface AuditLogEntry {
   branchId?: string;
   createdAt: string;
 }
+
+export type AiAssistantLanguageMode = 'auto' | 'en' | 'ur' | 'roman_ur';
+
+export type AiAssistantAllowedMimeType =
+  | 'image/png'
+  | 'image/jpeg'
+  | 'image/webp'
+  | 'image/gif';
+
+export interface AiAssistantAttachmentPayload {
+  mimeType: AiAssistantAllowedMimeType;
+  base64Data: string;
+  fileName?: string;
+}
+
+export interface AiAssistantHistoryTurn {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+export interface AiAssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  language?: AiAssistantLanguageMode;
+  imagePreviewUrl?: string;
+  imageName?: string;
+  createdAt: string;
+  error?: boolean;
+  modelUsed?: string;
+}
+
+export interface AiAssistantStatusResponse {
+  available: boolean;
+  configured: boolean;
+  enabled: boolean;
+  model: string;
+  dailyLimit: number;
+  usedToday: number;
+  remainingToday: number;
+  maxImageBytes: number;
+  reason?: string;
+}
+

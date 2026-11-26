@@ -12,6 +12,10 @@ import {
   createInitialVendors,
 } from '../data/initialData';
 import type {
+  AiAssistantAttachmentPayload,
+  AiAssistantHistoryTurn,
+  AiAssistantLanguageMode,
+  AiAssistantStatusResponse,
   Customer,
   Employee,
   ExpenseRecord,
@@ -4513,5 +4517,330 @@ export function restoreWorkspaceSnapshotLocally(
   saveLocalWorkspace(userId, merged);
   return merged;
 }
+
+export interface AskAiAssistantPayload {
+  message: string;
+  language: AiAssistantLanguageMode;
+  history?: AiAssistantHistoryTurn[];
+  attachment?: AiAssistantAttachmentPayload | null;
+  activeModule?: string;
+  shopName?: string;
+  branchName?: string;
+  customPermissions?: string[];
+}
+
+export interface AskAiAssistantResult {
+  ok: boolean;
+  reply?: string;
+  model?: string;
+  cached?: boolean;
+  code?: string;
+  error?: string;
+  usage?: {
+    dailyLimit: number;
+    usedToday: number;
+    remainingToday: number;
+  };
+}
+
+export interface AskAiAssistantOptions {
+  signal?: AbortSignal;
+  onChunk?: (delta: string, model?: string) => void;
+}
+
+export async function fetchAiAssistantStatus(
+  signal?: AbortSignal
+): Promise<AiAssistantStatusResponse | null> {
+  if (!isSupabaseConfigured || !supabase || typeof fetch !== 'function') {
+    return {
+      available: false,
+      configured: false,
+      enabled: false,
+      model: 'openrouter/free',
+      dailyLimit: 0,
+      usedToday: 0,
+      remainingToday: 0,
+      maxImageBytes: 4 * 1024 * 1024,
+      reason: 'AI Assistant requires an active cloud store session and server-side AI credentials.',
+    };
+  }
+
+  let accessToken = await getSupabaseAccessToken();
+  if (!accessToken) {
+    return {
+      available: false,
+      configured: false,
+      enabled: false,
+      model: 'openrouter/free',
+      dailyLimit: 0,
+      usedToday: 0,
+      remainingToday: 0,
+      maxImageBytes: 4 * 1024 * 1024,
+      reason: 'Sign in with your cloud store account to check AI Assistant availability.',
+    };
+  }
+
+  const staffToken = getStaffSessionHeaderToken();
+  const buildHeaders = (token: string): Record<string, string> => {
+    const h: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+    };
+    if (staffToken) {
+      h['x-staff-session'] = staffToken;
+    }
+    return h;
+  };
+
+  try {
+    let resp = await fetch('/api/ai/status', {
+      method: 'GET',
+      headers: buildHeaders(accessToken),
+      signal,
+    });
+
+    if (resp.status === 401) {
+      const refreshed = await getSupabaseAccessToken(true);
+      if (refreshed && refreshed !== accessToken) {
+        accessToken = refreshed;
+        resp = await fetch('/api/ai/status', {
+          method: 'GET',
+          headers: buildHeaders(accessToken),
+          signal,
+        });
+      }
+    }
+
+    if (!isJsonApiResponse(resp)) {
+      return null;
+    }
+
+    const body = (await resp.json().catch(() => ({}))) as Partial<AiAssistantStatusResponse> & {
+      error?: string;
+    };
+
+    return {
+      available: Boolean(body.available),
+      configured: Boolean(body.configured),
+      enabled: Boolean(body.enabled),
+      model: typeof body.model === 'string' && body.model ? body.model : 'openrouter/free',
+      dailyLimit: typeof body.dailyLimit === 'number' ? body.dailyLimit : 0,
+      usedToday: typeof body.usedToday === 'number' ? body.usedToday : 0,
+      remainingToday: typeof body.remainingToday === 'number' ? body.remainingToday : 0,
+      maxImageBytes:
+        typeof body.maxImageBytes === 'number' && body.maxImageBytes > 0
+          ? body.maxImageBytes
+          : 4 * 1024 * 1024,
+      reason: body.reason || body.error,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function askAiAssistant(
+  payload: AskAiAssistantPayload,
+  options?: AskAiAssistantOptions
+): Promise<AskAiAssistantResult> {
+  if (!isSupabaseConfigured || !supabase || typeof fetch !== 'function') {
+    return {
+      ok: false,
+      code: 'AI_NOT_CONFIGURED',
+      error: 'AI Assistant requires an active cloud store session and server-side AI configuration.',
+    };
+  }
+
+  let accessToken = await getSupabaseAccessToken();
+  if (!accessToken) {
+    return {
+      ok: false,
+      code: 'AUTH_REQUIRED',
+      error: 'Please sign in to your store account to use the AI Assistant.',
+    };
+  }
+
+  const staffToken = getStaffSessionHeaderToken();
+  const wantsStream = typeof options?.onChunk === 'function';
+  const buildHeaders = (token: string): Record<string, string> => {
+    const h: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: wantsStream ? 'text/event-stream, application/json' : 'application/json',
+      Authorization: `Bearer ${token}`,
+    };
+    if (staffToken) {
+      h['x-staff-session'] = staffToken;
+    }
+    return h;
+  };
+
+  try {
+    const requestBody = {
+      prompt: payload.message,
+      languageMode: payload.language,
+      history: payload.history,
+      attachment: payload.attachment,
+      activeModule: payload.activeModule,
+      shopName: payload.shopName,
+      activeBranchName: payload.branchName,
+      customPermissions: payload.customPermissions,
+      stream: wantsStream,
+    };
+
+    let resp = await fetch('/api/ai/assist', {
+      method: 'POST',
+      headers: buildHeaders(accessToken),
+      body: JSON.stringify(requestBody),
+      signal: options?.signal,
+    });
+
+    if (resp.status === 401) {
+      const refreshed = await getSupabaseAccessToken(true);
+      if (refreshed && refreshed !== accessToken) {
+        accessToken = refreshed;
+        resp = await fetch('/api/ai/assist', {
+          method: 'POST',
+          headers: buildHeaders(accessToken),
+          body: JSON.stringify(requestBody),
+          signal: options?.signal,
+        });
+      }
+    }
+
+    const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+    if (resp.ok && contentType.includes('text/event-stream') && resp.body) {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = 'message';
+      let accumulatedReply = '';
+      let resolvedModel: string | undefined;
+      let finalUsage: AskAiAssistantResult['usage'];
+      let streamCached = false;
+      let streamError: AskAiAssistantResult | null = null;
+
+      const processBlock = (block: string) => {
+        const lines = block.split(/\r?\n/);
+        let eventName = currentEvent;
+        const dataLines: string[] = [];
+
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trim());
+          }
+        }
+        if (dataLines.length === 0) return;
+        const rawData = dataLines.join('\n');
+        try {
+          const parsed = JSON.parse(rawData) as {
+            delta?: string;
+            reply?: string;
+            model?: string;
+            cached?: boolean;
+            code?: string;
+            error?: string;
+            usage?: AskAiAssistantResult['usage'];
+          };
+          if (eventName === 'chunk') {
+            if (typeof parsed.model === 'string' && parsed.model) {
+              resolvedModel = parsed.model;
+            }
+            if (typeof parsed.delta === 'string' && parsed.delta) {
+              accumulatedReply += parsed.delta;
+              options?.onChunk?.(parsed.delta, resolvedModel);
+            }
+          } else if (eventName === 'done') {
+            if (typeof parsed.reply === 'string' && parsed.reply) {
+              accumulatedReply = parsed.reply;
+            }
+            if (typeof parsed.model === 'string' && parsed.model) {
+              resolvedModel = parsed.model;
+            }
+            if (parsed.usage) finalUsage = parsed.usage;
+            if (parsed.cached) streamCached = true;
+          } else if (eventName === 'error') {
+            streamError = {
+              ok: false,
+              code: parsed.code || 'AI_UPSTREAM_ERROR',
+              error: parsed.error || 'Unable to reach AI Assistant right now.',
+              usage: parsed.usage,
+            };
+          }
+        } catch {
+          // ignore malformed SSE packet
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() ?? '';
+        for (const block of blocks) {
+          if (block.trim()) processBlock(block);
+        }
+      }
+      if (buffer.trim()) {
+        processBlock(buffer);
+      }
+
+      if (streamError) {
+        return streamError;
+      }
+
+      return {
+        ok: true,
+        reply: accumulatedReply,
+        model: resolvedModel,
+        cached: streamCached,
+        usage: finalUsage,
+      };
+    }
+
+    if (!isJsonApiResponse(resp)) {
+      return {
+        ok: false,
+        code: 'API_UNAVAILABLE',
+        error: 'AI Assistant server endpoint is not reachable in this environment.',
+      };
+    }
+
+    const body = (await resp.json().catch(() => ({}))) as AskAiAssistantResult;
+    if (!resp.ok || !body.ok) {
+      return {
+        ok: false,
+        code: body.code || `HTTP_${resp.status}`,
+        error: body.error || `AI Assistant request failed (HTTP ${resp.status}).`,
+        usage: body.usage,
+      };
+    }
+
+    return {
+      ok: true,
+      reply: body.reply ?? '',
+      model: body.model,
+      cached: body.cached,
+      usage: body.usage,
+    };
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return {
+        ok: false,
+        code: 'REQUEST_CANCELLED',
+        error: 'Request cancelled.',
+      };
+    }
+    return {
+      ok: false,
+      code: 'NETWORK_ERROR',
+      error: 'Unable to reach the AI Assistant service. Your POS continues operating normally.',
+    };
+  }
+}
+
 
 
