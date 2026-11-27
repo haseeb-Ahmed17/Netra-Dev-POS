@@ -27,6 +27,12 @@ import { SidebarNav } from './components/SidebarNav';
 const AiAssistantView = lazy(() =>
   import('./components/AiAssistantView').then((m) => ({ default: m.AiAssistantView }))
 );
+const OrderManagementView = lazy(() =>
+  import('./components/OrderManagementView').then((m) => ({ default: m.OrderManagementView }))
+);
+const PublicStorefrontView = lazy(() =>
+  import('./components/PublicStorefrontView').then((m) => ({ default: m.PublicStorefrontView }))
+);
 import { StaffPinModal } from './components/StaffPinModal';
 import { StaffView } from './components/StaffView';
 import { StoreSettingsView } from './components/StoreSettingsView';
@@ -60,6 +66,7 @@ import {
   authorizeServerAction,
   bulkUpsertProductsRecord,
   checkIsSuperAdmin,
+  createOmnichannelOrderApi,
   deleteCustomerRecord,
   deleteEmployeeRecord,
   deleteExpenseRecord,
@@ -67,6 +74,7 @@ import {
   ensureUserSubscription,
   fetchAllSubscriptions,
   fetchLatestCustomersForPos,
+  fetchOmnichannelOrdersApi,
   fetchWorkspaceData,
   getActiveShopkeeper,
   getOfflineQueue,
@@ -78,11 +86,14 @@ import {
   resetUserDemoWorkspace,
   restoreWorkspaceSnapshotLocally,
   saveEmployeeRecord,
+  saveStorefrontSettingsApi,
   setupInitialAdminRecord,
   signInShopkeeper,
   signOutShopkeeper,
   signUpShopkeeper,
   syncOfflineQueue,
+  transitionOmnichannelOrderStatusApi,
+  updateOmnichannelPaymentApi,
   updateOrderReturnRecord,
   updatePurchaseRecordCompat,
   updateUdhaarCustomerRecord,
@@ -94,6 +105,15 @@ import {
   verifyStaffPinRecord,
   type AdminSubscriptionAction,
 } from './lib/posRepository';
+import {
+  buildManualWhatsAppFallbackUrl,
+  buildOmnichannelNotificationMessage,
+  calculateOmnichannelOrderTotals,
+  generateOmnichannelOrderNumber,
+  normalizeOmnichannelPaymentDefaults,
+  slugifyStoreName,
+  transitionOmnichannelOrderStatus,
+} from './lib/omnichannelOrders';
 import { hasConfiguredAdmin } from './lib/pinSecurity';
 import { generateUuid } from './lib/idUtils';
 import { canAccessTab, hasRolePermission, type RoleAction } from './lib/rbac';
@@ -272,6 +292,17 @@ export default function App() {
   const isStandaloneCustomerDisplay =
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('display') === 'customer';
+
+  const publicStorefrontSlug = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    const params = new URLSearchParams(window.location.search);
+    const qSlug = (params.get('store') || params.get('shop') || '').trim();
+    if (qSlug) return qSlug;
+    const pathMatch = /^\/store\/([^/]+)/i.exec(window.location.pathname || '');
+    return pathMatch ? decodeURIComponent(pathMatch[1]).trim() : '';
+  }, []);
+
+  const [whatsappServerConfigured, setWhatsappServerConfigured] = useState(false);
 
   const t = TRANSLATIONS[lang];
   const isWorkspaceBootstrapReady = Boolean(
@@ -651,6 +682,17 @@ export default function App() {
       })
       .finally(() => {
         if (active) setLoadingData(false);
+      });
+
+    void fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((h: { whatsappConfigured?: boolean } | null) => {
+        if (active && h && typeof h.whatsappConfigured === 'boolean') {
+          setWhatsappServerConfigured(h.whatsappConfigured);
+        }
+      })
+      .catch(() => {
+        // ignore health check errors offline
       });
 
     return () => {
@@ -3495,6 +3537,378 @@ export default function App() {
     return { crmCustomer, khataCustomer };
   };
 
+  const handleRefreshOmnichannelOrders = useCallback(async () => {
+    if (!user) return;
+    const res = await fetchOmnichannelOrdersApi();
+    if (res.ok && !res.schemaPending) {
+      setExtendedModules((prev) => {
+        const next = { ...prev, omnichannelOrders: res.orders };
+        saveExtendedModules(user.id, next);
+        return next;
+      });
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !staffSession || activeTab !== 'orders_omnichannel') return;
+    void handleRefreshOmnichannelOrders();
+  }, [user, staffSession, activeTab, handleRefreshOmnichannelOrders]);
+
+  const handleCreateOmnichannelOrder = async (payload: {
+    channel: 'website' | 'whatsapp' | 'phone';
+    customerId?: string;
+    customerName: string;
+    customerPhone: string;
+    deliveryAddress: string;
+    notes?: string;
+    branchId?: string;
+    discountAmount?: number;
+    paymentMethod: import('./types').OmnichannelPaymentMethod;
+    paymentStatus?: import('./types').OmnichannelPaymentStatus;
+    paidAmount?: number;
+    items: Array<{ productId: string; quantity: number }>;
+  }): Promise<{ ok: true; order: import('./types').OmnichannelOrder } | { ok: false; error: string }> => {
+    if (!user) return { ok: false, error: 'Authentication required.' };
+    if (!guardAction('omnichannel.create')) {
+      return { ok: false, error: t.rbacUnauthorizedError };
+    }
+
+    const idempotencyKey = `omni-ui-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const isDemoUser = user.id === 'demo-shopkeeper-1';
+    if (!isDemoUser) {
+      const apiRes = await createOmnichannelOrderApi({ ...payload, idempotencyKey });
+      if (apiRes.ok) {
+        setExtendedModules((prev) => {
+          const next = {
+            ...prev,
+            omnichannelOrders: [
+              apiRes.order,
+              ...prev.omnichannelOrders.filter((o) => o.id !== apiRes.order.id),
+            ],
+          };
+          saveExtendedModules(user.id, next);
+          return next;
+        });
+        return { ok: true, order: apiRes.order };
+      }
+      if (!apiRes.unavailable) {
+        return { ok: false, error: apiRes.error };
+      }
+    }
+
+    // Local/demo fallback using the shared deterministic calculation engine
+    const productsById = new Map(products.map((p) => [p.id, p]));
+    const calc = calculateOmnichannelOrderTotals(payload.items, productsById, {
+      discountAmount: payload.discountAmount,
+      branchId: payload.branchId,
+    });
+    if (calc.ok === false) return { ok: false, error: calc.error };
+
+    const payNorm = normalizeOmnichannelPaymentDefaults(
+      payload.paymentMethod,
+      payload.paymentStatus,
+      false
+    );
+    if (payNorm.ok === false) return { ok: false, error: payNorm.error };
+
+    const nowIso = new Date().toISOString();
+    const actorName = activeEmployee?.name || activeRole.toUpperCase();
+    const branch = extendedModules.branches.find((b) => b.id === payload.branchId) ?? activeBranch;
+    const paidAmount = Math.min(calc.total, Math.max(0, Number(payload.paidAmount ?? 0)));
+    const paymentStatus =
+      paidAmount >= calc.total && calc.total > 0
+        ? 'paid'
+        : paidAmount > 0
+        ? 'partially_paid'
+        : payNorm.paymentStatus;
+
+    let customerId = payload.customerId;
+    if (!customerId && payload.customerName.trim() && payload.customerPhone.trim()) {
+      const createdCust = handleAddCustomer({
+        name: payload.customerName.trim(),
+        phone: payload.customerPhone.trim(),
+        address: payload.deliveryAddress.trim(),
+        balance: 0,
+      });
+      customerId = createdCust.id;
+    }
+
+    const order: import('./types').OmnichannelOrder = {
+      id: generateUuid(),
+      userId: user.id,
+      orderNumber: generateOmnichannelOrderNumber(payload.channel),
+      channel: payload.channel,
+      status: 'new',
+      branchId: branch?.id,
+      branchName: branch?.name,
+      customerId,
+      customerName: payload.customerName.trim(),
+      customerPhone: payload.customerPhone.trim(),
+      deliveryAddress: payload.deliveryAddress.trim() || 'Counter Pickup',
+      notes: payload.notes?.trim() || undefined,
+      items: calc.items,
+      subtotal: calc.subtotal,
+      discountAmount: calc.discountAmount,
+      taxAmount: calc.taxAmount,
+      total: calc.total,
+      paymentMethod: payNorm.paymentMethod,
+      paymentStatus,
+      paidAmount,
+      idempotencyKey,
+      stockReserved: false,
+      statusHistory: [
+        {
+          status: 'new',
+          changedAt: nowIso,
+          actorId: activeEmployee?.id || `staff-${activeRole}`,
+          actorName,
+          actorRole: activeRole,
+          note: `${payload.channel} order logged`,
+        },
+      ],
+      notificationLog: [
+        {
+          id: `notif-${Date.now()}`,
+          event: 'new_order',
+          channel: 'whatsapp',
+          status: 'manual_fallback',
+          recipientPhone: payload.customerPhone.trim(),
+          messagePreview: buildOmnichannelNotificationMessage(
+            activeStoreName,
+            {
+              orderNumber: 'NEW',
+              customerName: payload.customerName.trim(),
+              total: calc.total,
+              paymentMethod: payNorm.paymentMethod,
+            },
+            'new_order'
+          ),
+          manualShareUrl: buildManualWhatsAppFallbackUrl(
+            payload.customerPhone.trim(),
+            buildOmnichannelNotificationMessage(
+              activeStoreName,
+              {
+                orderNumber: 'NEW',
+                customerName: payload.customerName.trim(),
+                total: calc.total,
+                paymentMethod: payNorm.paymentMethod,
+              },
+              'new_order'
+            )
+          ),
+          createdAt: nowIso,
+        },
+      ],
+      createdBy: actorName,
+      updatedBy: actorName,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    setExtendedModules((prev) => {
+      const next = { ...prev, omnichannelOrders: [order, ...prev.omnichannelOrders] };
+      saveExtendedModules(user.id, next);
+      return next;
+    });
+
+    return { ok: true, order };
+  };
+
+  const handleTransitionOmnichannelStatus = async (
+    orderId: string,
+    targetStatus: import('./types').OmnichannelOrderStatus,
+    reason?: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    if (!user) return { ok: false, error: 'Authentication required.' };
+    const reqAction: RoleAction =
+      targetStatus === 'cancelled' || targetStatus === 'rejected'
+        ? 'orders.cancel'
+        : 'omnichannel.manage_status';
+    if (!guardAction(reqAction)) {
+      return { ok: false, error: t.rbacUnauthorizedError };
+    }
+
+    const existing = extendedModules.omnichannelOrders.find((o) => o.id === orderId);
+    const isDemoUser = user.id === 'demo-shopkeeper-1';
+    if (!isDemoUser) {
+      const apiRes = await transitionOmnichannelOrderStatusApi(orderId, targetStatus, reason);
+      if (apiRes.ok) {
+        if (Array.isArray(apiRes.updatedProducts) && apiRes.updatedProducts.length > 0) {
+          setProducts(apiRes.updatedProducts);
+        }
+        if (Array.isArray(apiRes.adjustments) && apiRes.adjustments.length > 0) {
+          setInventoryAdjustments((prev) => [...apiRes.adjustments!, ...prev]);
+        }
+        setExtendedModules((prev) => {
+          const next = {
+            ...prev,
+            omnichannelOrders: prev.omnichannelOrders.map((o) =>
+              o.id === orderId ? apiRes.order : o
+            ),
+          };
+          saveExtendedModules(user.id, next);
+          return next;
+        });
+        return { ok: true };
+      }
+      if (!apiRes.unavailable) {
+        return { ok: false, error: apiRes.error };
+      }
+    }
+
+    if (!existing) return { ok: false, error: 'Order not found.' };
+    const actorName = activeEmployee?.name || activeRole.toUpperCase();
+    const res = transitionOmnichannelOrderStatus({
+      order: existing,
+      targetStatus,
+      actor: {
+        id: activeEmployee?.id || `staff-${activeRole}`,
+        name: actorName,
+        role: activeRole,
+      },
+      products,
+      reason,
+    });
+    if (res.ok === false) return { ok: false, error: res.error };
+
+    if (res.didReserveStock || res.didRestoreStock) {
+      setProducts(res.updatedProducts);
+      for (const adj of res.adjustments) {
+        setInventoryAdjustments((prev) => [adj, ...prev]);
+        const updatedProd = res.updatedProducts.find((p) => p.id === adj.productId);
+        if (updatedProd) {
+          void insertInventoryAdjustmentRecord(user.id, adj, updatedProd);
+        }
+      }
+    }
+
+    setExtendedModules((prev) => {
+      const next = {
+        ...prev,
+        omnichannelOrders: prev.omnichannelOrders.map((o) =>
+          o.id === orderId ? res.order : o
+        ),
+      };
+      saveExtendedModules(user.id, next);
+      return next;
+    });
+    return { ok: true };
+  };
+
+  const handleUpdateOmnichannelPayment = async (
+    orderId: string,
+    payload: {
+      paymentMethod?: import('./types').OmnichannelPaymentMethod;
+      paymentStatus?: import('./types').OmnichannelPaymentStatus;
+      paidAmount?: number;
+    }
+  ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    if (!user) return { ok: false, error: 'Authentication required.' };
+    if (!guardAction('omnichannel.payment')) {
+      return { ok: false, error: t.rbacUnauthorizedError };
+    }
+    const isDemoUser = user.id === 'demo-shopkeeper-1';
+    if (!isDemoUser) {
+      const apiRes = await updateOmnichannelPaymentApi(orderId, payload);
+      if (apiRes.ok) {
+        setExtendedModules((prev) => {
+          const next = {
+            ...prev,
+            omnichannelOrders: prev.omnichannelOrders.map((o) =>
+              o.id === orderId ? apiRes.order : o
+            ),
+          };
+          saveExtendedModules(user.id, next);
+          return next;
+        });
+        return { ok: true };
+      }
+      if (!apiRes.unavailable) {
+        return { ok: false, error: apiRes.error };
+      }
+    }
+
+    setExtendedModules((prev) => {
+      const next = {
+        ...prev,
+        omnichannelOrders: prev.omnichannelOrders.map((o) => {
+          if (o.id !== orderId) return o;
+          const nextPaid =
+            payload.paidAmount !== undefined
+              ? Math.min(o.total, Math.max(0, payload.paidAmount))
+              : payload.paymentStatus === 'paid'
+              ? o.total
+              : o.paidAmount;
+          const nextStatus =
+            payload.paymentStatus ??
+            (nextPaid >= o.total && o.total > 0
+              ? 'paid'
+              : nextPaid > 0
+              ? 'partially_paid'
+              : o.paymentStatus);
+          return {
+            ...o,
+            paymentMethod: payload.paymentMethod ?? o.paymentMethod,
+            paymentStatus: nextStatus,
+            paidAmount: nextPaid,
+            updatedAt: new Date().toISOString(),
+          };
+        }),
+      };
+      saveExtendedModules(user.id, next);
+      return next;
+    });
+    return { ok: true };
+  };
+
+  const handleSaveStorefrontSettings = async (payload: {
+    storefrontSlug: string;
+    storefrontEnabled: boolean;
+    storefrontDescription: string;
+    codEnabled: boolean;
+    whatsappPhoneNumberId?: string;
+  }): Promise<{ ok: true } | { ok: false; error: string }> => {
+    if (!user) return { ok: false, error: 'Authentication required.' };
+    if (!guardAction('storefront.manage')) {
+      return { ok: false, error: t.rbacUnauthorizedError };
+    }
+    const cleanSlug = slugifyStoreName(payload.storefrontSlug);
+    const updatedSettings: StoreSettings = {
+      ...storeSettings,
+      storefrontSlug: cleanSlug,
+      storefrontEnabled: payload.storefrontEnabled,
+      storefrontDescription: payload.storefrontDescription,
+      codEnabled: payload.codEnabled,
+      whatsappPhoneNumberId: payload.whatsappPhoneNumberId,
+    };
+    const isDemoUser = user.id === 'demo-shopkeeper-1';
+    if (!isDemoUser) {
+      const apiRes = await saveStorefrontSettingsApi({
+        ...payload,
+        storefrontSlug: cleanSlug,
+      });
+      if (apiRes.ok === false && !apiRes.unavailable) {
+        return { ok: false, error: apiRes.error };
+      }
+    }
+    await handleSaveStoreSettings(updatedSettings);
+    return { ok: true };
+  };
+
+  if (publicStorefrontSlug) {
+    return (
+      <Suspense
+        fallback={
+          <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+            <div className="text-sm font-medium text-slate-600">Loading Online Storefront...</div>
+          </div>
+        }
+      >
+        <PublicStorefrontView storeSlug={publicStorefrontSlug} />
+      </Suspense>
+    );
+  }
+
   if (isStandaloneCustomerDisplay) {
     return (
       <CustomerDisplayView
@@ -3689,11 +4103,41 @@ export default function App() {
               />
             )}
 
+            {activeTab === 'orders_omnichannel' &&
+              hasRolePermission(activeRole, 'omnichannel.read', activeEmployee?.customPermissions) && (
+                <Suspense
+                  fallback={
+                    <div className="bg-white border border-slate-200 rounded-xl p-6 text-sm text-slate-500">
+                      {t.loadingWorkspace}
+                    </div>
+                  }
+                >
+                  <OrderManagementView
+                    orders={extendedModules.omnichannelOrders}
+                    products={products}
+                    customers={customers}
+                    branches={extendedModules.branches}
+                    activeBranchId={extendedModules.activeBranchId}
+                    activeRole={activeRole}
+                    customPermissions={activeEmployee?.customPermissions}
+                    storeSettings={storeSettings}
+                    whatsappConfigured={whatsappServerConfigured}
+                    onRefreshOrders={handleRefreshOmnichannelOrders}
+                    onCreateOrder={handleCreateOmnichannelOrder}
+                    onTransitionStatus={handleTransitionOmnichannelStatus}
+                    onUpdatePayment={handleUpdateOmnichannelPayment}
+                    onSaveStorefrontSettings={handleSaveStorefrontSettings}
+                    t={t}
+                  />
+                </Suspense>
+              )}
+
             {activeTab === 'dashboard' &&
               hasRolePermission(activeRole, 'dashboard.view', activeEmployee?.customPermissions) && (
                 <ExecutiveDashboardView
                   storeName={activeStoreName}
                   orders={orders}
+                  omnichannelOrders={extendedModules.omnichannelOrders}
                   expenses={expenses}
                   products={products}
                   purchases={purchases}

@@ -16,6 +16,7 @@ export interface TranslationStrings {
   navSettings: string;
   navSaasAdmin: string;
   navAiAssistant: string;
+  navOrdersOmnichannel: string;
   navGroupOperations: string;
   navGroupInventory: string;
   navGroupFinance: string;
@@ -761,6 +762,33 @@ export interface TranslationStrings {
   aiDropHint: string;
   aiInvalidFileError: string;
   aiFileTooLargeError: string;
+
+  // Omnichannel Orders & Public Storefront
+  omnichannelTitle: string;
+  omnichannelSubtitle: string;
+  omnichannelNewOrderBtn: string;
+  omnichannelStorefrontBtn: string;
+  omnichannelChannelAll: string;
+  omnichannelChannelWebsite: string;
+  omnichannelChannelWhatsApp: string;
+  omnichannelChannelPhone: string;
+  omnichannelStatusAll: string;
+  omnichannelStatusNew: string;
+  omnichannelStatusAccepted: string;
+  omnichannelStatusPreparing: string;
+  omnichannelStatusReady: string;
+  omnichannelStatusDelivered: string;
+  omnichannelStatusRejected: string;
+  omnichannelStatusCancelled: string;
+  omnichannelPayStatusUnpaid: string;
+  omnichannelPayStatusCodPending: string;
+  omnichannelPayStatusPartial: string;
+  omnichannelPayStatusPaid: string;
+  omnichannelPayStatusRefunded: string;
+  omnichannelPayMethodCod: string;
+  omnichannelPayMethodOnline: string;
+  omnichannelNoOrders: string;
+  omnichannelAnalyticsTitle: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationStrings> = {
@@ -780,6 +808,7 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navSettings: 'Store Settings',
     navSaasAdmin: 'SaaS Admin',
     navAiAssistant: 'AI Assistant',
+    navOrdersOmnichannel: 'Omnichannel Orders',
     navGroupOperations: 'Operations',
     navGroupInventory: 'Inventory & Supply',
     navGroupFinance: 'Finance & Khata',
@@ -1509,6 +1538,32 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     aiDropHint: 'PNG, JPG, WEBP, GIF up to 4 MB',
     aiInvalidFileError: 'Please upload a valid PNG, JPG, WEBP, or GIF screenshot.',
     aiFileTooLargeError: 'Screenshot must be 4 MB or smaller.',
+
+    omnichannelTitle: 'Omnichannel Order Management',
+    omnichannelSubtitle: 'Manage Website Storefront, WhatsApp, and Phone orders in one queue with stock reservation & delivery tracking',
+    omnichannelNewOrderBtn: 'New Phone / WhatsApp Order',
+    omnichannelStorefrontBtn: 'Storefront & Link',
+    omnichannelChannelAll: 'All Channels',
+    omnichannelChannelWebsite: 'Website',
+    omnichannelChannelWhatsApp: 'WhatsApp',
+    omnichannelChannelPhone: 'Phone',
+    omnichannelStatusAll: 'All',
+    omnichannelStatusNew: 'New',
+    omnichannelStatusAccepted: 'Accepted',
+    omnichannelStatusPreparing: 'Preparing',
+    omnichannelStatusReady: 'Ready',
+    omnichannelStatusDelivered: 'Delivered',
+    omnichannelStatusRejected: 'Rejected',
+    omnichannelStatusCancelled: 'Cancelled',
+    omnichannelPayStatusUnpaid: 'Unpaid',
+    omnichannelPayStatusCodPending: 'COD Pending',
+    omnichannelPayStatusPartial: 'Partially Paid',
+    omnichannelPayStatusPaid: 'Paid',
+    omnichannelPayStatusRefunded: 'Refunded',
+    omnichannelPayMethodCod: 'Cash on Delivery',
+    omnichannelPayMethodOnline: 'Online Payment',
+    omnichannelNoOrders: 'No omnichannel orders match your current filters.',
+    omnichannelAnalyticsTitle: 'Omnichannel Order Channels',
   },
   ur: {
     brandName: 'خاص ریٹیل',
@@ -1526,6 +1581,7 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     navSettings: 'اسٹور سیٹنگز',
     navSaasAdmin: 'سپر ایڈمن پینل',
     navAiAssistant: 'اے آئی اسسٹنٹ',
+    navOrdersOmnichannel: 'آن لائن / فون آرڈرز',
     navGroupOperations: 'روزمرہ کاروبار',
     navGroupInventory: 'اسٹاک اور خریداری',
     navGroupFinance: 'مالیات اور کھاتہ',
@@ -2255,6 +2311,32 @@ export const TRANSLATIONS: Record<Language, TranslationStrings> = {
     aiDropHint: 'PNG، JPG، WEBP، GIF زیادہ سے زیادہ 4 MB',
     aiInvalidFileError: 'براہِ کرم صرف PNG، JPG، WEBP یا GIF اسکرین شاٹ اپ لوڈ کریں۔',
     aiFileTooLargeError: 'اسکرین شاٹ کا سائز 4 MB یا اس سے کم ہونا چاہیے۔',
+
+    omnichannelTitle: 'اومنی چینل آرڈر مینجمنٹ',
+    omnichannelSubtitle: 'ویب سائٹ اسٹور، واٹس ایپ اور فون آرڈرز کو ایک جگہ اسٹاک ریزرویشن اور ڈیلیوری اسٹیٹس کے ساتھ منظم کریں',
+    omnichannelNewOrderBtn: 'نیا فون / واٹس ایپ آرڈر',
+    omnichannelStorefrontBtn: 'آن لائن اسٹور لنک',
+    omnichannelChannelAll: 'تمام ذرائع',
+    omnichannelChannelWebsite: 'ویب سائٹ',
+    omnichannelChannelWhatsApp: 'واٹس ایپ',
+    omnichannelChannelPhone: 'فون آرڈر',
+    omnichannelStatusAll: 'تمام',
+    omnichannelStatusNew: 'نیا',
+    omnichannelStatusAccepted: 'منظور شدہ',
+    omnichannelStatusPreparing: 'تیاری جاری',
+    omnichannelStatusReady: 'تیار ہے',
+    omnichannelStatusDelivered: 'ڈیلیور ہو گیا',
+    omnichannelStatusRejected: 'مسترد',
+    omnichannelStatusCancelled: 'منسوخ',
+    omnichannelPayStatusUnpaid: 'غیر ادا شدہ',
+    omnichannelPayStatusCodPending: 'کیش آن ڈیلیوری باقی',
+    omnichannelPayStatusPartial: 'جزوی ادائیگی',
+    omnichannelPayStatusPaid: 'مکمل ادا شدہ',
+    omnichannelPayStatusRefunded: 'واپسی (Refunded)',
+    omnichannelPayMethodCod: 'کیش آن ڈیلیوری',
+    omnichannelPayMethodOnline: 'آن لائن ادائیگی',
+    omnichannelNoOrders: 'موجودہ فلٹرز کے مطابق کوئی آرڈر موجود نہیں ہے۔',
+    omnichannelAnalyticsTitle: 'آرڈر چینلز کارکردگی',
   },
 };
 

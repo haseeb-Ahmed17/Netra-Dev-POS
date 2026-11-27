@@ -7,6 +7,7 @@ import {
   ClipboardList,
   Clock,
   FileSearch,
+  Globe,
   LayoutDashboard,
   PackagePlus,
   ReceiptText,
@@ -79,6 +80,7 @@ export function SidebarNav({
       title: t.navGroupOperations,
       items: [
         { id: 'pos', label: t.navPos, icon: ShoppingCart },
+        { id: 'orders_omnichannel', label: t.navOrdersOmnichannel, icon: Globe },
         { id: 'dashboard', label: t.navDashboard, icon: LayoutDashboard },
         { id: 'transactions', label: t.navTransactions, icon: ReceiptText },
         { id: 'shifts', label: t.navShifts, icon: Clock },

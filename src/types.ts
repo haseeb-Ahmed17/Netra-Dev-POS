@@ -5,6 +5,7 @@ export type { SellingUnit };
 
 export type NavTab =
   | 'pos'
+  | 'orders_omnichannel'
   | 'dashboard'
   | 'transactions'
   | 'shifts'
@@ -371,6 +372,12 @@ export interface StoreSettings {
   whatsappAutoReceipts?: boolean;
   whatsappTemplateReceipt?: string;
   whatsappTemplateReminder?: string;
+  storefrontSlug?: string;
+  storefrontEnabled?: boolean;
+  storefrontDescription?: string;
+  codEnabled?: boolean;
+  whatsappPhoneNumberId?: string;
+  onlinePaymentEnabled?: boolean;
 }
 
 // Phase 4 (existing) & Phase 11: Offline Queue & Sync History
@@ -647,4 +654,133 @@ export interface AiAssistantStatusResponse {
   maxImageBytes: number;
   reason?: string;
 }
+
+// Omnichannel Order Management & Public Storefront
+
+export type OrderChannel = 'website' | 'whatsapp' | 'phone';
+
+export type OmnichannelOrderStatus =
+  | 'new'
+  | 'accepted'
+  | 'preparing'
+  | 'ready'
+  | 'delivered'
+  | 'rejected'
+  | 'cancelled';
+
+export type OmnichannelPaymentMethod =
+  | 'cod'
+  | 'cash'
+  | 'jazzcash'
+  | 'easypaisa'
+  | 'card'
+  | 'bank_transfer'
+  | 'udhaar'
+  | 'online';
+
+export type OmnichannelPaymentStatus =
+  | 'unpaid'
+  | 'cod_pending'
+  | 'partially_paid'
+  | 'paid'
+  | 'refunded';
+
+export interface OmnichannelOrderItem {
+  productId: string;
+  sku: string;
+  nameEn: string;
+  nameUr: string;
+  category: Exclude<CategoryId, 'all'>;
+  sellingUnit: SellingUnit;
+  quantity: number;
+  unitPrice: number;
+  taxRate: number;
+  lineTotal: number;
+}
+
+export interface OmnichannelStatusHistoryEntry {
+  status: OmnichannelOrderStatus;
+  changedAt: string;
+  actorId: string;
+  actorName: string;
+  actorRole: EmployeeRole | 'customer' | 'webhook';
+  note?: string;
+}
+
+export interface OmnichannelNotificationEntry {
+  id: string;
+  event: 'new_order' | 'order_accepted' | 'order_ready' | 'order_delivered';
+  channel: 'whatsapp';
+  status: 'sent' | 'manual_fallback' | 'skipped' | 'failed';
+  recipientPhone: string;
+  messagePreview: string;
+  manualShareUrl?: string;
+  error?: string;
+  createdAt: string;
+}
+
+export interface OmnichannelOrder {
+  id: string;
+  userId?: string;
+  orderNumber: string;
+  channel: OrderChannel;
+  status: OmnichannelOrderStatus;
+  branchId?: string;
+  branchName?: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  deliveryAddress: string;
+  notes?: string;
+  items: OmnichannelOrderItem[];
+  subtotal: number;
+  discountAmount: number;
+  taxAmount: number;
+  total: number;
+  paymentMethod: OmnichannelPaymentMethod;
+  paymentStatus: OmnichannelPaymentStatus;
+  paidAmount: number;
+  idempotencyKey?: string;
+  externalMessageId?: string;
+  stockReserved: boolean;
+  stockReservedAt?: string;
+  stockRestoredAt?: string;
+  statusHistory: OmnichannelStatusHistoryEntry[];
+  notificationLog: OmnichannelNotificationEntry[];
+  cancellationReason?: string;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublicStorefrontProduct {
+  id: string;
+  sku: string;
+  nameEn: string;
+  nameUr: string;
+  category: Exclude<CategoryId, 'all'>;
+  brand?: string;
+  variant?: string;
+  price: number;
+  sellingUnit: SellingUnit;
+  stock: number;
+  branchStock?: Record<string, number>;
+  image: string;
+}
+
+export interface PublicStorefrontData {
+  storeSlug: string;
+  storeName: string;
+  storeDescription: string;
+  phone: string;
+  address: string;
+  codEnabled: boolean;
+  onlinePaymentConfigured: boolean;
+  whatsappConfigured: boolean;
+  defaultTaxRate: number;
+  branches: Array<{ id: string; name: string; isMain: boolean }>;
+  products: PublicStorefrontProduct[];
+}
+
 

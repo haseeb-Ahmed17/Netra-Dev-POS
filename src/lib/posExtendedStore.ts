@@ -5,6 +5,7 @@ import type {
   CashShift,
   EmployeeActivityLog,
   HeldBill,
+  OmnichannelOrder,
   PurchaseReturnRecord,
   StockTransfer,
   SupplierPayment,
@@ -25,6 +26,7 @@ export interface ExtendedWorkspaceModules {
   auditLogs: AuditLogEntry[];
   employeeActivityLogs: EmployeeActivityLog[];
   syncHistory: SyncHistoryEntry[];
+  omnichannelOrders: OmnichannelOrder[];
 }
 
 function extStorageKey(userId: string): string {
@@ -47,6 +49,7 @@ export function createDefaultExtendedModules(
     auditLogs: [],
     employeeActivityLogs: [],
     syncHistory: [],
+    omnichannelOrders: [],
   };
 }
 
@@ -77,6 +80,7 @@ export function loadExtendedModulesSync(
         ? parsed.employeeActivityLogs
         : [],
       syncHistory: Array.isArray(parsed.syncHistory) ? parsed.syncHistory : [],
+      omnichannelOrders: Array.isArray(parsed.omnichannelOrders) ? parsed.omnichannelOrders : [],
     };
   } catch {
     return fallback;

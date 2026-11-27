@@ -5,6 +5,7 @@ export type AppTabId = NavTab;
 export const ROLE_ALLOWED_TABS: Record<EmployeeRole, AppTabId[]> = {
   admin: [
     'pos',
+    'orders_omnichannel',
     'dashboard',
     'transactions',
     'shifts',
@@ -23,6 +24,7 @@ export const ROLE_ALLOWED_TABS: Record<EmployeeRole, AppTabId[]> = {
   ],
   manager: [
     'pos',
+    'orders_omnichannel',
     'dashboard',
     'transactions',
     'shifts',
@@ -37,7 +39,7 @@ export const ROLE_ALLOWED_TABS: Record<EmployeeRole, AppTabId[]> = {
     'audit_logs',
     'ai_assistant',
   ],
-  cashier: ['pos', 'transactions', 'shifts', 'customers', 'ai_assistant'],
+  cashier: ['pos', 'orders_omnichannel', 'transactions', 'shifts', 'customers', 'ai_assistant'],
 };
 
 export type RoleAction =
@@ -47,6 +49,11 @@ export type RoleAction =
   | 'orders.read'
   | 'orders.return'
   | 'orders.cancel'
+  | 'omnichannel.read'
+  | 'omnichannel.create'
+  | 'omnichannel.manage_status'
+  | 'omnichannel.payment'
+  | 'storefront.manage'
   | 'shifts.manage'
   | 'shifts.close'
   | 'inventory.write'
@@ -74,6 +81,11 @@ export const ALL_ROLE_ACTIONS: RoleAction[] = [
   'orders.read',
   'orders.return',
   'orders.cancel',
+  'omnichannel.read',
+  'omnichannel.create',
+  'omnichannel.manage_status',
+  'omnichannel.payment',
+  'storefront.manage',
   'shifts.manage',
   'shifts.close',
   'inventory.write',
@@ -102,6 +114,11 @@ const ACTION_REQUIRED_ROLES: Record<RoleAction, EmployeeRole[]> = {
   'orders.read': ['admin', 'manager', 'cashier'],
   'orders.return': ['admin', 'manager', 'cashier'],
   'orders.cancel': ['admin', 'manager'],
+  'omnichannel.read': ['admin', 'manager', 'cashier'],
+  'omnichannel.create': ['admin', 'manager', 'cashier'],
+  'omnichannel.manage_status': ['admin', 'manager', 'cashier'],
+  'omnichannel.payment': ['admin', 'manager'],
+  'storefront.manage': ['admin'],
   'shifts.manage': ['admin', 'manager', 'cashier'],
   'shifts.close': ['admin', 'manager'],
   'inventory.write': ['admin', 'manager'],
@@ -142,6 +159,7 @@ export function hasRolePermission(
       'backup.manage',
       'workspace.reset',
       'settings.write',
+      'storefront.manage',
       'customers.delete',
       'branches.manage',
     ];

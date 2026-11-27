@@ -201,8 +201,8 @@ async function runTests(): Promise<void> {
     `Targeted prompt should significantly reduce tokens (${targetedPrompt.length} vs ${fullPrompt.length})`
   );
   assert(
-    targetedPrompt.includes('no public e-commerce storefront exists'),
-    'Compact prompt must preserve online storefront limitation'
+    targetedPrompt.includes('Live online card payment gateways require server payment configuration'),
+    'Compact prompt must preserve online payment gateway limitation'
   );
 
   assert(

@@ -23,6 +23,11 @@ import {
   validateAiAssistRequestBody,
   type AiGenerateContentFn,
 } from './serverAiAssistant';
+import {
+  OmnichannelMemoryStore,
+  registerOmnichannelRoutes,
+  type OmnichannelRouteDeps,
+} from './serverOmnichannelOrders';
 
 function isRpcMissingError(message?: string | null): boolean {
   return /PGRST202|Could not find the function/i.test(message || '');
@@ -808,6 +813,10 @@ async function issueFallbackStaffToken(
 export interface CreatePosExpressAppOptions {
   aiGenerator?: AiGenerateContentFn;
   aiEnv?: Record<string, string | undefined>;
+  omnichannelStoreOverride?: OmnichannelMemoryStore;
+  whatsappEnvOverride?: OmnichannelRouteDeps['whatsappEnv'];
+  whatsappSendOverride?: OmnichannelRouteDeps['whatsappSendOverride'];
+  onlineGatewayConfigured?: boolean;
   authenticateOverride?: (req: Request) => Promise<VerifiedSupabaseUser | null>;
   tenantAccessOverride?: (user: VerifiedSupabaseUser) => Promise<{
     allowed: boolean;
@@ -824,6 +833,15 @@ export function createPosExpressApp(options?: CreatePosExpressAppOptions) {
   const app = express();
   const aiUsageTracker = new AiUsageTracker();
   const aiHowToCache = new SafePosHowToCache();
+  app.use(
+    '/api/webhooks/whatsapp',
+    express.json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        (req as Request & { rawBody?: Buffer }).rawBody = buf;
+      },
+    })
+  );
   app.use('/api/ai/assist', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '1mb' }));
 
@@ -2307,6 +2325,17 @@ export function createPosExpressApp(options?: CreatePosExpressAppOptions) {
     } finally {
       res.off('close', onResponseClose);
     }
+  });
+
+  registerOmnichannelRoutes(app, {
+    adminSupabase,
+    memoryStore: options?.omnichannelStoreOverride,
+    authenticateReq,
+    checkOpAccess,
+    resolveStaff,
+    whatsappEnv: options?.whatsappEnvOverride,
+    whatsappSendOverride: options?.whatsappSendOverride,
+    onlineGatewayConfigured: options?.onlineGatewayConfigured,
   });
 
   return app;

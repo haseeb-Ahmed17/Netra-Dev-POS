@@ -21,8 +21,14 @@ import type {
   ExpenseRecord,
   InventoryAdjustment,
   OfflineQueuedSale,
+  OmnichannelOrder,
+  OmnichannelOrderStatus,
+  OmnichannelPaymentMethod,
+  OmnichannelPaymentStatus,
+  OrderChannel,
   OrderRecord,
   Product,
+  PublicStorefrontData,
   PurchaseItem,
   PurchaseRecord,
   ReminderSchedule,
@@ -1548,13 +1554,35 @@ function mapStoreSettingsFromRow(
       typeof row.whatsapp_template_reminder === 'string'
         ? row.whatsapp_template_reminder
         : defaults.whatsappTemplateReminder,
+    storefrontSlug:
+      typeof row.storefront_slug === 'string' && row.storefront_slug
+        ? row.storefront_slug
+        : defaults.storefrontSlug,
+    storefrontEnabled:
+      typeof row.storefront_enabled === 'boolean'
+        ? row.storefront_enabled
+        : defaults.storefrontEnabled,
+    storefrontDescription:
+      typeof row.storefront_description === 'string'
+        ? row.storefront_description
+        : defaults.storefrontDescription,
+    codEnabled:
+      typeof row.cod_enabled === 'boolean' ? row.cod_enabled : defaults.codEnabled ?? true,
+    whatsappPhoneNumberId:
+      typeof row.whatsapp_business_phone_id === 'string'
+        ? row.whatsapp_business_phone_id
+        : defaults.whatsappPhoneNumberId,
+    onlinePaymentEnabled:
+      typeof row.online_payment_enabled === 'boolean'
+        ? row.online_payment_enabled
+        : defaults.onlinePaymentEnabled,
   };
 }
 
 function mapStoreSettingsToRow(
   settings: StoreSettings,
   userId: string,
-  tier: 'extended' | 'wallets' | 'core' = 'extended'
+  tier: 'omnichannel' | 'extended' | 'wallets' | 'core' = 'extended'
 ) {
   const core = {
     user_id: userId,
@@ -1574,7 +1602,7 @@ function mapStoreSettingsToRow(
     easypaisa_account_number: settings.easypaisaAccountNumber ?? '',
   };
   if (tier === 'wallets') return wallets;
-  return {
+  const extended = {
     ...wallets,
     default_tax_rate: settings.defaultTaxRate ?? 0,
     thermal_paper_width: settings.thermalPaperWidth ?? '80mm',
@@ -1594,6 +1622,16 @@ function mapStoreSettingsToRow(
     whatsapp_auto_receipts: Boolean(settings.whatsappAutoReceipts),
     whatsapp_template_receipt: settings.whatsappTemplateReceipt ?? '',
     whatsapp_template_reminder: settings.whatsappTemplateReminder ?? '',
+  };
+  if (tier === 'extended') return extended;
+  return {
+    ...extended,
+    storefront_slug: settings.storefrontSlug?.trim() || null,
+    storefront_enabled: Boolean(settings.storefrontEnabled),
+    storefront_description: settings.storefrontDescription ?? '',
+    cod_enabled: settings.codEnabled !== false,
+    whatsapp_business_phone_id: settings.whatsappPhoneNumberId?.trim() || null,
+    online_payment_enabled: Boolean(settings.onlinePaymentEnabled),
   };
 }
 
@@ -3674,21 +3712,28 @@ export async function upsertStoreSettingsRecord(
   if (isSupabaseConfigured && supabase) {
     const first = await supabase
       .from('store_settings')
-      .upsert(mapStoreSettingsToRow(settings, userId, 'extended'));
+      .upsert(mapStoreSettingsToRow(settings, userId, 'omnichannel'));
     if (first.error) {
       if (isMissingColumnError(first.error.message)) {
-        const wallets = await supabase
+        const ext = await supabase
           .from('store_settings')
-          .upsert(mapStoreSettingsToRow(settings, userId, 'wallets'));
-        if (!wallets.error) return null;
-        if (isMissingColumnError(wallets.error.message)) {
-          const core = await supabase
+          .upsert(mapStoreSettingsToRow(settings, userId, 'extended'));
+        if (!ext.error) return null;
+        if (isMissingColumnError(ext.error.message)) {
+          const wallets = await supabase
             .from('store_settings')
-            .upsert(mapStoreSettingsToRow(settings, userId, 'core'));
-          if (core.error) return core.error.message;
-          return null;
+            .upsert(mapStoreSettingsToRow(settings, userId, 'wallets'));
+          if (!wallets.error) return null;
+          if (isMissingColumnError(wallets.error.message)) {
+            const core = await supabase
+              .from('store_settings')
+              .upsert(mapStoreSettingsToRow(settings, userId, 'core'));
+            if (core.error) return core.error.message;
+            return null;
+          }
+          return wallets.error.message;
         }
-        return wallets.error.message;
+        return ext.error.message;
       }
       return first.error.message;
     }
@@ -4841,6 +4886,296 @@ export async function askAiAssistant(
     };
   }
 }
+
+// ============================================================================
+// Omnichannel Order Management & Public Storefront Client APIs
+// ============================================================================
+
+export async function fetchPublicStorefront(
+  slug: string
+): Promise<{ ok: true; storefront: PublicStorefrontData } | { ok: false; error: string }> {
+  try {
+    const resp = await fetch(`/api/storefront/${encodeURIComponent(slug)}`);
+    if (!isJsonApiResponse(resp)) {
+      return { ok: false, error: 'Storefront service is unavailable in this environment.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      storefront?: PublicStorefrontData;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.storefront) {
+      return { ok: false, error: body.error || 'Storefront not found or currently offline.' };
+    }
+    return { ok: true, storefront: body.storefront };
+  } catch {
+    return { ok: false, error: 'Unable to connect to the online storefront right now.' };
+  }
+}
+
+export async function submitPublicStorefrontOrder(
+  slug: string,
+  payload: {
+    customerName: string;
+    customerPhone: string;
+    deliveryAddress: string;
+    notes?: string;
+    branchId?: string;
+    paymentMethod: OmnichannelPaymentMethod;
+    idempotencyKey: string;
+    items: Array<{ productId: string; quantity: number }>;
+  }
+): Promise<
+  | {
+      ok: true;
+      deduplicated?: boolean;
+      order: {
+        id: string;
+        orderNumber: string;
+        status: OmnichannelOrderStatus;
+        total: number;
+        paymentMethod: OmnichannelPaymentMethod;
+        paymentStatus: OmnichannelPaymentStatus;
+        createdAt: string;
+      };
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    const resp = await fetch(`/api/storefront/${encodeURIComponent(slug)}/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-idempotency-key': payload.idempotencyKey,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!isJsonApiResponse(resp)) {
+      return { ok: false, error: 'Online order endpoint is unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      deduplicated?: boolean;
+      order?: {
+        id: string;
+        orderNumber: string;
+        status: OmnichannelOrderStatus;
+        total: number;
+        paymentMethod: OmnichannelPaymentMethod;
+        paymentStatus: OmnichannelPaymentStatus;
+        createdAt: string;
+      };
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.order) {
+      return { ok: false, error: body.error || 'Could not submit order.' };
+    }
+    return { ok: true, deduplicated: body.deduplicated, order: body.order };
+  } catch {
+    return { ok: false, error: 'Network error while submitting your order.' };
+  }
+}
+
+async function authenticatedOmnichannelFetch(
+  url: string,
+  init?: RequestInit
+): Promise<Response | null> {
+  let token = await getSupabaseAccessToken();
+  if (!token) return null;
+  const staffToken = getStaffSessionHeaderToken();
+  const makeHeaders = (jwt: string): Record<string, string> => {
+    const h: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${jwt}`,
+      ...((init?.headers as Record<string, string> | undefined) ?? {}),
+    };
+    if (staffToken) h['x-staff-session'] = staffToken;
+    return h;
+  };
+  let resp = await fetch(url, { ...init, headers: makeHeaders(token) });
+  if (resp.status === 401) {
+    const refreshed = await getSupabaseAccessToken(true);
+    if (refreshed && refreshed !== token) {
+      token = refreshed;
+      resp = await fetch(url, { ...init, headers: makeHeaders(token) });
+    }
+  }
+  return resp;
+}
+
+export async function fetchOmnichannelOrdersApi(): Promise<{
+  ok: boolean;
+  orders: OmnichannelOrder[];
+  schemaPending?: boolean;
+  error?: string;
+}> {
+  try {
+    const resp = await authenticatedOmnichannelFetch('/api/omnichannel/orders');
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, orders: [] };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      orders?: OmnichannelOrder[];
+      schemaPending?: boolean;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok) {
+      return { ok: false, orders: [], error: body.error };
+    }
+    return {
+      ok: true,
+      orders: Array.isArray(body.orders) ? body.orders : [],
+      schemaPending: body.schemaPending,
+    };
+  } catch {
+    return { ok: false, orders: [] };
+  }
+}
+
+export async function createOmnichannelOrderApi(payload: {
+  channel: OrderChannel;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  deliveryAddress: string;
+  notes?: string;
+  branchId?: string;
+  discountAmount?: number;
+  paymentMethod: OmnichannelPaymentMethod;
+  paymentStatus?: OmnichannelPaymentStatus;
+  paidAmount?: number;
+  idempotencyKey: string;
+  items: Array<{ productId: string; quantity: number }>;
+}): Promise<{ ok: true; order: OmnichannelOrder } | { ok: false; unavailable?: boolean; error: string }> {
+  try {
+    const resp = await authenticatedOmnichannelFetch('/api/omnichannel/orders', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, unavailable: true, error: 'Server omnichannel endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      order?: OmnichannelOrder;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.order) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return { ok: true, order: body.order };
+  } catch {
+    return { ok: false, unavailable: true, error: 'Network error.' };
+  }
+}
+
+export async function transitionOmnichannelOrderStatusApi(
+  orderId: string,
+  status: OmnichannelOrderStatus,
+  reason?: string
+): Promise<
+  | {
+      ok: true;
+      order: OmnichannelOrder;
+      updatedProducts?: Product[];
+      adjustments?: InventoryAdjustment[];
+    }
+  | { ok: false; unavailable?: boolean; error: string }
+> {
+  try {
+    const resp = await authenticatedOmnichannelFetch(
+      `/api/omnichannel/orders/${encodeURIComponent(orderId)}/status`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ status, reason }),
+      }
+    );
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, unavailable: true, error: 'Server omnichannel endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      order?: OmnichannelOrder;
+      updatedProducts?: Product[];
+      adjustments?: InventoryAdjustment[];
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.order) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return {
+      ok: true,
+      order: body.order,
+      updatedProducts: body.updatedProducts,
+      adjustments: body.adjustments,
+    };
+  } catch {
+    return { ok: false, unavailable: true, error: 'Network error.' };
+  }
+}
+
+export async function updateOmnichannelPaymentApi(
+  orderId: string,
+  payload: {
+    paymentMethod?: OmnichannelPaymentMethod;
+    paymentStatus?: OmnichannelPaymentStatus;
+    paidAmount?: number;
+  }
+): Promise<{ ok: true; order: OmnichannelOrder } | { ok: false; unavailable?: boolean; error: string }> {
+  try {
+    const resp = await authenticatedOmnichannelFetch(
+      `/api/omnichannel/orders/${encodeURIComponent(orderId)}/payment`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, unavailable: true, error: 'Server omnichannel endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      order?: OmnichannelOrder;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.order) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return { ok: true, order: body.order };
+  } catch {
+    return { ok: false, unavailable: true, error: 'Network error.' };
+  }
+}
+
+export async function saveStorefrontSettingsApi(payload: {
+  storefrontSlug: string;
+  storefrontEnabled: boolean;
+  storefrontDescription: string;
+  codEnabled: boolean;
+  whatsappPhoneNumberId?: string;
+}): Promise<{ ok: true } | { ok: false; unavailable?: boolean; error: string }> {
+  try {
+    const resp = await authenticatedOmnichannelFetch('/api/omnichannel/storefront-settings', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, unavailable: true, error: 'Server storefront settings endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, unavailable: true, error: 'Network error.' };
+  }
+}
+
 
 
 

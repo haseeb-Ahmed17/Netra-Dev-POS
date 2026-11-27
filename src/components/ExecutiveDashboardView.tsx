@@ -43,11 +43,13 @@ import {
   formatQuantityWithUnit,
   getUnitLabel,
 } from '../lib/unitUtils';
+import { computeOmnichannelAnalytics } from '../lib/omnichannelOrders';
 import type {
   Branch,
   CashShift,
   ExpenseRecord,
   Language,
+  OmnichannelOrder,
   OrderRecord,
   Product,
   PurchaseRecord,
@@ -59,6 +61,7 @@ type InventoryAlertTab = 'low_out' | 'fast' | 'slow';
 interface ExecutiveDashboardViewProps {
   storeName: string;
   orders: OrderRecord[];
+  omnichannelOrders?: OmnichannelOrder[];
   expenses: ExpenseRecord[];
   products: Product[];
   purchases: PurchaseRecord[];
@@ -259,6 +262,7 @@ function KpiMetricCard({
 export function ExecutiveDashboardView({
   storeName,
   orders,
+  omnichannelOrders = [],
   expenses,
   products,
   purchases,
@@ -277,6 +281,10 @@ export function ExecutiveDashboardView({
   lang,
   t,
 }: ExecutiveDashboardViewProps) {
+  const omnichannelStats = useMemo(
+    () => computeOmnichannelAnalytics(omnichannelOrders),
+    [omnichannelOrders]
+  );
   const [timeframe, setTimeframe] = useState<DashboardTimeframe>('month');
   const [salesGranularity, setSalesGranularity] = useState<SalesGranularity>('daily');
   const [topProductsPeriod, setTopProductsPeriod] = useState<TopProductTimeframe>('month');
@@ -1760,6 +1768,88 @@ export function ExecutiveDashboardView({
                 })}
               </div>
             )}
+          </section>
+
+          <section className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">
+                  {t.omnichannelAnalyticsTitle}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Website Storefront, WhatsApp & Phone order volume, conversion, and COD vs Prepaid mix
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs font-semibold tabular-nums">
+                <span className="px-2.5 py-1 rounded-md bg-slate-100 text-slate-700">
+                  Today: {omnichannelStats.dailyOrders}
+                </span>
+                <span className="px-2.5 py-1 rounded-md bg-slate-100 text-slate-700">
+                  7D: {omnichannelStats.weeklyOrders}
+                </span>
+                <span className="px-2.5 py-1 rounded-md bg-slate-100 text-slate-700">
+                  Month: {omnichannelStats.monthlyOrders}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              {(['website', 'whatsapp', 'phone'] as const).map((ch) => {
+                const stat = omnichannelStats.byChannel[ch];
+                const label =
+                  ch === 'website'
+                    ? t.omnichannelChannelWebsite
+                    : ch === 'whatsapp'
+                    ? t.omnichannelChannelWhatsApp
+                    : t.omnichannelChannelPhone;
+                return (
+                  <div
+                    key={ch}
+                    className="border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-900">{label}</span>
+                      <span className="font-mono font-bold text-teal-800 tabular-nums">
+                        {formatCurrency(stat.revenue, lang)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-600 tabular-nums">
+                      <span>Orders: {stat.orders}</span>
+                      <span>Delivered: {stat.delivered}</span>
+                      <span>Cancelled: {stat.cancelled}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="border border-slate-200 rounded-lg p-3">
+                <p className="text-slate-500">Accepted / Delivered</p>
+                <p className="font-bold text-slate-900 text-sm mt-0.5 tabular-nums">
+                  {omnichannelStats.acceptedOrProgressedCount} ({omnichannelStats.acceptanceRate}%)
+                </p>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <p className="text-slate-500">Cancelled / Rejected</p>
+                <p className="font-bold text-rose-700 text-sm mt-0.5 tabular-nums">
+                  {omnichannelStats.cancelledOrRejectedCount} ({omnichannelStats.cancellationRate}%)
+                </p>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <p className="text-slate-500">COD Orders</p>
+                <p className="font-bold text-slate-900 text-sm mt-0.5 tabular-nums">
+                  {omnichannelStats.codCount} · {formatCurrency(omnichannelStats.codRevenue, lang)}
+                </p>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <p className="text-slate-500">Prepaid / Wallet / Bank</p>
+                <p className="font-bold text-emerald-800 text-sm mt-0.5 tabular-nums">
+                  {omnichannelStats.prepaidCount} ·{' '}
+                  {formatCurrency(omnichannelStats.prepaidRevenue, lang)}
+                </p>
+              </div>
+            </div>
           </section>
 
           {cashShifts.length > 0 && (

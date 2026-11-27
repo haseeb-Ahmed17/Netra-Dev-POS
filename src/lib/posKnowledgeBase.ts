@@ -142,15 +142,17 @@ export const SMARTBITZ_POS_KNOWLEDGE_MODULES: PosKnowledgeModule[] = [
   },
   {
     id: 'online_orders_sync',
-    title: 'Online Sync & Order Status',
-    navLabel: 'Top Bar Sync / Audit Logs',
+    title: 'Omnichannel Orders, Public Storefront & Cloud Sync',
+    navLabel: 'Omnichannel Orders / Storefront',
     minRoles: ['admin', 'manager', 'cashier'],
     capabilities: [
-      'Cloud sync saves orders, inventory, customers, and Udhaar entries to Supabase when online.',
-      'Offline sales queue safely in browser IndexedDB/localStorage and auto-sync when connectivity returns.',
+      'Each shop can enable a public online storefront link (?store=<slug>) displaying only public product prices, stock availability, and images.',
+      'Central Omnichannel Orders dashboard manages Website, WhatsApp, and Phone orders through New -> Accepted -> Preparing -> Ready -> Delivered (or Rejected/Cancelled).',
+      'Stock is deducted once only when an order transitions to Accepted, and restored once if an accepted/preparing/ready order is cancelled.',
+      'Cloud sync saves orders, inventory, customers, and Udhaar entries to Supabase when online; offline POS sales queue safely in IndexedDB/localStorage.',
     ],
     limitations: [
-      'SmartBitz POS does NOT currently include a public customer-facing e-commerce storefront or external web checkout for online shopper orders. Orders are created at the POS terminal and synced to cloud.',
+      'Automatic WhatsApp Cloud API delivery and webhooks require server WhatsApp credentials; without them, SmartBitz uses manual wa.me fallback links. Live online card payment gateways require server payment configuration.',
     ],
   },
 ];
