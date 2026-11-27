@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, Save, Smartphone, Store } from 'lucide-react';
 import type { TranslationStrings } from '../i18n';
 import type { PaymentMethod, StoreSettings } from '../types';
+import { ExternalIntegrationsPanel } from './ExternalIntegrationsPanel';
 
 const CONFIGURABLE_PAYMENT_METHODS: PaymentMethod[] = [
   'cash',
@@ -548,6 +549,8 @@ export function StoreSettingsView({
           </div>
         </section>
       </div>
+
+      <ExternalIntegrationsPanel />
     </div>
   );
 }

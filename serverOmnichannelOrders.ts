@@ -209,6 +209,24 @@ function mapOmnichannelOrderRow(row: Record<string, unknown>): OmnichannelOrder 
       typeof row.external_message_id === 'string' && row.external_message_id
         ? row.external_message_id
         : undefined,
+    externalSource:
+      row.external_source === 'shopify' ||
+      row.external_source === 'woocommerce' ||
+      row.external_source === 'custom_website'
+        ? row.external_source
+        : undefined,
+    externalOrderId:
+      typeof row.external_order_id === 'string' && row.external_order_id
+        ? row.external_order_id
+        : undefined,
+    externalOrderNumber:
+      typeof row.external_order_number === 'string' && row.external_order_number
+        ? row.external_order_number
+        : undefined,
+    integrationId:
+      typeof row.integration_id === 'string' && row.integration_id
+        ? row.integration_id
+        : undefined,
     stockReserved: Boolean(row.stock_reserved),
     stockReservedAt:
       typeof row.stock_reserved_at === 'string' ? row.stock_reserved_at : undefined,

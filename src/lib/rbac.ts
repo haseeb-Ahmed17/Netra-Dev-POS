@@ -54,6 +54,7 @@ export type RoleAction =
   | 'omnichannel.manage_status'
   | 'omnichannel.payment'
   | 'storefront.manage'
+  | 'integrations.manage'
   | 'shifts.manage'
   | 'shifts.close'
   | 'inventory.write'
@@ -86,6 +87,7 @@ export const ALL_ROLE_ACTIONS: RoleAction[] = [
   'omnichannel.manage_status',
   'omnichannel.payment',
   'storefront.manage',
+  'integrations.manage',
   'shifts.manage',
   'shifts.close',
   'inventory.write',
@@ -119,6 +121,7 @@ const ACTION_REQUIRED_ROLES: Record<RoleAction, EmployeeRole[]> = {
   'omnichannel.manage_status': ['admin', 'manager', 'cashier'],
   'omnichannel.payment': ['admin', 'manager'],
   'storefront.manage': ['admin'],
+  'integrations.manage': ['admin'],
   'shifts.manage': ['admin', 'manager', 'cashier'],
   'shifts.close': ['admin', 'manager'],
   'inventory.write': ['admin', 'manager'],
@@ -160,6 +163,7 @@ export function hasRolePermission(
       'workspace.reset',
       'settings.write',
       'storefront.manage',
+      'integrations.manage',
       'customers.delete',
       'branches.manage',
     ];

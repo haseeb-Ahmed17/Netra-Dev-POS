@@ -16,9 +16,13 @@ import type {
   AiAssistantHistoryTurn,
   AiAssistantLanguageMode,
   AiAssistantStatusResponse,
+  CustomWebsiteCredentialsResult,
   Customer,
   Employee,
   ExpenseRecord,
+  ExternalIntegrationSummary,
+  IntegrationAuditLogEntry,
+  IntegrationProvider,
   InventoryAdjustment,
   OfflineQueuedSale,
   OmnichannelOrder,
@@ -5175,6 +5179,254 @@ export async function saveStorefrontSettingsApi(payload: {
     return { ok: false, unavailable: true, error: 'Network error.' };
   }
 }
+
+export interface ExternalIntegrationsOverview {
+  integrations: ExternalIntegrationSummary[];
+  capabilities: {
+    shopifyOAuthAppConfigured: boolean;
+    whatsappCloudConfigured: boolean;
+    appUrl: string;
+    shopifyCallbackUrl: string;
+    customWebhookUrl: string;
+    wooWebhookUrl: string;
+  };
+}
+
+export async function fetchExternalIntegrationsApi(): Promise<
+  | { ok: true; data: ExternalIntegrationsOverview }
+  | { ok: false; error: string }
+> {
+  try {
+    const resp = await authenticatedOmnichannelFetch('/api/integrations');
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, error: 'Integrations server endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      integrations?: ExternalIntegrationSummary[];
+      capabilities?: ExternalIntegrationsOverview['capabilities'];
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.integrations || !body.capabilities) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return {
+      ok: true,
+      data: {
+        integrations: body.integrations,
+        capabilities: body.capabilities,
+      },
+    };
+  } catch {
+    return { ok: false, error: 'Network error loading integrations.' };
+  }
+}
+
+export async function fetchIntegrationAuditLogsApi(): Promise<{
+  ok: boolean;
+  logs: IntegrationAuditLogEntry[];
+  error?: string;
+}> {
+  try {
+    const resp = await authenticatedOmnichannelFetch('/api/integrations/audit-logs');
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, logs: [] };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      logs?: IntegrationAuditLogEntry[];
+      error?: string;
+    };
+    if (!resp.ok || !body.ok) {
+      return { ok: false, logs: [], error: body.error };
+    }
+    return { ok: true, logs: Array.isArray(body.logs) ? body.logs : [] };
+  } catch {
+    return { ok: false, logs: [] };
+  }
+}
+
+export async function requestShopifyOAuthUrlApi(
+  shopDomain: string
+): Promise<
+  | { ok: true; authUrl: string; redirectUri: string; shopDomain: string }
+  | { ok: false; code?: string; error: string }
+> {
+  try {
+    const resp = await authenticatedOmnichannelFetch(
+      `/api/integrations/shopify/oauth/url?shop=${encodeURIComponent(shopDomain)}`
+    );
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, error: 'Shopify OAuth server endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      authUrl?: string;
+      redirectUri?: string;
+      shopDomain?: string;
+      code?: string;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.authUrl) {
+      return {
+        ok: false,
+        code: body.code,
+        error: body.error || `HTTP ${resp.status}`,
+      };
+    }
+    return {
+      ok: true,
+      authUrl: body.authUrl,
+      redirectUri: body.redirectUri || '',
+      shopDomain: body.shopDomain || shopDomain,
+    };
+  } catch {
+    return { ok: false, error: 'Network error starting Shopify OAuth.' };
+  }
+}
+
+export async function connectWooCommerceApi(payload: {
+  storeUrl: string;
+  consumerKey: string;
+  consumerSecret: string;
+  webhookSecret?: string;
+}): Promise<
+  | { ok: true; integration: ExternalIntegrationSummary }
+  | { ok: false; error: string }
+> {
+  try {
+    const resp = await authenticatedOmnichannelFetch('/api/integrations/woocommerce/connect', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, error: 'WooCommerce integration endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      integration?: ExternalIntegrationSummary;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.integration) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return { ok: true, integration: body.integration };
+  } catch {
+    return { ok: false, error: 'Network error connecting WooCommerce.' };
+  }
+}
+
+export async function generateCustomWebsiteCredentialsApi(payload: {
+  storeDomain?: string;
+  displayName?: string;
+}): Promise<
+  | { ok: true; result: CustomWebsiteCredentialsResult }
+  | { ok: false; error: string }
+> {
+  try {
+    const resp = await authenticatedOmnichannelFetch('/api/integrations/custom/credentials', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, error: 'Custom website integration endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      integration?: ExternalIntegrationSummary;
+      apiKey?: string;
+      webhookSecret?: string;
+      webhookUrl?: string;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.integration || !body.apiKey || !body.webhookSecret) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return {
+      ok: true,
+      result: {
+        integration: body.integration,
+        apiKey: body.apiKey,
+        webhookSecret: body.webhookSecret,
+        webhookUrl: body.webhookUrl || '',
+      },
+    };
+  } catch {
+    return { ok: false, error: 'Network error generating website credentials.' };
+  }
+}
+
+export async function disconnectExternalIntegrationApi(
+  provider: IntegrationProvider
+): Promise<
+  | { ok: true; integration: ExternalIntegrationSummary }
+  | { ok: false; error: string }
+> {
+  try {
+    const resp = await authenticatedOmnichannelFetch(
+      `/api/integrations/${encodeURIComponent(provider)}/disconnect`,
+      { method: 'POST', body: JSON.stringify({}) }
+    );
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, error: 'Integration disconnect endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      integration?: ExternalIntegrationSummary;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.integration) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return { ok: true, integration: body.integration };
+  } catch {
+    return { ok: false, error: 'Network error disconnecting integration.' };
+  }
+}
+
+export async function syncExternalIntegrationApi(
+  provider: 'shopify' | 'woocommerce'
+): Promise<
+  | {
+      ok: true;
+      integration: ExternalIntegrationSummary;
+      mappedProductsCount: number;
+      importedOrders: number;
+      skippedOrders: number;
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    const resp = await authenticatedOmnichannelFetch(
+      `/api/integrations/${encodeURIComponent(provider)}/sync`,
+      { method: 'POST', body: JSON.stringify({}) }
+    );
+    if (!resp || !isJsonApiResponse(resp)) {
+      return { ok: false, error: 'Integration sync endpoint unavailable.' };
+    }
+    const body = (await resp.json().catch(() => ({}))) as {
+      ok?: boolean;
+      integration?: ExternalIntegrationSummary;
+      mappedProductsCount?: number;
+      importedOrders?: number;
+      skippedOrders?: number;
+      error?: string;
+    };
+    if (!resp.ok || !body.ok || !body.integration) {
+      return { ok: false, error: body.error || `HTTP ${resp.status}` };
+    }
+    return {
+      ok: true,
+      integration: body.integration,
+      mappedProductsCount: body.mappedProductsCount ?? 0,
+      importedOrders: body.importedOrders ?? 0,
+      skippedOrders: body.skippedOrders ?? 0,
+    };
+  } catch {
+    return { ok: false, error: 'Network error running integration sync.' };
+  }
+}
+
 
 
 

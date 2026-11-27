@@ -3555,7 +3555,7 @@ export default function App() {
   }, [user, staffSession, activeTab, handleRefreshOmnichannelOrders]);
 
   const handleCreateOmnichannelOrder = async (payload: {
-    channel: 'website' | 'whatsapp' | 'phone';
+    channel: import('./types').OrderChannel;
     customerId?: string;
     customerName: string;
     customerPhone: string;

@@ -657,7 +657,65 @@ export interface AiAssistantStatusResponse {
 
 // Omnichannel Order Management & Public Storefront
 
-export type OrderChannel = 'website' | 'whatsapp' | 'phone';
+export type OrderChannel =
+  | 'website'
+  | 'whatsapp'
+  | 'phone'
+  | 'shopify'
+  | 'woocommerce'
+  | 'custom_website';
+
+export type ExternalOrderSource = 'shopify' | 'woocommerce' | 'custom_website';
+
+export type IntegrationProvider =
+  | 'shopify'
+  | 'woocommerce'
+  | 'custom_website'
+  | 'whatsapp_business';
+
+export type IntegrationConnectionStatus =
+  | 'not_connected'
+  | 'pending_authorization'
+  | 'connected'
+  | 'error'
+  | 'disconnected';
+
+export interface ExternalIntegrationSummary {
+  id?: string;
+  provider: IntegrationProvider;
+  status: IntegrationConnectionStatus;
+  displayName: string;
+  storeDomain: string;
+  apiKeyMasked: string;
+  scopes: string[];
+  lastSyncAt?: string;
+  lastSyncStatus: 'never' | 'success' | 'partial' | 'error';
+  lastError?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
+  mappedProductsCount?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface IntegrationAuditLogEntry {
+  id: string;
+  userId?: string;
+  provider: IntegrationProvider | string;
+  action: string;
+  actorId: string;
+  actorName: string;
+  actorRole: string;
+  details: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface CustomWebsiteCredentialsResult {
+  integration: ExternalIntegrationSummary;
+  apiKey: string;
+  webhookSecret: string;
+  webhookUrl: string;
+}
 
 export type OmnichannelOrderStatus =
   | 'new'
@@ -742,6 +800,10 @@ export interface OmnichannelOrder {
   paidAmount: number;
   idempotencyKey?: string;
   externalMessageId?: string;
+  externalSource?: ExternalOrderSource;
+  externalOrderId?: string;
+  externalOrderNumber?: string;
+  integrationId?: string;
   stockReserved: boolean;
   stockReservedAt?: string;
   stockRestoredAt?: string;
@@ -782,5 +844,6 @@ export interface PublicStorefrontData {
   branches: Array<{ id: string; name: string; isMain: boolean }>;
   products: PublicStorefrontProduct[];
 }
+
 
 

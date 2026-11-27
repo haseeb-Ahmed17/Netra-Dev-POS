@@ -1794,14 +1794,28 @@ export function ExecutiveDashboardView({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-              {(['website', 'whatsapp', 'phone'] as const).map((ch) => {
+              {(['website', 'whatsapp', 'phone', 'shopify', 'woocommerce', 'custom_website'] as const)
+                .filter(
+                  (ch) =>
+                    ch === 'website' ||
+                    ch === 'whatsapp' ||
+                    ch === 'phone' ||
+                    omnichannelStats.byChannel[ch].orders > 0
+                )
+                .map((ch) => {
                 const stat = omnichannelStats.byChannel[ch];
                 const label =
                   ch === 'website'
                     ? t.omnichannelChannelWebsite
                     : ch === 'whatsapp'
                     ? t.omnichannelChannelWhatsApp
-                    : t.omnichannelChannelPhone;
+                    : ch === 'phone'
+                    ? t.omnichannelChannelPhone
+                    : ch === 'shopify'
+                    ? 'Shopify'
+                    : ch === 'woocommerce'
+                    ? 'WooCommerce'
+                    : 'Custom Website';
                 return (
                   <div
                     key={ch}

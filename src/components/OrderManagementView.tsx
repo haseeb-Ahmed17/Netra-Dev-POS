@@ -99,6 +99,18 @@ const CHANNEL_BADGE: Record<OrderChannel, string> = {
   website: 'bg-sky-50 text-sky-800 border-sky-200',
   whatsapp: 'bg-emerald-50 text-emerald-800 border-emerald-200',
   phone: 'bg-amber-50 text-amber-800 border-amber-200',
+  shopify: 'bg-lime-50 text-lime-800 border-lime-300',
+  woocommerce: 'bg-violet-50 text-violet-800 border-violet-200',
+  custom_website: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+};
+
+const CHANNEL_LABEL: Record<OrderChannel, string> = {
+  website: 'Website',
+  whatsapp: 'WhatsApp',
+  phone: 'Phone',
+  shopify: 'Shopify',
+  woocommerce: 'WooCommerce',
+  custom_website: 'Custom Web',
 };
 
 const STATUS_BADGE: Record<OmnichannelOrderStatus, string> = {
@@ -216,6 +228,9 @@ export function OrderManagementView({
       website: orders.filter((o) => o.channel === 'website').length,
       whatsapp: orders.filter((o) => o.channel === 'whatsapp').length,
       phone: orders.filter((o) => o.channel === 'phone').length,
+      external: orders.filter((o) =>
+        ['shopify', 'woocommerce', 'custom_website'].includes(o.channel)
+      ).length,
     };
   }, [orders]);
 
@@ -451,12 +466,14 @@ export function OrderManagementView({
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-3.5">
           <p className="text-xs font-medium text-slate-500">By Channel</p>
-          <div className="flex items-center gap-2 mt-1.5 text-xs font-semibold tabular-nums">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-xs font-semibold tabular-nums">
             <span className="text-sky-700">Web {counts.website}</span>
             <span className="text-slate-300">·</span>
             <span className="text-emerald-700">WA {counts.whatsapp}</span>
             <span className="text-slate-300">·</span>
             <span className="text-amber-700">Ph {counts.phone}</span>
+            <span className="text-slate-300">·</span>
+            <span className="text-violet-700">Ext {counts.external}</span>
           </div>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-3.5 col-span-2 lg:col-span-1">
@@ -533,6 +550,9 @@ export function OrderManagementView({
             <option value="website">{t.omnichannelChannelWebsite}</option>
             <option value="whatsapp">{t.omnichannelChannelWhatsApp}</option>
             <option value="phone">{t.omnichannelChannelPhone}</option>
+            <option value="shopify">Shopify</option>
+            <option value="woocommerce">WooCommerce</option>
+            <option value="custom_website">Custom Website</option>
           </select>
           <select
             value={paymentFilter}
@@ -614,13 +634,23 @@ export function OrderManagementView({
                       </button>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1">
                         <span
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${CHANNEL_BADGE[order.channel]}`}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${CHANNEL_BADGE[order.channel]}`}
                         >
-                          {order.channel === 'website' && <Globe className="w-3 h-3" />}
+                          {(order.channel === 'website' ||
+                            order.channel === 'shopify' ||
+                            order.channel === 'woocommerce' ||
+                            order.channel === 'custom_website') && (
+                            <Globe className="w-3 h-3" />
+                          )}
                           {order.channel === 'whatsapp' && <MessageCircle className="w-3 h-3" />}
                           {order.channel === 'phone' && <PhoneCall className="w-3 h-3" />}
-                          {order.channel}
+                          {CHANNEL_LABEL[order.channel]}
                         </span>
+                        {order.externalOrderNumber && (
+                          <span className="text-[11px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                            {order.externalOrderNumber}
+                          </span>
+                        )}
                         {order.branchName && (
                           <span className="text-[11px] text-slate-500">{order.branchName}</span>
                         )}

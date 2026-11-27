@@ -28,6 +28,11 @@ import {
   registerOmnichannelRoutes,
   type OmnichannelRouteDeps,
 } from './serverOmnichannelOrders';
+import {
+  ExternalIntegrationsMemoryStore,
+  registerExternalIntegrationRoutes,
+  type ExternalIntegrationsEnvConfig,
+} from './serverExternalIntegrations';
 
 function isRpcMissingError(message?: string | null): boolean {
   return /PGRST202|Could not find the function/i.test(message || '');
@@ -814,6 +819,9 @@ export interface CreatePosExpressAppOptions {
   aiGenerator?: AiGenerateContentFn;
   aiEnv?: Record<string, string | undefined>;
   omnichannelStoreOverride?: OmnichannelMemoryStore;
+  integrationsStoreOverride?: ExternalIntegrationsMemoryStore;
+  externalIntegrationsEnvOverride?: ExternalIntegrationsEnvConfig;
+  externalFetchOverride?: typeof fetch;
   whatsappEnvOverride?: OmnichannelRouteDeps['whatsappEnv'];
   whatsappSendOverride?: OmnichannelRouteDeps['whatsappSendOverride'];
   onlineGatewayConfigured?: boolean;
@@ -834,7 +842,12 @@ export function createPosExpressApp(options?: CreatePosExpressAppOptions) {
   const aiUsageTracker = new AiUsageTracker();
   const aiHowToCache = new SafePosHowToCache();
   app.use(
-    '/api/webhooks/whatsapp',
+    [
+      '/api/webhooks/whatsapp',
+      '/api/integrations/shopify/webhooks',
+      '/api/integrations/woocommerce/webhooks',
+      '/api/integrations/custom/webhooks',
+    ],
     express.json({
       limit: '1mb',
       verify: (req, _res, buf) => {
@@ -2336,6 +2349,17 @@ export function createPosExpressApp(options?: CreatePosExpressAppOptions) {
     whatsappEnv: options?.whatsappEnvOverride,
     whatsappSendOverride: options?.whatsappSendOverride,
     onlineGatewayConfigured: options?.onlineGatewayConfigured,
+  });
+
+  registerExternalIntegrationRoutes(app, {
+    adminSupabase,
+    omnichannelMemoryStore: options?.omnichannelStoreOverride,
+    integrationsMemoryStore: options?.integrationsStoreOverride,
+    authenticateReq,
+    checkOpAccess,
+    resolveStaff,
+    env: options?.externalIntegrationsEnvOverride,
+    fetchImpl: options?.externalFetchOverride,
   });
 
   return app;

@@ -65,7 +65,17 @@ export function generateOmnichannelOrderNumber(
   now = new Date()
 ): string {
   const prefix =
-    channel === 'website' ? 'WEB' : channel === 'whatsapp' ? 'WA' : 'PHN';
+    channel === 'website'
+      ? 'WEB'
+      : channel === 'whatsapp'
+      ? 'WA'
+      : channel === 'shopify'
+      ? 'SHP'
+      : channel === 'woocommerce'
+      ? 'WOO'
+      : channel === 'custom_website'
+      ? 'EXT'
+      : 'PHN';
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
@@ -609,6 +619,9 @@ export function computeOmnichannelAnalytics(
     website: { orders: 0, revenue: 0, delivered: 0, cancelled: 0 },
     whatsapp: { orders: 0, revenue: 0, delivered: 0, cancelled: 0 },
     phone: { orders: 0, revenue: 0, delivered: 0, cancelled: 0 },
+    shopify: { orders: 0, revenue: 0, delivered: 0, cancelled: 0 },
+    woocommerce: { orders: 0, revenue: 0, delivered: 0, cancelled: 0 },
+    custom_website: { orders: 0, revenue: 0, delivered: 0, cancelled: 0 },
   };
 
   const statusCounts: Record<OmnichannelOrderStatus, number> = {
